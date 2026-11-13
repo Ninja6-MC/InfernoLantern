@@ -10,9 +10,11 @@
 # rather than relying on each developer to configure autocrlf correctly.
 
 # Shell scripts are executed by bash and must keep LF.
+gradlew         text eol=lf
 *.sh            text eol=lf
 
 # Batch files are executed by cmd.exe and must keep CRLF.
+gradlew.bat     text eol=crlf
 *.bat           text eol=crlf
 
 # Generated artwork and the scripts that write it. Both export toolchains emit LF.

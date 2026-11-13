@@ -1,0 +1,6 @@
+name: InfernoLantern
+version: '${version}'
+main: com.ninja6.infernolantern.InfernoLanternPlugin
+api-version: '26.3'
+description: Configurable compact lanterns that expand into defensive towers.
+website: https://github.com/Ninja6-MC/InfernoLantern

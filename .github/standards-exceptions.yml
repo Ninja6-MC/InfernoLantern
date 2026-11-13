@@ -1,2 +1,13 @@
 repo: InfernoLantern
-exceptions: []
+exceptions:
+  - rule: N6-CI-05
+    type: transitional
+    reason: >
+      Main retains strict pull-request protection and the passing DCO/Standards
+      contexts while task #32 adopts and verifies the Tier 2 merge queue after
+      the meaningful Build and Test context introduced by #4 has been observed.
+      Keep strict freshness enabled until the queue is active and tested; remove
+      this exception when #32 verifies the queue and required contexts.
+    approved_by: bharathasl74185@gmail.com
+    approved_on: 2026-11-13
+    revisit_by: 2026-12-13
