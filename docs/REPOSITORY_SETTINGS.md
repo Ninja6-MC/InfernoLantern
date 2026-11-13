@@ -1,50 +1,50 @@
 # Repository Settings
 
-Task #32 adoption plan, prepared 2026-11-13. The targets below are selected configuration, not evidence that they have been applied. Live read-back and a successful normal merge-queue flow are required before the task and its temporary exception can close. No release or deployment approval is included.
+Task #32 configuration and live evidence, verified 2026-11-13. The selected settings were applied after independent review of [PR #35](https://github.com/Ninja6-MC/InfernoLantern/pull/35), then verified through API read-back and a completed normal merge-queue flow. This record removes the satisfied N6-CI-05 transition; it does not claim this evidence change has itself completed review or queue execution. No release or deployment approval is included.
 
 ## Standards and settings policy
 
 [N6-CI-03 and N6-CI-05](https://github.com/Ninja6-MC/.github/blob/main/standards/ci.md) require observed check names, protected main and the Tier 2 queue model for this public consumer repository. [Contribution rules](https://github.com/Ninja6-MC/.github/blob/main/CONTRIBUTING.md) require branches, signed-off Conventional Commits, reviewed PRs and squash merging. Independent review is required separately from GitHub's native approval counter.
 
-Automatic branch deletion, allowing auto-merge, the queue capacity/timeouts and the security-feature selections below are established repository settings policy for this project, not invented numbered standards. Passing Standards does not prove those live settings. The inherited [security policy](https://github.com/Ninja6-MC/.github/blob/main/SECURITY.md) requires a private reporting route; enabling the GitHub feature makes that route available rather than assuming inherited text enables it.
+Automatic branch deletion, allowing auto-merge, the queue capacity/timeouts and the security-feature selections below are established repository settings policy for this project, not invented numbered standards. Passing Standards does not prove those live settings. The inherited [security policy](https://github.com/Ninja6-MC/.github/blob/main/SECURITY.md) requires a private reporting route; the GitHub private-reporting feature is explicitly enabled.
 
-## Selected repository and security settings
+## Verified repository and security settings
 
-| Setting | Target | Adoption baseline, checked 2026-11-13 |
-| :--- | :--- | :--- |
-| `allow_squash_merge` | `true` | Already enabled. |
-| `allow_merge_commit` / `allow_rebase_merge` | Both `false` | Both enabled; disable them. |
-| `squash_merge_commit_title` | `PR_TITLE` | Currently `COMMIT_OR_PR_TITLE`; use the reviewed Conventional Commit PR title as the squash subject. |
-| `squash_merge_commit_message` | Retain `COMMIT_MESSAGES` | Preserve the existing signed-off short commit messages. |
-| `allow_auto_merge` | `true` | Disabled; allowing it does not bypass checks, independent review or deployment gates. |
-| `delete_branch_on_merge` | `true` | Disabled; enable deletion of merged remote feature branches. |
-| Secret scanning | Enabled | Disabled. |
-| Secret-scanning push protection | Enabled | Disabled; enable after secret scanning. |
-| Dependabot vulnerability alerts | Enabled | Already enabled; alerts are not automatic security-fix PRs. |
-| Dependabot security updates | Enabled | Disabled; enable and check the separate feature. |
-| Private vulnerability reporting | Enabled | Disabled; verify the private report route after enabling. |
-
-Apply only these selected fields and preserve unrelated repository settings. Secret scanning and push protection are repository `security_and_analysis` settings; Dependabot security updates and private vulnerability reporting have separate enable/read-back endpoints. Existing grouped Actions version updates remain separate from vulnerability-driven security updates. This plan does not add a Gradle version-update ecosystem or assume an enabled security-update feature has already produced a fix PR.
-
-## Main protection and observed checks
-
-Retain required pull requests, zero required native approvals, stale-review dismissal, administrator enforcement, linear history, resolved conversations, and disabled force pushes/deletions. Zero native approvals does not remove the independent-review requirement. No bypass actors are added. The change to required checks uses the targeted status-check endpoint so unrelated existing protections remain intact.
-
-Require these exact contexts, each pinned with `app_id: 15368` (`github-actions`):
-
-| Required context | Observed passing evidence |
+| Setting | Verified value |
 | :--- | :--- |
-| `Build and Test` | [PR #34 CI run](https://github.com/Ninja6-MC/InfernoLantern/actions/runs/43435723026) |
-| `dco / Check Sign-off` | [PR #34 DCO run](https://github.com/Ninja6-MC/InfernoLantern/actions/runs/43435723600) |
-| `standards / Check Standards` | [PR #34 Standards run](https://github.com/Ninja6-MC/InfernoLantern/actions/runs/43435723609) |
+| `allow_squash_merge` | `true` |
+| `allow_merge_commit` / `allow_rebase_merge` | Both `false` |
+| `squash_merge_commit_title` | `PR_TITLE`; the reviewed Conventional Commit PR title supplies the squash subject. |
+| `squash_merge_commit_message` | `COMMIT_MESSAGES`; the existing signed-off short commit messages are retained. |
+| `allow_auto_merge` | `true`; checks, independent review and deployment gates remain required. |
+| `delete_branch_on_merge` | `true`; the merged PR #35 branch was subsequently absent. |
+| Secret scanning | Enabled. |
+| Secret-scanning push protection | Enabled. |
+| Dependabot vulnerability alerts | Enabled, verified separately from security updates. |
+| Dependabot security updates | Enabled and not paused. |
+| Private vulnerability reporting | Enabled; use the repository's [private report route](https://github.com/Ninja6-MC/InfernoLantern/security/advisories/new) under the inherited policy. No fabricated report was submitted. |
 
-The successful PR #34 check runs were read back with the reporting app before selecting these targets. DCO and Standards are currently required; Build and Test is observed and ready to add. Preserve `strict: true` during queue setup and initial testing. The final Tier 2 setting is `strict: false`, only after an active queue has passed its required merge-group checks. Neither Scorecard nor path-filtered/unreported checks are added to the required list.
+The merge/security settings were read back from the repository API. Vulnerability alerts, security updates and private reporting were checked through their separate feature endpoints. Existing grouped Actions version updates remain separate from vulnerability-driven security updates. Enabling security updates does not establish that a fix PR has already been produced, and no Gradle version-update ecosystem was added by this task. Unrelated settings were preserved.
 
-## Selected merge-queue ruleset
+## Verified main protection and required checks
 
-Create an active repository branch ruleset named `tier2-merge-queue` matching only `refs/heads/main`, with no excluded refs and an empty bypass-actor list. Do not duplicate an equivalent ruleset if one appears before application. The ruleset contains one `merge_queue` rule; the existing classic protection continues to supply PR, history, conversation and required-check safeguards.
+Main retains required pull requests, zero required native approvals, stale-review dismissal, administrator enforcement, linear history, resolved conversations, and disabled force pushes/deletions. Zero native approvals does not remove the independent-review requirement. No bypass actor was added. The status-check update used the targeted endpoint to preserve other protections.
 
-| Queue parameter | Selected value |
+All three exact contexts are required and pinned with `app_id: 15368` (`github-actions`). Their successful ordinary-PR check runs were observed on PR #34 before requiring them; the following queue runs then proved their `merge_group` behavior:
+
+| Required context | Passing merge-group evidence |
+| :--- | :--- |
+| `Build and Test` | [CI run 43439005460](https://github.com/Ninja6-MC/InfernoLantern/actions/runs/43439005460) |
+| `dco / Check Sign-off` | [DCO run 43439006438](https://github.com/Ninja6-MC/InfernoLantern/actions/runs/43439006438) |
+| `standards / Check Standards` | [Standards run 43439006501](https://github.com/Ninja6-MC/InfernoLantern/actions/runs/43439006501) |
+
+The final protection read-back has `strict: false` with the same app-pinned check list. Strict freshness remained enabled until the active queue's required checks and completed normal queue flow were verified. Neither Scorecard nor path-filtered/unreported checks are required.
+
+## Verified merge-queue ruleset
+
+Ruleset [27204997](https://github.com/Ninja6-MC/InfernoLantern/rules/27204997), named `tier2-merge-queue`, is active and matches only `refs/heads/main`, with no excluded refs and an empty bypass-actor list. It contains one `merge_queue` rule. Existing classic protection supplies the PR, history, conversation and required-check safeguards.
+
+| Queue parameter | Verified value |
 | :--- | :--- |
 | `merge_method` | `SQUASH` |
 | `max_entries_to_build` | `5` |
@@ -54,32 +54,26 @@ Create an active repository branch ruleset named `tier2-merge-queue` matching on
 | `grouping_strategy` | `ALLGREEN` |
 | `check_response_timeout_minutes` | `60` |
 
-These bounded queue parameters follow the established consumer configuration and were checked against GitHub's current API contract. A one-PR minimum does not require waiting for five PRs. `ALLGREEN` requires each grouped merge commit to pass its required checks. The three workflows already declare `merge_group`; a declaration alone is not proof that those events pass in this repository.
+These bounded parameters follow established consumer configuration and were checked against GitHub's API contract. A one-PR minimum does not require waiting for five PRs. `ALLGREEN` requires each grouped merge commit to pass its required checks.
 
-## Adoption and verification order
+## Completed adoption evidence
 
-1. Independently review this configuration plan before applying live mutations. Re-read the current settings immediately before changes and preserve unrelated values. Keep the existing N6-CI-05 transitional exception while evidence is pending.
-2. Apply the selected squash/auto-merge/branch-deletion/title settings. Enable secret scanning, then push protection, enable Dependabot security updates and private vulnerability reporting, and retain enabled vulnerability alerts. Read each setting back; do not infer a successful enablement from the request body alone.
-3. Add the three observed required checks with their explicit app IDs while retaining strict freshness. Re-read main protection and confirm all other safeguards remain intact.
-4. Create and read back the active main-only queue ruleset, including its returned ID, parameters and empty bypass list. Keep `strict: true` while preparing and testing the first queue entry.
-5. Once the plan PR's current head has independent review and passing required checks, add it through the normal queue path with its expected head. Record the queue/merge-group commit and the `merge_group` workflow runs. Require all three exact contexts from the selected Actions app to pass on that commit. Do not use an administrative bypass.
-6. Only after the active queue is tested with passing merge-group checks, change strict freshness to `false` using the targeted required-status-check update, retaining the same app-pinned check list. If the first normal queued merge has already completed, its recorded successful queue flow supplies that evidence before the strict change. Re-read the active queue and complete protection configuration after the change.
-7. Verify a normal queued squash merge actually completes, then record the PR, queue commit, run links, merge result and final setting read-backs. Check automatic feature-branch deletion and the resulting Conventional Commit subject. A queued request or a passing ordinary PR run is insufficient.
-8. Verify the private report route is available without creating a fabricated vulnerability report. Verify designated independent-review access and repository discovery without publishing operational configuration. Record only the generic verification result.
-9. Submit a separate evidence PR updating this record and the assigned-rule checklist and removing the narrow N6-CI-05 exception. Close #32 only after the final evidence is accurate and the normal reviewed queue flow is complete.
+1. The configuration plan in PR #35 received two independent cold reviews. The review probes were reproduced before the unchanged verdicts were posted, and all ordinary PR checks passed before queue entry.
+2. Merge/security settings were applied and read back. All three observed app-pinned checks became required while strict freshness and the other main safeguards remained active. The main-only queue ruleset was created and read back without bypass actors.
+3. PR #35 entered the normal queue at position 1. Its merge-group commit was `598e8cfc08c9af05ff7962eda9a4d572a756bd33`; all three linked runs reported `event: merge_group`, that same commit, and success from app 15368.
+4. The queue completed the squash merge of PR #35 on 2026-11-13 at 19:33:10 IST as commit [598e8cfc08c9](https://github.com/Ninja6-MC/InfernoLantern/commit/598e8cfc08c9af05ff7962eda9a4d572a756bd33), with subject `docs: plan repository settings and queue adoption (#35)`. No administrative bypass was used.
+5. Only after that passing, completed queue flow was strict freshness changed to `false`. Final API read-back confirmed the active queue, unchanged app-pinned check list and all retained main safeguards.
+6. The merged remote branch `chore/repository-settings` returned HTTP 404 on read-back, verifying automatic feature-branch deletion. Independent-review access and repository discovery were verified; operational configuration is not published here.
 
-If setup or required merge-group checks fail before the strict change, retain `strict: true` and the exception, repair the failure and repeat the test. If the queue becomes unreliable afterward, stop further merges and restore strict freshness with the same required check list while resolving it; never remove the queue/checks to force a merge. Environment/release approvals remain maintainer-controlled throughout.
+The merge-group CI ran all 16 build-contract tests and verified `InfernoLantern-0.0.0-SNAPSHOT-g598e8cfc08c9.jar`, with the same embedded plugin version and built commit identity. Its logged SHA-256 was `108c2b498d625c77d0551c046580b0474fe1b21d2dc426d4bf224bedf99ab13a`. This is build/source evidence, not gameplay or Java/Bedrock compatibility evidence.
 
-## Evidence still required
+The normal queue flow and final setting read-backs satisfy the narrow N6-CI-05 transition, so `.github/standards-exceptions.yml` now contains `exceptions: []`. Future publication requirements remain separately tracked in #28. This task does not approve deployment gates or claim that unexecuted features/providers are supported.
 
-- Live API read-back of each selected repository/security feature, including distinct alerts and security-update states.
-- All three app-pinned required contexts and preserved main safeguards.
-- Active main-only ruleset ID, parameters and empty bypass list.
-- Successful `merge_group` runs on the queue commit and a completed normal queued squash merge.
-- Final `strict: false`, automatic branch-deletion evidence and Conventional Commit squash subject.
-- Available private reporting route and generic confirmation of independent-review access/discovery.
+## Maintaining the controls
 
-All items above remain pending in this plan. Generic settings/run evidence is sufficient; do not retain player names, private server infrastructure/repositories, Discord information, credentials or operational configuration.
+For later changes, re-read the current settings and preserve unrelated values. Require passing checks and an independent review of the current head before adding a PR to the queue. If the queue becomes unreliable, stop further merges and restore strict freshness with the same required check list while resolving the problem; never remove the queue/checks to force a merge. Environment/release approvals remain maintainer-controlled.
+
+Record only generic repository settings and reproducible run evidence. Do not retain player names, private server infrastructure/repositories, Discord information, credentials or operational configuration.
 
 ## API references
 
