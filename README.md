@@ -25,6 +25,7 @@ lighting, and a basic mob interaction on the selected server and client versions
 
 - [Requirements](docs/REQUIREMENTS.md)
 - [Technical solution and validation gates](docs/SOLUTION.md)
+- [Interface decisions and test targets](docs/INTERFACES_AND_TEST_TARGETS.md)
 
 These documents describe intended behaviour. The repository currently contains design
 documents and repository checks; there is no plugin implementation or build yet.
