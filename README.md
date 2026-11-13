@@ -21,6 +21,14 @@ The project is in the design and prototyping stage. No playable release or platf
 compatibility is currently promised. Implementation starts by proving rendering,
 lighting, and a basic mob interaction on the selected server and client versions.
 
+## Design
+
+- [Requirements](docs/REQUIREMENTS.md)
+- [Technical solution and validation gates](docs/SOLUTION.md)
+
+These documents describe intended behaviour. The repository currently contains design
+documents and repository checks; there is no plugin implementation or build yet.
+
 ## License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE).
