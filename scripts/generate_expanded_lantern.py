@@ -332,10 +332,18 @@ def export_normalized_java_block(model, out_path):
             out_el["rotation"] = {"angle": rot[2], "axis": "z", "origin": [o_x, o_y, o_z]}
             
         out_faces = {}
+        res_w = float(model.get("resolution", {}).get("width", 64))
+        res_h = float(model.get("resolution", {}).get("height", 64))
+        scale_u = 16.0 / res_w
+        scale_v = 16.0 / res_h
         for face_name, face_data in el["faces"].items():
             tex_id = tex_map.get(face_data.get("texture"), "#0")
             uv = face_data.get("uv", [0, 0, 16, 16])
-            out_faces[face_name] = {"uv": uv, "texture": tex_id}
+            u0 = round(uv[0] * scale_u, 4)
+            v0 = round(uv[1] * scale_v, 4)
+            u1 = round(uv[2] * scale_u, 4)
+            v1 = round(uv[3] * scale_v, 4)
+            out_faces[face_name] = {"uv": [u0, v0, u1, v1], "texture": tex_id}
         out_el["faces"] = out_faces
         elements.append(out_el)
         

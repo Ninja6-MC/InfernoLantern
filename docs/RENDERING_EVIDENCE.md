@@ -90,6 +90,12 @@ To transform full-scale coordinates $(X, Y, Z)$ into legal client bounds:
   $$\text{origin}' = \left[ 8.0 + \frac{\text{origin}_X - 8.0}{3.0}, \; \frac{\text{origin}_Y}{3.0}, \; 8.0 + \frac{\text{origin}_Z - 8.0}{3.0} \right]$$
 - **Rotation Angles:** All cube rotation angles must strictly conform to vanilla permitted angles:
   $\{-45^\circ, -22.5^\circ, 0^\circ, 22.5^\circ, 45^\circ\}$.
+- **UV Space Conversion:** Blockbench master and Bedrock geometry specify face UVs in texture pixel
+  coordinates ($0 \to 64$). Java block models require UVs in vanilla $0 \to 16$ units
+  (`CuboidFace.getU/getV` divides UV coordinates by 16.0). Master pixel UVs are mapped to Java UV space via:
+  $$U_{\text{Java}} = U_{\text{pixel}} \times \frac{16}{\text{width}}, \quad V_{\text{Java}} = V_{\text{pixel}} \times \frac{16}{\text{height}}$$
+  For the $64 \times 64$ texture palette, this applies a factor of $16/64 = 0.25$, mapping an $8 \times 8$
+  pixel texture region to $[0.0, 0.0, 2.0, 2.0]$.
 - **Runtime Expansion:** In-game, the server-side `ItemDisplay` or `BlockDisplay` applies transformation
   scale $[3.0, 3.0, 3.0]$ centered at $[0.5, 0.0, 0.5]$ to expand the normalized $[0, 16]$ model to the
   full $1 \times 3 \times 1$ footprint.
