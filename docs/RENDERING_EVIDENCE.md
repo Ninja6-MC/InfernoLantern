@@ -2,19 +2,21 @@
 
 Task: #5. Gate: G0 (Rendering and Mob Feasibility).
 Evaluated: 2026-11-15.
-Status: Candidate B selected; Candidate A rejected for expanded deployment.
+Status: Prototype assets and architectural design complete; runtime execution pending.
 
 ## Scope
 
-This evidence record evaluates the visual rendering, client asset formats, physical
+This evidence record evaluates visual rendering, client asset formats, physical
 interaction ergonomics, and environmental constraints for the compact base and expanded
-tower representations of Inferno Lantern. It fulfills the Gate G0 prototype rendering
-requirements under Epic 1 (#2) and Task 1.3 (#5).
+tower representations of Inferno Lantern. It supplies the initial model assets and
+architectural analysis for Task 1.3 (#5).
 
-Runtime combat verification (zombie pathfinding, attack retaliation, damage debits) is
-tested in Task 1.4 (#6). Persistent state journaling and operation transactions are built in
-Task 2.1 (#8). Final artwork packaging and production branding overrides remain in Task 6.1
-(#23).
+Task 1.3 and Gate G0 remain open pending executable prototype implementation, live client
+evidence (Java mouse/keyboard and Bedrock touch), real light placement, collision, and
+compaction/unload verification. Dedicated in-game combat testing (zombie pathfinding,
+retaliation, damage debits) belongs to Task 1.4 (#6). Persistent state journaling and
+operation transactions are built in Task 2.1 (#8). Final artwork packaging and production
+branding overrides remain in Task 6.1 (#23).
 
 ---
 
@@ -36,27 +38,28 @@ Editable source models, textures, animations, and client format exports are comm
   - Central telescoping plunger rod ($Y: 3 \to 14.5$, 16-sided cylinder) that drives the mechanical compaction/expansion mechanism.
   - Rectangular finial base and arched wrought-iron pull handle ($Y: 14.5 \to 16$).
 - **Client Exports:**
-  - Java Block Model: `models/block/compact_lantern.json`
-  - Java Item Model: `models/item/compact_lantern.json` (configured with thirdperson, firstperson, and GUI display transforms)
-  - Bedrock Geometry: `models/bedrock/compact_lantern.geo.json` (`geometry.infernolantern.compact_lantern`)
+  - Java Block Model: `models/block/compact_lantern.json` (100 elements, strictly $[0, 16]$ bounds).
+  - Java Item Model: `models/item/compact_lantern.json` (configured with thirdperson, firstperson, and GUI display transforms).
+  - Bedrock Geometry: `models/bedrock/compact_lantern.geo.json` (`geometry.infernolantern.compact_lantern`).
 
 ### 1.2 Expanded Antique Tower (`expanded_lantern`)
 
 - **Source File:** `models/expanded_lantern.bbmodel`
-- **Bounds:** Strictly $16 \times 48 \times 16$ Blockbench units ($1 \times 3 \times 1$ block volume, $[0, 0, 0]$ to $[16, 48, 16]$ / 3.0m height). Zero horizontal overhang beyond the 1-block base.
+- **Master Bounds:** $16 \times 48 \times 16$ Blockbench units ($1 \times 3 \times 1$ block volume, $[0, 0, 0]$ to $[16, 48, 16]$ / 3.0m height). Zero horizontal overhang beyond the 1-block base.
 - **Element Count:** 106 cubes organized into 6 functional root groups:
   1. `Base_Pedestal` ($Y: 0 \to 14$): 16-sided stepped base anchor, reinforced footing, and maintenance access hatch.
   2. `Operational_Switches` ($Y: 11 \to 13$, reach height $0.7\text{m} \to 0.8\text{m}$):
      - **Switch A (Light Toggle):** Left collar lever controlling real world light emission.
      - **Switch B (Defence Toggle):** Right collar lever controlling automated combat targeting.
+     - Rotation angles set to vanilla-compatible $\pm 22.5^\circ$.
   3. `Column_Shaft` ($Y: 14 \to 32$): Fluted 16-sided antique wrought iron column with brass banding.
   4. `Combustion_Chamber` ($Y: 34 \to 42$): Elevated attack emitter with 16-sided molten glowing core. Beam origin elevated at $Y \approx 2.4\text{m}$ ($Y=38$ units) to maintain clear line of sight over surrounding mobs and terrain.
   5. `Outer_Columns`: 4 reinforced vertical corner pillars shielding the combustion core.
   6. `Tower_Roof` ($Y: 43 \to 48$): 16-sided stepped pagoda roof crowned with an antique spear finial.
 - **Client Exports:**
-  - Java Block Model: `models/block/expanded_lantern.json`
-  - Bedrock Geometry: `models/bedrock/expanded_lantern.geo.json` (`geometry.infernolantern.expanded_lantern`)
-  - Procedural Generator: `scripts/generate_expanded_lantern.py`
+  - Java Block Model: `models/block/expanded_lantern.json` (106 elements). To satisfy vanilla Java client parser limits (`CuboidModelElement.Deserializer` enforcing $[-16.0, 32.0]$), coordinates are normalized to $[0.0, 16.0]$ centered horizontally at $[8, 8]$. The server-side display entity applies transformation scale $[3.0, 3.0, 3.0]$ and placement offsets to achieve the 3.0m in-world volume.
+  - Bedrock Geometry: `models/bedrock/expanded_lantern.geo.json` (`geometry.infernolantern.expanded_lantern`, 6 bones, 106 cubes).
+  - Procedural Generator: `scripts/generate_expanded_lantern.py`.
 
 ### 1.3 Textures and Animation Metadata
 
@@ -72,6 +75,7 @@ Editable source models, textures, animations, and client format exports are comm
 3. To export Java Block/Item format:
    - Navigate to `File` > `Export` > `Export Block/Item Model`.
    - Save to `src/main/resources/assets/infernolantern/models/block/<name>.json`.
+   - For models exceeding 1 block in height, coordinates must be normalized to $[-16, 32]$ legal bounds (e.g. via `scripts/generate_expanded_lantern.py`) so vanilla clients do not throw a `JsonParseException`.
 4. To export Bedrock Geometry format:
    - Convert project to Bedrock model (`File` > `Convert Project` > `Bedrock Model`).
    - Navigate to `File` > `Export` > `Export Bedrock Geometry`.
@@ -84,15 +88,17 @@ Editable source models, textures, animations, and client format exports are comm
 
 | Evaluation Criteria | Candidate A: Mapped Vanilla Block + Living Proxy | Candidate B: Display Entities + Managed Hitbox Components |
 | :--- | :--- | :--- |
-| **Model Height & Bounds** | **Rejected.** Vanilla block JSON models enforce strict coordinate bounds $[-16, 32]$. A 3-block tall model ($Y=48$) cannot be rendered by a single block model; it requires arbitrary multi-block coordinate slicing across 3 real block positions, causing visible seam artifacts during chunk meshing. | **Selected.** `ItemDisplay` / `BlockDisplay` entities natively support arbitrary scale, transformation matrices, and vertical bounds without coordinate clipping. The entire 3-block tower renders as a unified visual entity. |
-| **Crossplay Parity (Geyser)** | **Fragile.** Requires registering custom blocks in Geyser with custom Bedrock resource pack block definitions. Custom blocks on Bedrock suffer from lighting tint desync, custom break times, and geometry size limits. | **Robust.** Geyser translates Java Display Entities natively into client-side Bedrock dummy entities without requiring custom block registrations or server packet hacks. Visual fidelity and animations match 1:1 on both clients. |
+| **Model Height & Bounds** | **Rejected.** Vanilla block JSON models enforce strict coordinate bounds $[-16, 32]$. A 3-block tall model ($Y=48$) cannot be rendered by a single block model; it requires arbitrary multi-block coordinate slicing across 3 real block positions, causing visible seam artifacts during chunk meshing. | **Proposed.** `ItemDisplay` / `BlockDisplay` entities support transformation scaling and offsets. The normalized $[0, 16]$ model is scaled in-world by entity transformation (`scale = [3, 3, 3]`), rendering the entire 3-block tower without coordinate clipping. |
+| **Crossplay Parity (Geyser)** | **Fragile.** Requires registering custom blocks in Geyser with custom Bedrock resource pack block definitions. Custom blocks on Bedrock suffer from lighting tint desync, custom break times, and geometry size limits. | **Bridge Limitation.** Stock Geyser does not translate `ItemDisplay` or `BlockDisplay` out-of-the-box (official upstream [Geyser issue #3810](https://github.com/GeyserMC/Geyser/issues/3810) remains open). Display entities are invisible on unextended Bedrock clients. Bedrock visibility requires either: (a) Geyser Custom Entity API mappings with dedicated Bedrock client entity definitions (`entity/*.json`, render controllers), or (b) an invisible `ArmorStand` proxy holding the custom item, which Geyser translates natively. Candidate B requires runtime validation on the pinned bridge. |
 | **Physical Collision** | Native vanilla block collision box, but limited to integer or 1-block steps; extending to $1 \times 3 \times 1$ requires placing artificial barrier/structure blocks on adjacent tiles. | Server places invisible vanilla `BARRIER` blocks at coordinates $Y=1$ and $Y=2$ (pedestal base at $Y=0$ uses normal block collision). Players and mobs cannot walk through the shaft. |
 | **Player Interaction** | Relies on block click events (`PlayerInteractEvent`). Sub-block element targeting (clicking Switch A vs. Switch B) requires calculating cursor-to-face vector raycasts in Java code, which is prone to client/server latency desync. | Dedicated `Interaction` entities with tailored bounding boxes placed at $Y \approx 11 \to 13$ ($0.7\text{m} \to 0.8\text{m}$). Standard vanilla `PlayerInteractAtEntityEvent` delivers exact clicked component identity. |
 | **Mob Targeting & Damage** | Requires spawning an invisible living entity proxy (e.g. `ArmorStand` or `Slime`) inside the block. Hostile mob AI can target the living proxy, but requires manual proxy damage cancellation and health redirection. | An invisible living proxy (or custom Paper `MobGoals`) is spawned inside the tower volume. Mob melee attacks hit the proxy, triggering custom HP debits and repair locks. |
 | **Compaction & Cleanup** | Breaking or compacting requires multi-block state removal, risking orphaned ghost blocks if a block update is interrupted. | Compacting requires killing the display/interaction entities and clearing the $Y=1, 2$ barrier and light blocks. Atomic cleanup via tower UUID is instant and leaves no orphaned client tile entities. |
 
-### Decision
-**Candidate B is selected** as the primary rendering architecture for the expanded tower. Candidate A is rejected for expanded towers due to the vanilla $[-16, 32]$ coordinate clamp and multi-block meshing artifacts. For the compact $1 \times 1 \times 1$ base, a hybrid approach is supported: an underlying placed block providing base collision and PDC storage, paired with an `ItemDisplay` or block model for high-fidelity animations.
+### Architectural Proposal
+Candidate B is proposed as the primary rendering architecture for the expanded tower. Candidate A is rejected for expanded towers due to the vanilla $[-16, 32]$ coordinate clamp and multi-block meshing artifacts. For the compact $1 \times 1 \times 1$ base, a hybrid approach is supported: an underlying placed block providing base collision and PDC storage, paired with an `ItemDisplay` or block model for high-fidelity animations.
+
+Validation of Candidate B on Bedrock is gated by proving a supported translation path (Geyser Custom Entity mapping or ArmorStand proxy) during executable prototype testing.
 
 ---
 
@@ -166,17 +172,31 @@ Editable source models, textures, animations, and client format exports are comm
 3. **In-Flight Compaction Puller at 3m Height:**
    - Physical click interaction on the finial handle at $Y=3.0\text{m}$ is unsupported for survival players on ground level. Compaction is routed through the pedestal collar / UI menu.
 
+4. **Upstream Geyser Display Entity Translation (Issue #3810):**
+   - Stock Geyser does not natively translate Java `ItemDisplay` or `BlockDisplay` packets. Bedrock crossplay requires either custom Bedrock entity definitions via Geyser's Custom Entity API, or an invisible `ArmorStand` holding the custom item.
+
+5. **Client Block Model Coordinate Bounds ($[-16, 32]$):**
+   - Vanilla Java client parser (`CuboidModelElement.Deserializer`) rejects any block model with coordinates outside $[-16.0, 32.0]$. Full-scale 3-block structures must be exported within legal bounds and scaled via entity display transforms, rather than authored directly with coordinates $> 32$.
+
 ---
 
 ## 6. Gate G0 Feasibility Checklist
 
-- [x] Rough Blockbench models authored for compact base ($1 \times 1 \times 1$) and expanded tower ($1 \times 3 \times 1$).
+### 6.1 Completed Prototype Assets and Specifications
+- [x] Master Blockbench models authored for compact base ($1 \times 1 \times 1$) and expanded tower ($1 \times 3 \times 1$).
 - [x] Editable `.bbmodel` source files committed in repository assets.
-- [x] Dual-client format exports generated: Java Block/Item JSON and Bedrock Geometry `.geo.json`.
+- [x] Dual-client format exports generated: Java Block/Item JSON (normalized to legal $[0, 16]$ bounds) and Bedrock Geometry `.geo.json` (6 bones, 106 cubes).
 - [x] Seamless animated molten core texture and metadata created (`.mcmeta` and `flipbook_textures.json`).
-- [x] Candidate A vs. Candidate B evaluated; Candidate B selected for expanded deployment.
+- [x] Candidate A vs. Candidate B evaluated; Candidate B proposed for expanded deployment subject to Geyser bridge translation.
 - [x] Interaction reach ergonomics analyzed for mouse raycast and PE touch controls.
 - [x] Real world light strategy documented (vanilla `LIGHT` block at $Y=2$, `waterlogged = true` handling).
 - [x] Multi-block piston and fluid constraints documented.
-- [x] Unsupported cases (direct non-living mob targeting, 3m reach) identified.
-- [x] Gate G0 rendering feasibility passed; ready for combat path verification in Task 1.4 (#6).
+- [x] Engine constraints (Geyser #3810, vanilla $[-16, 32]$ bounds, non-living mob targeting) documented.
+
+### 6.2 Pending Runtime Verification (Required to Close #5 and Pass Gate G0)
+- [ ] Runnable prototype plugin commands/listeners implemented in `src/main/java/`.
+- [ ] Empirical placement and expanded footprint verified on Java 26.3 and Bedrock PE clients.
+- [ ] Real world light block placement and waterlogged preservation demonstrated in-game.
+- [ ] Compaction, collision, and complete cleanup demonstrated.
+- [ ] Chunk unload and server restart lifecycle verified without entity leaks.
+- [ ] Separate mouse raycast and PE touch/menu controls verified on actual client builds.
