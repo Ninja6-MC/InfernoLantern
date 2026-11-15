@@ -1,0 +1,7 @@
+[
+  {
+    "flipbook_texture": "textures/block/lantern_glow",
+    "atlas_tile": "lantern_glow",
+    "ticks_per_frame": 3
+  }
+]
