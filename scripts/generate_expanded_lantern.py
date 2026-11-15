@@ -3,8 +3,16 @@ import uuid
 import math
 import os
 
-def make_uuid():
-    return str(uuid.uuid4())
+_uuid_counter = 0
+
+def reset_uuid():
+    global _uuid_counter
+    _uuid_counter = 0
+
+def make_uuid(name=""):
+    global _uuid_counter
+    _uuid_counter += 1
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"infernolantern.{_uuid_counter}.{name}"))
 
 def make_cylinder_16(name_prefix, cx, cz, y0, y1, diameter, tex_uuid, uv_box):
     R = diameter / 2.0
@@ -56,8 +64,9 @@ def make_cylinder_16(name_prefix, cx, cz, y0, y1, diameter, tex_uuid, uv_box):
     return cubes
 
 def build_expanded_tower():
-    tex_frame_uuid = make_uuid()
-    tex_glow_uuid = make_uuid()
+    reset_uuid()
+    tex_frame_uuid = make_uuid("tex_frame")
+    tex_glow_uuid = make_uuid("tex_glow")
     
     elements = []
     groups = []
@@ -288,9 +297,127 @@ def build_expanded_tower():
     }
     return bbmodel
 
+def export_normalized_java_block(model, out_path):
+    tex_map = {
+        model["textures"][0]["uuid"]: "#0",
+        model["textures"][1]["uuid"]: "#1"
+    }
+    elements = []
+    for el in model["elements"]:
+        f_x = round(8.0 + (el["from"][0] - 8.0) / 3.0, 4)
+        f_y = round(el["from"][1] / 3.0, 4)
+        f_z = round(8.0 + (el["from"][2] - 8.0) / 3.0, 4)
+        
+        t_x = round(8.0 + (el["to"][0] - 8.0) / 3.0, 4)
+        t_y = round(el["to"][1] / 3.0, 4)
+        t_z = round(8.0 + (el["to"][2] - 8.0) / 3.0, 4)
+        
+        out_el = {
+            "name": el["name"],
+            "from": [min(f_x, t_x), min(f_y, t_y), min(f_z, t_z)],
+            "to": [max(f_x, t_x), max(f_y, t_y), max(f_z, t_z)]
+        }
+        
+        rot = el.get("rotation", [0, 0, 0])
+        origin = el.get("origin", [8.0, 0.0, 8.0])
+        o_x = round(8.0 + (origin[0] - 8.0) / 3.0, 4)
+        o_y = round(origin[1] / 3.0, 4)
+        o_z = round(8.0 + (origin[2] - 8.0) / 3.0, 4)
+        
+        if rot[0] != 0:
+            out_el["rotation"] = {"angle": rot[0], "axis": "x", "origin": [o_x, o_y, o_z]}
+        elif rot[1] != 0:
+            out_el["rotation"] = {"angle": rot[1], "axis": "y", "origin": [o_x, o_y, o_z]}
+        elif rot[2] != 0:
+            out_el["rotation"] = {"angle": rot[2], "axis": "z", "origin": [o_x, o_y, o_z]}
+            
+        out_faces = {}
+        for face_name, face_data in el["faces"].items():
+            tex_id = tex_map.get(face_data.get("texture"), "#0")
+            uv = face_data.get("uv", [0, 0, 16, 16])
+            out_faces[face_name] = {"uv": uv, "texture": tex_id}
+        out_el["faces"] = out_faces
+        elements.append(out_el)
+        
+    java_block = {
+        "format_version": "26.3",
+        "texture_size": [64, 64],
+        "textures": {
+            "0": "infernolantern:block/lantern_frame",
+            "1": "infernolantern:block/lantern_glow",
+            "particle": "infernolantern:block/lantern_frame"
+        },
+        "elements": elements
+    }
+    with open(out_path, "w") as f:
+        json.dump(java_block, f, indent=2)
+
+def export_bedrock_geometry(model, out_path):
+    uuid_to_el = {el["uuid"]: el for el in model["elements"]}
+    bones = []
+    for g in model["outliner"]:
+        cubes = []
+        for child_uuid in g["children"]:
+            el = uuid_to_el[child_uuid]
+            x0, y0, z0 = el["from"]
+            x1, y1, z1 = el["to"]
+            cube = {
+                "origin": [round(-x1, 4), round(y0, 4), round(z0, 4)],
+                "size": [round(x1 - x0, 4), round(y1 - y0, 4), round(z1 - z0, 4)],
+            }
+            rot = el.get("rotation", [0, 0, 0])
+            orig = el.get("origin", [8.0, 0.0, 8.0])
+            if any(r != 0 for r in rot):
+                cube["pivot"] = [round(-orig[0], 4), round(orig[1], 4), round(orig[2], 4)]
+                cube["rotation"] = rot
+            cube["uv"] = {
+                face: {
+                    "uv": [round(el["faces"][face]["uv"][0], 2), round(el["faces"][face]["uv"][1], 2)],
+                    "uv_size": [round(el["faces"][face]["uv"][2] - el["faces"][face]["uv"][0], 2),
+                                round(el["faces"][face]["uv"][3] - el["faces"][face]["uv"][1], 2)]
+                }
+                for face in ["north", "east", "south", "west", "up", "down"]
+            }
+            cubes.append(cube)
+        g_orig = g.get("origin", [8.0, 0.0, 8.0])
+        bone = {
+            "name": g["name"],
+            "pivot": [round(-g_orig[0], 4), round(g_orig[1], 4), round(g_orig[2], 4)],
+            "cubes": cubes
+        }
+        bones.append(bone)
+        
+    geo = {
+        "format_version": "1.12.0",
+        "minecraft:geometry": [
+            {
+                "description": {
+                    "identifier": "geometry.infernolantern.expanded_lantern",
+                    "texture_width": 64,
+                    "texture_height": 64,
+                    "visible_bounds_width": 2,
+                    "visible_bounds_height": 4,
+                    "visible_bounds_offset": [0, 1.5, 0]
+                },
+                "bones": bones
+            }
+        ]
+    }
+    with open(out_path, "w") as f:
+        json.dump(geo, f, indent=2)
+
 if __name__ == '__main__':
     model = build_expanded_tower()
-    out_path = 'src/main/resources/assets/infernolantern/models/expanded_lantern.bbmodel'
-    with open(out_path, 'w') as f:
+    bbmodel_path = 'src/main/resources/assets/infernolantern/models/expanded_lantern.bbmodel'
+    block_json_path = 'src/main/resources/assets/infernolantern/models/block/expanded_lantern.json'
+    bedrock_geo_path = 'src/main/resources/assets/infernolantern/models/bedrock/expanded_lantern.geo.json'
+    
+    with open(bbmodel_path, 'w') as f:
         json.dump(model, f, indent=2)
-    print(f"Generated {out_path} with {len(model['elements'])} elements and {len(model['outliner'])} root groups.")
+    print(f"Generated {bbmodel_path} ({len(model['elements'])} elements, {len(model['outliner'])} root groups).")
+    
+    export_normalized_java_block(model, block_json_path)
+    print(f"Exported normalized Java block model: {block_json_path}")
+    
+    export_bedrock_geometry(model, bedrock_geo_path)
+    print(f"Exported Bedrock geometry: {bedrock_geo_path}")

@@ -68,19 +68,49 @@ Editable source models, textures, animations, and client format exports are comm
 - `textures/block/lantern_glow.png.mcmeta`: Java vanilla animation descriptor configured with `"interpolate": true` and `"frametime": 3` for fluid 20 FPS molten motion.
 - `textures/flipbook_textures.json`: Bedrock/Geyser flipbook texture mapping binding `lantern_glow` frames to tick cycles.
 
-### 1.4 Reproducible Blockbench Export Instructions
+### 1.4 Reproducible Export and Normalization Pipeline
 
-1. Open Blockbench (desktop application or web editor).
-2. Load `src/main/resources/assets/infernolantern/models/compact_lantern.bbmodel` or `expanded_lantern.bbmodel`.
-3. To export Java Block/Item format:
-   - Navigate to `File` > `Export` > `Export Block/Item Model`.
-   - Save to `src/main/resources/assets/infernolantern/models/block/<name>.json`.
-   - For models exceeding 1 block in height, coordinates must be normalized to $[-16, 32]$ legal bounds (e.g. via `scripts/generate_expanded_lantern.py`) so vanilla clients do not throw a `JsonParseException`.
-4. To export Bedrock Geometry format:
-   - Convert project to Bedrock model (`File` > `Convert Project` > `Bedrock Model`).
-   - Navigate to `File` > `Export` > `Export Bedrock Geometry`.
-   - Ensure the geometry name matches `geometry.infernolantern.<name>`.
-   - Save to `src/main/resources/assets/infernolantern/models/bedrock/<name>.geo.json`.
+Vanilla Java client parsers (`CuboidModelElement.Deserializer`) reject any coordinate
+outside $[-16.0, 32.0]$ with `JsonParseException`. The expanded master model is authored
+at full $1 \times 3 \times 1$ scale ($Y \in [0.0, 48.0]$), so exporting the Java block model
+requires normalizing vertices and rotation origins into standard 1-block bounds ($[0.0, 16.0]$).
+
+#### Mathematical Normalization Specification
+To transform full-scale coordinates $(X, Y, Z)$ into legal client bounds:
+- **Horizontal Anchor:** Centered at block coordinates $X_c = 8.0, Z_c = 8.0$.
+- **Vertical Anchor:** Ground baseline $Y_0 = 0.0$.
+- **Scale Factor:** Uniform reduction factor $S = 1/3$.
+- **Vertex Transformation:**
+  $$\begin{aligned}
+  X' &= 8.0 + \frac{X - 8.0}{3.0} \\
+  Y' &= \frac{Y}{3.0} \\
+  Z' &= 8.0 + \frac{Z - 8.0}{3.0}
+  \end{aligned}$$
+- **Rotation Origin Transformation:**
+  $$\text{origin}' = \left[ 8.0 + \frac{\text{origin}_X - 8.0}{3.0}, \; \frac{\text{origin}_Y}{3.0}, \; 8.0 + \frac{\text{origin}_Z - 8.0}{3.0} \right]$$
+- **Rotation Angles:** All cube rotation angles must strictly conform to vanilla permitted angles:
+  $\{-45^\circ, -22.5^\circ, 0^\circ, 22.5^\circ, 45^\circ\}$.
+- **Runtime Expansion:** In-game, the server-side `ItemDisplay` or `BlockDisplay` applies transformation
+  scale $[3.0, 3.0, 3.0]$ centered at $[0.5, 0.0, 0.5]$ to expand the normalized $[0, 16]$ model to the
+  full $1 \times 3 \times 1$ footprint.
+
+#### Reproducing Exports via Script Pipeline
+The pipeline is fully automated and deterministic in `scripts/generate_expanded_lantern.py`:
+```bash
+python3 scripts/generate_expanded_lantern.py
+```
+This command reproduces all three assets:
+1. `src/main/resources/assets/infernolantern/models/expanded_lantern.bbmodel` (master full-scale model, 106 elements).
+2. `src/main/resources/assets/infernolantern/models/block/expanded_lantern.json` (normalized Java block JSON with 106 elements in $[0.0, 16.0]$).
+3. `src/main/resources/assets/infernolantern/models/bedrock/expanded_lantern.geo.json` (Bedrock geometry with 6 bones and 106 cubes).
+
+#### Manual Export in Blockbench
+1. Open Blockbench and load `compact_lantern.bbmodel` or `expanded_lantern.bbmodel`.
+2. For `compact_lantern`:
+   - Navigate to `File` > `Export` > `Export Block/Item Model` (saved to `models/block/compact_lantern.json`).
+   - Convert to Bedrock project and navigate to `File` > `Export` > `Export Bedrock Geometry` (saved to `models/bedrock/compact_lantern.geo.json`).
+3. For `expanded_lantern`:
+   - Blockbench direct export outputs master 48-unit coordinates; run `python3 scripts/generate_expanded_lantern.py` to regenerate the normalized Java block JSON and Bedrock geometry without coordinate clipping.
 
 ---
 
