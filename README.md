@@ -26,6 +26,7 @@ lighting, and a basic mob interaction on the selected server and client versions
 - [Requirements](docs/REQUIREMENTS.md)
 - [Technical solution and validation gates](docs/SOLUTION.md)
 - [Interface decisions and test targets](docs/INTERFACES_AND_TEST_TARGETS.md)
+- [Rendering and interaction feasibility evidence](docs/RENDERING_EVIDENCE.md)
 
 These documents describe intended behaviour. The repository includes a minimal plugin build scaffold and repository checks. Gameplay and compatibility validation remain pending. See the [build guide](docs/BUILD.md).
 
