@@ -75,9 +75,9 @@ It is experimental and is not a production issuance interface. `/ilantern` is th
 | `prototype remove` | Remove the targeted fixture and restore recognizable fixture block states. |
 | `prototype cleanup` | Remove active fixtures and reconcile recorded cells in loaded chunks. Unloaded cells wait for their chunk to load; external-edit conflicts remain quarantined. |
 
-The nine-slot menu exposes Expand/Compact, Light, Defence flag and Remove. Light and the
-defence flag are independent. The flag never attacks anything: zombie combat belongs to
-#6. Both switches require expansion. Expanding or compacting resets them to off so this
+The nine-slot menu exposes Expand/Compact, Light, Defence experiment and Remove. Light and
+Defence are independent. With the separate default-off combat gate enabled, Defence runs
+the bounded [native zombie experiment](ZOMBIE_PROTOTYPE.md); its live acceptance remains #6. Both switches require expansion. Expanding or compacting resets them to off so this
 experiment cannot be mistaken for production switch persistence. All menu clicks/drags
 are intercepted, including player-inventory transfers. Operator status and distance are
 checked again when actions execute.
