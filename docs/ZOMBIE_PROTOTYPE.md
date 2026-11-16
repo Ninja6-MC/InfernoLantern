@@ -1,9 +1,9 @@
 # Native Zombie Feasibility Experiment
 
-This is executable preparation for #6. No server or client observations are recorded
-here. #6 remains open and full G0 remains open until the end-to-end worksheet passes.
-Production combat, repair locks, persistence, rewards and final balance are excluded.
-The accepted rendering evidence remains [unchanged](RENDERING_EVIDENCE.md).
+Task: #6. Live result record: 2026-11-17.
+Status: The core native-zombie feasibility criteria of #6 and Gate G0 are demonstrated for the recorded one-zombie Java/Android Bedrock test pair. This is a scoped feasibility result, not a pass for every worksheet row or production compatibility.
+
+The record below contains sanitized live observations supplied for the PR #42 harness, distinguished from unit coverage, implementation review and unexecuted cases. Production combat, protection-provider compatibility, repair locks, persistence, rewards and final balance remain excluded. The accepted [rendering evidence](RENDERING_EVIDENCE.md) supplies the #5 portion of G0; issue completion remains subject to the reviewed evidence record.
 
 ## Candidate and Instrumentation
 
@@ -23,8 +23,7 @@ AI, gravity and entity collision are disabled on the proxy, not on the zombie. N
 is moved outside the volume and no barrier is removed to obtain a hit. Displacement or
 native health loss stops the experiment as a failure. Suffocation, burning, knockback,
 potion effects, conversion, interaction/trading and normal damage are guarded; the death
-fallback suppresses drops/XP, cancels death and ends the test. These guards need live
-verification; arbitrary administrative entity edits are unsupported.
+fallback suppresses drops/XP, cancels death and ends the test. The observed guard tests and remaining unexecuted cases are distinguished below; arbitrary administrative entity or direct-health edits remain unsupported.
 
 A bounded scan every ten ticks selects one nearby adult ordinary zombie. The proxy
 must see it before attempting one real `damage(1, proxy)` call. Only an uncancelled,
@@ -66,12 +65,65 @@ release its target. Startup/entity-load recovery removes stale tagged proxies, i
 when creation is disabled. Proxies are nonpersistent. The existing block cleanup manifest
 and conflict quarantine remain responsible for barrier/LIGHT recovery.
 
+## Recorded Live Software and Artifact Identity
+
+The run used the software below. The planned pins in [the interface record](INTERFACES_AND_TEST_TARGETS.md) remain unchanged; testing a different build does not validate the planned build or every API/provider path.
+
+| Component | Recorded test build | Evidence boundary |
+| :--- | :--- | :--- |
+| Server | Paper 26.3 build 211, `26.3-211-main@2d602d6` | Deviation from planned build 249; only the exercised prototype behavior is accepted. |
+| Java runtime | OpenJDK 64-Bit Server VM `25.0.5.0.3+1-1-24.04.1-Ubuntu`, Linux | Recorded runtime, not a performance result. |
+| Geyser | 2.12.1-SNAPSHOT development build 134, `git-DEV-e94bed1` | Deviation from planned official build 1302; observed protocol 2225 does not establish a broader supported-version range. |
+| Floodgate | 2.2.5-SNAPSHOT build 141, `b141-81b65cc` | Recorded authentication-provider build. |
+| Java client | Minecraft 26.3, Fabric Loader 0.20.1 | Executed operator client; unmodified-client coverage is not inferred. |
+| Bedrock observer | Reported version `1.26.62.1`, Android tablet, touch; protocol 2225 | Version retained as reported; observer and input results apply to this tested pair. |
+
+| Artifact | Verified identity / SHA-256 |
+| :--- | :--- |
+| Plugin | `InfernoLantern-0.0.0-SNAPSHOT-gd963eb9d215c.jar`, source `d963eb9d215c7e757adff48a920aec248cc766ec`; `0ffb64d984cc88c6bfad4d7d93b8bbf844d9183ba777b6c61c97d7ef31cca49f` |
+| Java resource pack | `infernolantern-prototype-java.zip`; `2c21821cc2362cc1d9fc1d0e80aebb71de3e9c1e7c07a01b9899573451c1b84d` |
+| Bedrock resource pack | `infernolantern-prototype-bedrock.mcpack`; `7845402cacff9fdac61384842368c5bd369591f6a5560dfe1b1f25dedd34a642` |
+| Geyser mappings | `infernolantern-prototype-mappings.json`; `a3962bc5be25e94a2ef38b63c7e34d8eba49e5078f11b33043d78db1ad996119` |
+
+The supplied artifacts matched their recorded digests. No raw configuration, environment addresses, player identity, private world coordinates or identifying screenshots are retained in this record.
+
+## Observed Core Path and Results
+
+One actual proxy-attributed outgoing hit reduced the ordinary adult zombie's health from 20.0 to 19.0. `outgoing hits` increased by one, followed by one accepted native `TARGET_ATTACKED_ENTITY` acquisition. Ambient proxy-target attempts were rejected. The zombie naturally reached the preserved barrier shaft and physically swung at the living proxy; no forced acquisition, collision removal, outside-volume proxy placement or synthetic incoming-hit timer was used. The outgoing twelve-point FLAME effect was reported visible on Java and the Bedrock observer.
+
+On Normal difficulty, 14 positive uncancelled native melee events produced 14 authoritative HP updates. Each event supplied 3.0 pre-zero final damage to the disposable 40.0 HP pool: `40 -> 37 -> ... -> 1 -> 0`. The last update clamps the remaining 1.0 HP to zero; this is one update per hit, not one HP of damage per hit and not negative HP. Proxy native health remained 20.0, no-hit observation windows showed no HP drift, and zero experiment HP released the target/proxy and compacted the fixture to its base barrier.
+
+| Worksheet area | Supplied observation | Result / boundary |
+| :--- | :--- | :--- |
+| Gates and rendering baseline | Combat-disabled Defence cannot start; independent Light works. With both gates enabled, fixture volume and menu remain usable on Java and tested Bedrock touch mode. | Observed pass for the reported gate/menu cases; unchanged rendering limits still apply. |
+| Actual hit, retaliation and reachable melee | One outgoing hit, one native retaliation acquisition, natural approach and physical melee with both collision barriers retained. | Observed pass for one ordinary adult zombie and this representation. |
+| HP accounting and zero-HP compaction | 14 melee events and 14 HP updates; 3.0 damage per event before clamping; HP reaches zero, proxy is removed and only the compact base remains. Failure and death-attempt counters remain zero. | Observed pass; experiment values are not production balance. |
+| Outgoing denial | Experiment stopped with `outgoing-denied-or-no-positive-damage`, no outgoing-hit increment or beam, and proxy/target release. | Observed denial/no-positive-damage path. That reason alone does not prove cancellation by a particular protection provider. |
+| Incoming protection cancellation | Contract tests cover cancelled incoming events and event identity deduplication. No live third-party claim/provider cancellation case was configured. | Unit coverage only; live provider cancellation remains pending for #19/#20. No provider compatibility claim. |
+| Manual release and session isolation | Defence off, compaction and removal release the target and remove the living proxy; rapid re-enable starts fresh 40.0 experiment HP without carried-over debits. | Observed pass for those paths. Preserving a newer external zombie target was contract-tested, not separately demonstrated live. |
+| Combat-specific unload/load and shutdown | A clean shutdown was reported. `ChunkUnloadEvent` and stale-proxy entity-load hooks were audited. | Do not count source review as a live active-combat-proxy unload/reload pass. That edge and newer-external-target preservation remain production combat lifecycle follow-ups in #19; #5's rendering unload/restart result is separate. |
+| Range, target loss and no-hit timeout | Out-of-range and target death/removal ended sessions; the no-hit case reported `unreachable-or-no-native-melee` after the 200-tick bound. | Observed release outcomes; no general pathfinding or mob support inferred. |
+| Maximum session age | `experiment-expired` was reported at the 1200-tick limit. | Expiry outcome reported; the exact no-attack setup was not supplied. The code increments age while waiting for a target, while the 200-tick no-hit path applies after a target is selected. Do not equate expiry with 60 seconds of an engaged, unreachable zombie. |
+| Proxy safety attempts | Player melee, arrow, fire/suffocation, potion, displacement/trading and a server-issued damage attempt were reported blocked/zeroed with proxy health 20.0, no extra debit, zero drops/XP and zero failures/death attempts. | Observed pass for the listed attempts. The command/damage mechanism is not a proof of immunity to arbitrary administrative removal or direct-health edits; conversion and death-fallback coverage are not inferred from zero counters. |
+| Final cleanup | Zero active fixtures, zero cleanup cells and zero living proxies; support unchanged, tracked cells restored to air and manifest reduced to the empty 8-byte ILP1 header. Both gates were disabled and the instance was cleanly stopped. | Observed final state, not proof of abrupt-crash or power-loss durability. No subsequent disabled-gate boot is inferred from a stopped instance. |
+
+## Scoped Acceptance and Follow-ups
+
+- [x] One real outgoing hit precedes native zombie retaliation, approach and melee within the selected representation.
+- [x] One authoritative HP update occurs per accepted native melee event, with observed damage and zero-HP clamping.
+- [x] Compaction/removal and observed release cases clear the target/proxy; no independent proxy death, loot or XP occurred in the recorded run.
+- [x] Java and the recorded Bedrock observer see sensible model/beam behavior.
+- [ ] Live incoming third-party protection cancellation and provider/event-order compatibility remain untested; track in #19/#20.
+- [ ] Active-combat-proxy unload/reload, a newer external target and additional environmental/conversion/death-fallback edges need their own live observations; track production combat lifecycle in #19.
+
+Together with [#5's rendering evidence](RENDERING_EVIDENCE.md), these observations support core #6 and Gate G0 feasibility acceptance for the exact tested pair. They do not complete every row of the supplementary worksheet or certify production combat/protection. G1-G5, production persistence/recovery, repair, rewards, final balance, wider mob support and production UI remain pending.
+
 ## Generic Live Worksheet
 
 Record exact plugin commit/JAR digest, Paper, Java, Geyser/Floodgate if present, Java client
 and actual Android Bedrock build, pack/mapping digests and test result. Reuse the accepted
 rendering preflight and rollback order. Keep infrastructure names, paths, addresses,
-players, coordinates and full logs private. Every row below is currently **pending**.
+players, coordinates and full logs private. This is the reusable procedure; the result table above is authoritative for what the supplied run actually observed, reviewed or left unexecuted.
 
 1. With both gates false, verify no combat/proxy can start. With rendering enabled and
    combat disabled, verify Defence cannot start and Light still operates. Enable both
@@ -117,9 +169,4 @@ players, coordinates and full logs private. Every row below is currently **pendi
    zero, with no zombie targeting a removed proxy. Disable both gates and restart with
    the plugin still available for recovery, then follow the existing rollback order.
 
-Retain observations and counter deltas for each row, including failure/unsupported cases.
-Automated contract tests cover outgoing/incoming cancellation, duplicate identities,
-distinct events, closed sessions, clamping and preservation of newer external targets only. Compilation verifies the exact cached pinned Paper API;
-neither establishes native pathfinding, event ordering in a running server, physical reach,
-proxy environmental safety or Bedrock visibility. Only recorded live observations can
-complete #6 and full G0.
+Retain observations and counter deltas for each executed row, including failure/unsupported cases. Automated contract tests cover outgoing/incoming cancellation, duplicate identities, distinct events, closed sessions, clamping and preservation of newer external targets. Compilation verifies the exact cached pinned Paper API; neither is a substitute for the live native-path or client observations recorded above. Pending supplemental cases stay pending after the scoped #6/G0 feasibility result.

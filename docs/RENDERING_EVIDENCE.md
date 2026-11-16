@@ -2,13 +2,13 @@
 
 Task: #5. Gate: G0 (Rendering and Mob Feasibility).
 Asset analysis: 2026-11-15. Live result record: 2026-11-16.
-Status: The core rendering feasibility criteria of #5 are demonstrated on the recorded Java/Android Bedrock test pair, with the limitations and pending follow-ups below. Full Gate G0 remains open for #6's zombie targeting, retaliation, damage and target-release proof.
+Status: The core rendering feasibility criteria of #5 are demonstrated on the recorded Java/Android Bedrock test pair, with the limitations and pending follow-ups below. The separate [native-zombie result](ZOMBIE_PROTOTYPE.md#observed-core-path-and-results) records the #6 portion and supports scoped Gate G0 feasibility acceptance; production gates remain pending.
 
 ## Scope and Evidence Boundary
 
 This record contains sanitized live observations supplied for the PR #40 fixture build, the editable model/export specification and the selected representation for the next feasibility task. It records what was exercised without extending those observations to untested versions, controller input, production persistence, crash durability or combat. The executable procedure and recovery details are in [the fixture guide](RENDERING_PROTOTYPE.md).
 
-The #5 scope is compact/deployed appearance, independent controls on Java mouse and Bedrock touch, real light, declared clearance/collision, compaction and cleanup including chunk unload and a clean restart. Two-operator concurrency and an active Bedrock pack-refusal test were not completed; they remain explicit production follow-ups rather than rendering passes. Final art and pack delivery belong to #23, production lifecycle concurrency to #10, production fluid preservation to #21 and durable recovery to #8-#11. The defence switch is only a flag: no zombie proof is implied by a successful toggle.
+The #5 scope is compact/deployed appearance, independent controls on Java mouse and Bedrock touch, real light, declared clearance/collision, compaction and cleanup including chunk unload and a clean restart. Two-operator concurrency and an active Bedrock pack-refusal test were not completed; they remain explicit production follow-ups rather than rendering passes. Final art and pack delivery belong to #23, production lifecycle concurrency to #10, production fluid preservation to #21 and durable recovery to #8-#11. In this PR #40 rendering run the defence switch was only a flag: no zombie proof is implied by a successful toggle. The later PR #42 combat run and its evidence boundaries are recorded separately in [the native-zombie result](ZOMBIE_PROTOTYPE.md).
 
 The planned test pins in [the interface record](INTERFACES_AND_TEST_TARGETS.md) are unchanged. The actual run used the deviations below; this record does not claim live validation of Paper build 249 or Geyser build 1302.
 
@@ -37,7 +37,7 @@ The deployed artifacts were checked against the retained build digests. This rep
 ## 1. Prototype Models and Asset Specifications
 
 Editable source models, textures, animations, and client format exports are committed in
-`src/main/resources/assets/infernolantern/`. The switch and attack-head descriptions below identify artwork roles; the executed fixture uses menu controls and implements no combat or individually clickable model switches.
+`src/main/resources/assets/infernolantern/`. The switch and attack-head descriptions below identify artwork roles; the recorded rendering-only fixture uses menu controls and implements no combat or individually clickable model switches. The later opt-in #6 experiment is separate.
 
 ### 1.1 Compact Lantern Base (`compact_lantern`)
 
@@ -138,7 +138,7 @@ This command reproduces all three assets:
 | :--- | :--- |
 | Mapped vanilla block plus a future living target proxy | Not selected for this fixture. The full-height master needs legal Java model exports and additional mapping/collision design. No empirical rejection or multi-block seam measurement is claimed. |
 | Native `ItemDisplay` / `BlockDisplay` plus separate hitboxes | Not selected for this fixture. The run did not establish direct display-entity translation on Bedrock; an additional translation path would need its own proof. |
-| Invisible ArmorStand wearing a mapped custom helmet | Selected for the next feasibility step. Compact and expanded models rendered on both recorded clients using the derived Java item models, Geyser v2 item mappings and Bedrock attachables with the integrated-pack head pivot `[0, 23, 0]`. A separate damageable target path is still required by #6. |
+| Invisible ArmorStand wearing a mapped custom helmet | Selected for feasibility. Compact and expanded models rendered on both recorded clients using the derived Java item models, Geyser v2 item mappings and Bedrock attachables with the integrated-pack head pivot `[0, 23, 0]`. The later #6 run adds a distinct living proxy and records its native zombie proof separately. |
 
 The executed fixture places no `Interaction` entities and does not test separate on-model switch hitboxes. Right-click/tap opens its nine-slot menu. Both clients receive the ArmorStand helmet representation; this does not rely on native Java display-entity translation. The ArmorStand is a visual component, not a demonstrated zombie target or authoritative production tower record.
 
@@ -190,9 +190,9 @@ The fixture rejects fluid-filled placement/expansion space and does not replace 
 
 The initial shorthand barrier state did not equal Paper's canonical `minecraft:barrier[waterlogged=false]`, causing false cleanup conflicts. PR #40 canonicalizes full block states for new operations and old ILP1 manifest entries. The observed legacy cleanup and graceful lifecycle tests demonstrate that fix on the recorded build; they do not prove world-save ordering, abrupt-process recovery, power-loss durability or the operation journal planned in #8-#11. The existing manifest format and original-state snapshots were retained.
 
-The visual ArmorStand is not proof of zombie reachability, retaliation, one-debit-per-hit routing, target release or loot/XP suppression. Those are #6's dedicated end-to-end acceptance requirements. Broader combat, final pack adapters and reward logic must not infer them from rendering success.
+The visual ArmorStand alone is not proof of zombie reachability, retaliation, one-update-per-hit routing, target release or loot/XP suppression. The later [#6 native-zombie run](ZOMBIE_PROTOTYPE.md#observed-core-path-and-results) records that core proof for a separate living proxy while retaining this rendering/collision volume. Broader combat, provider compatibility, final packs and reward logic must not infer production readiness from either feasibility result.
 
-## 6. Scoped Acceptance and Remaining Gate
+## 6. Scoped Acceptance and Gate G0 Boundary
 
 - [x] Editable compact/expanded Blockbench sources, textures and reproducible export instructions are included.
 - [x] Same compact/deployed representation rendered within declared dimensions on the recorded Java and Android Bedrock clients.
@@ -201,6 +201,6 @@ The visual ArmorStand is not proof of zombie reachability, retaliation, one-debi
 - [x] A representation is selected for the next feasibility task, with unsupported cases and actual build deviations recorded.
 - [ ] Two-operator concurrency remains unexecuted; track production transition validation in #10.
 - [ ] Active Bedrock pack refusal and production delivery failure handling remain unexecuted; track in #23.
-- [ ] Zombie reachability/retaliation, one HP debit per melee hit, release after compaction/removal and proxy loot/XP suppression remain #6.
+- [x] The separate [#6 result](ZOMBIE_PROTOTYPE.md#scoped-acceptance-and-follow-ups) records native zombie reach/retaliation, one HP update per melee event, target/proxy release and no observed proxy death/loot/XP for the tested run; unexecuted provider/lifecycle edges remain explicit.
 
-This evidence supports scoped #5 rendering acceptance with the documented prototype limitations. It does not mark full G0 complete. G0 remains open until #6's zombie proof passes; production lifecycle, recovery, UI, environmental and pack-delivery gates remain separate.
+This evidence supports scoped #5 rendering acceptance with the documented prototype limitations. Together with the recorded #6 native-zombie proof it supports Gate G0 feasibility acceptance for the exact tested builds and representation. G1-G5 and production lifecycle, recovery, UI, environmental, wider combat and pack-delivery validation remain separate and pending.
