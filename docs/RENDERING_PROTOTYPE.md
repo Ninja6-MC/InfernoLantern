@@ -1,6 +1,6 @@
 # Rendering Prototype
 
-The core #5 rendering criteria have been exercised on the recorded Java/Android Bedrock pair. Results, actual build deviations and remaining checks are in [the evidence record](RENDERING_EVIDENCE.md). Full G0 remains open for #6. This opt-in experiment is an operator-only disposable fixture; it does not implement production lantern items, HP, combat, repair, permissions policy, rewards or durable tower state.
+The core #5 rendering criteria have been exercised on the recorded Java/Android Bedrock pair. Results, actual build deviations and remaining checks are in [the evidence record](RENDERING_EVIDENCE.md). The separate [native-zombie evidence](ZOMBIE_PROTOTYPE.md#scoped-acceptance-and-follow-ups) records scoped #6/G0 feasibility acceptance. This opt-in experiment is an operator-only disposable fixture; it does not implement production lantern items, HP, combat, repair, permissions policy, rewards or durable tower state.
 
 ## Build and Delivery
 
@@ -77,7 +77,7 @@ It is experimental and is not a production issuance interface. `/ilantern` is th
 
 The nine-slot menu exposes Expand/Compact, Light, Defence experiment and Remove. Light and
 Defence are independent. With the separate default-off combat gate enabled, Defence runs
-the bounded [native zombie experiment](ZOMBIE_PROTOTYPE.md); its live acceptance remains #6. Both switches require expansion. Expanding or compacting resets them to off so this
+the bounded [native zombie experiment](ZOMBIE_PROTOTYPE.md); its scoped live result is recorded under #6. Both switches require expansion. Expanding or compacting resets them to off so this
 experiment cannot be mistaken for production switch persistence. All menu clicks/drags
 are intercepted, including player-inventory transfers. Operator status and distance are
 checked again when actions execute.
@@ -196,7 +196,7 @@ Use this worksheet for each new build or client pair; prior outcomes are not aut
 | Java pack disabled | Explicit visual fallback/failure; not a custom-rendering pass. | Observed carved-pumpkin fallback. |
 | Bedrock pack refusal | Refusal/disconnect observed under effective forced policy. | Policy audited only; actual refusal run pending, production delivery follow-up #23. |
 
-Final recorded baseline is `active fixtures=0; cleanup cells=0` and an 8-byte empty manifest. Preserve any future conflicts rather than deleting the manifest. The evidence supports scoped #5 rendering acceptance; issue sign-off remains with the maintainer. #6 must still establish zombie targeting/damage/release before full G0 is complete. Production fluid preservation, simultaneous-user transactions and pack readiness are not established by this worksheet.
+Final recorded baseline is `active fixtures=0; cleanup cells=0` and an 8-byte empty manifest. Preserve any future conflicts rather than deleting the manifest. The evidence supports scoped #5 rendering acceptance; issue sign-off remains with the maintainer. The separate #6 evidence records the core zombie targeting/damage/release proof for G0, with unexecuted supplemental cases preserved. Production fluid preservation, simultaneous-user transactions and pack readiness are not established by this worksheet.
 
 ## Upstream Format References
 
