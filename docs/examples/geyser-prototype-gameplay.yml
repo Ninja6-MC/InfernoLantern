@@ -1,0 +1,7 @@
+# Geyser-Spigot 2.12.1 build 1302: isolated rendering experiment only.
+# Manually merge into the existing gameplay section; not a full config.
+# Integrated-pack activation forces pack acceptance even if the existing
+# gameplay.force-resource-packs value is false. Keep its stored value unchanged.
+gameplay:
+  enable-custom-content: true
+  enable-integrated-pack: true
