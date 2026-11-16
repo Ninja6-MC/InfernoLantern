@@ -105,7 +105,8 @@ unloaded chunks and invalid heights before mutation. Compact placement reserves 
 one block; expansion checks all three again. There is no fluid replacement/waterlogging
 in this experiment. This limitation does not change the production water/lava policy.
 
-Vanilla block breaking/placement, fluid entry, piston movement and explosion block
+Vanilla block breaking/placement, bucket placement into recorded destination cells,
+fluid entry, piston movement and explosion block
 removal are intercepted for recorded cells. No regional-protection provider integration
 is claimed; use only an explicitly disposable fixture area. External administrative
 world-edit tools may bypass events. They must not be used on active fixtures.
@@ -153,6 +154,7 @@ server addresses/names, private paths/world identifiers, organizations and Disco
 | Real illumination | Actual block light changes with the LIGHT level, including adjacent dark blocks after updates; emissive appearance alone does not count. | Pending |
 | Collision | Player/mob movement collides with the declared two-block shaft; upper voxel difference is recorded. | Pending |
 | Obstructed/fluid/entity placement and expansion | Private rejection; compact fixture and unrelated blocks/entities unchanged. | Pending |
+| Bucket placement | Water/lava buckets from either hand cannot replace or waterlog fixture cells, including placement against an adjacent untracked block face. Unrelated bucket use still works. | Pending |
 | Repeat clicks and two operators | No duplicate components, partial deployment or inventory transfer. | Pending |
 | Compact/remove/cleanup | Visuals, barriers and LIGHT cells disappear appropriately; original air restored; support remains. | Pending |
 | Chunk unload/reload | Fixture is removed before unload; returning leaves no visual, barrier or light. | Pending |

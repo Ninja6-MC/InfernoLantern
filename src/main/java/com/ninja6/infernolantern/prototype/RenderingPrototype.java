@@ -57,6 +57,7 @@ public final class RenderingPrototype implements Listener {
         recover(ledger.cells());
         for (World world : Bukkit.getWorlds()) for (Entity entity : world.getEntities()) removeStale(entity);
         Bukkit.getPluginManager().registerEvents(this, plugin);
+        Bukkit.getPluginManager().registerEvents(new PrototypeBucketGuard(block -> ledger.cells().contains(cell(block))), plugin);
     }
 
     public int count() { return fixtures.size(); }
