@@ -3,3 +3,6 @@ prototype:
   enabled: false
   # Experimental shared vertical calibration; client parity still requires live tests.
   visual-y-offset: 0.0
+  # Separate disposable native-zombie experiment; never production defence policy.
+  combat-experiment:
+    enabled: false

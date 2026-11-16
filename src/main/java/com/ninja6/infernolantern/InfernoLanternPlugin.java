@@ -50,7 +50,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             case "status" -> {
                 if (!sender.hasPermission("infernolantern.admin.status")) sender.sendMessage("You do not have permission to inspect status.");
                 else sender.sendMessage("Rendering prototype: " + (getConfig().getBoolean("prototype.enabled") ? "enabled" : "disabled")
-                        + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + ". Runtime feasibility evidence pending.");
+                        + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + prototype.combatStatus() + ". Runtime feasibility evidence pending.");
             }
             case "prototype" -> {
                 if (!(sender instanceof Player player)) sender.sendMessage("Prototype fixtures require a player session.");

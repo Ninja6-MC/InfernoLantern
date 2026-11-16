@@ -27,11 +27,13 @@ public final class RenderingPrototype implements Listener {
     private static final String LIGHT_ON = "minecraft:light[level=15,waterlogged=false]";
     private final JavaPlugin plugin;
     private final PrototypeLedger ledger;
+    private final ZombiePrototype combat;
     private final Map<Cell, Fixture> fixtures = new HashMap<>();
     private static final class Fixture {
         final Cell base;
         ArmorStand visual;
         boolean expanded, light, defence;
+        long deployment;
         Fixture(Cell base) { this.base = base; }
     }
     private static final class Menu implements InventoryHolder {
@@ -55,12 +57,14 @@ public final class RenderingPrototype implements Listener {
             public String canonical(String state) { return Bukkit.createBlockData(state).getAsString(); }
             public void write(Cell cell, String state) { block(cell).setBlockData(Bukkit.createBlockData(state), false); }
         });
+        combat = new ZombiePrototype(plugin);
         recover(ledger.cells());
         for (World world : Bukkit.getWorlds()) for (Entity entity : world.getEntities()) removeStale(entity);
         Bukkit.getPluginManager().registerEvents(this, plugin);
         Bukkit.getPluginManager().registerEvents(new PrototypeBucketGuard(block -> ledger.cells().contains(cell(block))), plugin);
     }
 
+    public String combatStatus() { return combat.status(); }
     public int count() { return fixtures.size(); }
     public int pendingCleanupCells() { return ledger.cells().size(); }
     private Block block(Cell cell) { return Objects.requireNonNull(Bukkit.getWorld(cell.world())).getBlockAt(cell.x(), cell.y(), cell.z()); }
@@ -124,12 +128,15 @@ public final class RenderingPrototype implements Listener {
     private void expand(Fixture fixture) throws IOException {
         checkClear(fixture.base, 3, fixture);
         ledger.apply(Map.of(fixture.base.above(1), BARRIER, fixture.base.above(2), LIGHT_OFF));
+        fixture.deployment++;
         fixture.expanded = true;
         fixture.light = false;
         fixture.defence = false;
         render(fixture);
     }
     private void compact(Fixture fixture) throws IOException {
+        combat.stop(center(fixture.base));
+        fixture.deployment++;
         recover(volume(fixture.base.above(1), 2));
         fixture.expanded = fixture.light = fixture.defence = false;
         render(fixture);
@@ -151,6 +158,7 @@ public final class RenderingPrototype implements Listener {
         });
     }
     private void remove(Fixture fixture) throws IOException {
+        combat.stop(center(fixture.base));
         if (fixture.visual != null) fixture.visual.remove();
         try { recover(volume(fixture.base, 3)); }
         finally { fixtures.remove(fixture.base); }
@@ -160,6 +168,7 @@ public final class RenderingPrototype implements Listener {
         if (conflicts > 0) plugin.getLogger().warning("Prototype cleanup preserved " + conflicts + " externally changed cells; retained in cleanup manifest for inspection.");
     }
     public void close() {
+        combat.close();
         for (Fixture fixture : fixtures.values()) if (fixture.visual != null) fixture.visual.remove();
         try { recover(ledger.cells()); } catch (IOException failure) { plugin.getLogger().severe("Prototype cleanup failed; keep the cleanup manifest for recovery on next startup."); }
         fixtures.clear();
@@ -172,7 +181,7 @@ public final class RenderingPrototype implements Listener {
         Menu menu = new Menu(fixture.base);
         menu.inventory.setItem(0, item(Material.PISTON, fixture.expanded ? "Compact" : "Expand"));
         menu.inventory.setItem(3, item(Material.LANTERN, "Light: " + (fixture.light ? "ON" : "OFF")));
-        menu.inventory.setItem(5, item(Material.IRON_SWORD, "Defence flag: " + (fixture.defence ? "ON" : "OFF") + " (no combat)"));
+        menu.inventory.setItem(5, item(Material.IRON_SWORD, "Defence experiment: " + (fixture.defence ? "ON" : "OFF")));
         menu.inventory.setItem(8, item(Material.BARRIER, "Remove prototype"));
         player.openInventory(menu.inventory);
     }
@@ -196,7 +205,17 @@ public final class RenderingPrototype implements Listener {
                 }
                 case 5 -> {
                     if (!fixture.expanded) throw new IllegalStateException("Expand before toggling defence.");
-                    fixture.defence = !fixture.defence;
+                    if (fixture.defence) combat.stop(center(fixture.base));
+                    else {
+                        long deployment = ++fixture.deployment;
+                        combat.start(center(fixture.base), () -> {
+                            // Bind automatic collapse to this exact fixture/deployment.
+                            if (fixtures.get(fixture.base) != fixture || fixture.deployment != deployment) return;
+                            try { compact(fixture); }
+                            catch (IOException failure) { plugin.getLogger().severe("Prototype collapse cleanup failed; preserve the manifest."); }
+                        }, () -> fixture.defence = false);
+                        fixture.defence = true;
+                    }
                 }
                 case 8 -> remove(fixture);
                 default -> { return; }
@@ -213,9 +232,13 @@ public final class RenderingPrototype implements Listener {
         if (permitted(event.getPlayer())) open(event.getPlayer(), fixture);
     }
     @EventHandler public void interactEntity(PlayerInteractEntityEvent event) {
+        if (event.getRightClicked().getScoreboardTags().contains(ZombiePrototype.TAG)) { event.setCancelled(true); return; }
         if (!event.getRightClicked().getScoreboardTags().contains(TAG)) return;
         event.setCancelled(true);
         for (Fixture fixture : fixtures.values()) if (fixture.visual == event.getRightClicked() && permitted(event.getPlayer())) { open(event.getPlayer(), fixture); break; }
+    }
+    @EventHandler public void interactAtEntity(PlayerInteractAtEntityEvent event) {
+        if (event.getRightClicked().getScoreboardTags().contains(ZombiePrototype.TAG)) event.setCancelled(true);
     }
     @EventHandler public void damage(EntityDamageEvent event) { if (event.getEntity().getScoreboardTags().contains(TAG)) event.setCancelled(true); }
     @EventHandler public void manipulate(PlayerArmorStandManipulateEvent event) { if (event.getRightClicked().getScoreboardTags().contains(TAG)) event.setCancelled(true); }
@@ -236,11 +259,17 @@ public final class RenderingPrototype implements Listener {
             try { remove(fixture); } catch (IOException failure) { plugin.getLogger().severe("Prototype chunk cleanup failed; retained manifest will recover on chunk load."); }
         }
     }
+    @EventHandler public void worldUnload(WorldUnloadEvent event) {
+        for (Fixture fixture : new ArrayList<>(fixtures.values())) if (fixture.base.world().equals(event.getWorld().getUID())) {
+            try { remove(fixture); }
+            catch (IOException failure) { plugin.getLogger().severe("Prototype world cleanup failed; retained manifest will recover on load."); }
+        }
+    }
     @EventHandler public void load(ChunkLoadEvent event) {
         try { recover(ledger.cells().stream().filter(cell -> inChunk(cell, event.getChunk())).toList()); }
         catch (IOException failure) { plugin.getLogger().severe("Prototype chunk recovery failed; keep the cleanup manifest."); }
     }
     @EventHandler public void entitiesLoaded(EntitiesLoadEvent event) { event.getEntities().forEach(this::removeStale); }
     private boolean inChunk(Cell cell, Chunk chunk) { return cell.world().equals(chunk.getWorld().getUID()) && (cell.x() >> 4) == chunk.getX() && (cell.z() >> 4) == chunk.getZ(); }
-    private void removeStale(Entity entity) { if (entity.getScoreboardTags().contains(TAG)) entity.remove(); }
+    private void removeStale(Entity entity) { if (entity.getScoreboardTags().contains(TAG) || entity.getScoreboardTags().contains(ZombiePrototype.TAG)) entity.remove(); }
 }
