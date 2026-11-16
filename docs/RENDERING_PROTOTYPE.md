@@ -163,6 +163,16 @@ ordering, abrupt process death and power-loss durability are not proven. The aut
 partial-write/reopen test exercises cleanup logic; it is not an in-game crash-recovery
 claim. Production crash durability and state restoration remain gated by #8-#11.
 
+### Updating a Prototype with Retained Barrier Cells
+
+Earlier prototype builds recorded shorthand `minecraft:barrier` while Paper serializes the placed state as `minecraft:barrier[waterlogged=false]`. That mismatch could reject subsequent transitions and retain otherwise unchanged fixture cells during cleanup. The updated ledger canonicalizes full block data for new writes and legacy manifest entries; it preserves the existing ILP1 format. A barrier with `waterlogged=true`, or any different external block, is still a conflict and is not forcibly restored.
+
+1. Stop fixture creation and stop the test instance cleanly. Back up the existing plugin JAR and the entire plugin data directory privately, including `prototype-cleanup.bin`. Do not delete or hand-edit the manifest or break the retained cells to make the count disappear.
+2. Replace only the prototype JAR with the independently reviewed fix, keeping the original data directory and manifest in place. Confirm that no second prototype JAR remains installed. The packs and mappings are unchanged by this fix.
+3. Start the test instance, initially with `prototype.enabled: false` if further fixture creation should remain disabled. Startup recovery runs even while creation is disabled. Loaded recorded cells are checked immediately; unloaded cells wait for their chunk to load without force-loading it. Visit the affected chunks with an authorized operator and inspect `/ilantern status`.
+4. If explicit cleanup is needed, enable the prototype and restart as documented, then run `/ilantern prototype cleanup` from an in-game operator session. Console/RCON cannot execute the player-bound cleanup command; it can inspect status. Require both `active fixtures=0` and `cleanup cells=0`. Any retained conflict must be inspected locally while preserving the manifest and backup.
+5. Repeat Java placement, expansion, light toggles, compaction, removal, unload/reload and restart checks before continuing PE testing. The automated legacy-manifest regressions establish the comparison fix, not a live recovery pass. Record the updated JAR digest and actual observations; #5 remains open until its complete worksheet passes.
+
 ## Live Acceptance Worksheet
 
 All rows below are **pending**, including server execution. Automated checks do not

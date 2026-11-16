@@ -52,6 +52,7 @@ public final class RenderingPrototype implements Listener {
                 return world != null && world.isChunkLoaded(cell.x() >> 4, cell.z() >> 4);
             }
             public String read(Cell cell) { return block(cell).getBlockData().getAsString(); }
+            public String canonical(String state) { return Bukkit.createBlockData(state).getAsString(); }
             public void write(Cell cell, String state) { block(cell).setBlockData(Bukkit.createBlockData(state), false); }
         });
         recover(ledger.cells());

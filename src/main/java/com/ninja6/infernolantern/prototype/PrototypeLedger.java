@@ -14,6 +14,8 @@ public final class PrototypeLedger {
         boolean loaded(Cell cell);
         String read(Cell cell);
         void write(Cell cell, String data);
+        /** Resolve omitted defaults and property order without discarding block properties. */
+        default String canonical(String data) { return data; }
     }
     private record Entry(String original, String expected, Set<String> owned) {}
     private final Path file;
@@ -30,11 +32,11 @@ public final class PrototypeLedger {
                 if (count < 0 || count > 10000) throw new IOException("Invalid prototype manifest size");
                 for (int i = 0; i < count; i++) {
                     Cell cell = new Cell(new UUID(input.readLong(), input.readLong()), input.readInt(), input.readInt(), input.readInt());
-                    String original = input.readUTF(), expected = input.readUTF();
+                    String original = blocks.canonical(input.readUTF()), expected = blocks.canonical(input.readUTF());
                     int states = input.readInt();
                     if (states < 1 || states > 16) throw new IOException("Invalid prototype state count");
                     Set<String> owned = new HashSet<>();
-                    for (int j = 0; j < states; j++) owned.add(input.readUTF());
+                    for (int j = 0; j < states; j++) owned.add(blocks.canonical(input.readUTF()));
                     if (entries.put(cell, new Entry(original, expected, owned)) != null) throw new IOException("Duplicate prototype cell");
                 }
                 if (input.read() != -1) throw new IOException("Trailing prototype manifest data");
@@ -47,20 +49,23 @@ public final class PrototypeLedger {
     /** Record every possible write before touching the world. All callers run on the server thread. */
     public void apply(Map<Cell, String> changes) throws IOException {
         Map<Cell, Entry> staged = new LinkedHashMap<>(entries);
+        Map<Cell, String> writes = new LinkedHashMap<>();
         for (var change : changes.entrySet()) {
             Cell cell = change.getKey();
             if (!blocks.loaded(cell)) throw new IllegalStateException("Prototype chunk is not loaded");
             Entry old = entries.get(cell);
-            String current = blocks.read(cell);
+            String current = blocks.canonical(blocks.read(cell));
             if (old != null && !current.equals(old.expected())) throw new IllegalStateException("Prototype blocks changed; remove the fixture first");
             Set<String> owned = old == null ? new HashSet<>() : new HashSet<>(old.owned());
-            owned.add(change.getValue());
-            staged.put(cell, new Entry(old == null ? current : old.original(), change.getValue(), owned));
+            String state = blocks.canonical(change.getValue());
+            owned.add(state);
+            staged.put(cell, new Entry(old == null ? current : old.original(), state, owned));
+            writes.put(cell, state);
         }
         save(staged);
         entries.clear();
         entries.putAll(staged);
-        for (var change : changes.entrySet()) blocks.write(change.getKey(), change.getValue());
+        for (var change : writes.entrySet()) blocks.write(change.getKey(), change.getValue());
     }
 
     /** Restore only recognizable fixture states; preserve and report external edits. */
@@ -70,7 +75,7 @@ public final class PrototypeLedger {
         for (Cell cell : cells) {
             Entry entry = entries.get(cell);
             if (entry == null || !blocks.loaded(cell)) continue;
-            String current = blocks.read(cell);
+            String current = blocks.canonical(blocks.read(cell));
             if (entry.owned().contains(current)) blocks.write(cell, entry.original());
             else if (!current.equals(entry.original())) { conflicts++; continue; }
             done.add(cell);
