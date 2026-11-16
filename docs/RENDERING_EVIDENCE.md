@@ -2,7 +2,7 @@
 
 Task: #5. Gate: G0 (Rendering and Mob Feasibility).
 Evaluated: 2026-11-15.
-Status: Prototype assets and architectural design complete; runtime execution pending.
+Status: Prototype assets, architectural design and executable fixture implementation complete; runtime execution pending.
 
 ## Scope
 
@@ -230,7 +230,7 @@ Validation of Candidate B on Bedrock is gated by proving a supported translation
 - [x] Engine constraints (Geyser #3810, vanilla $[-16, 32]$ bounds, non-living mob targeting) documented.
 
 ### 6.2 Pending Runtime Verification (Required to Close #5 and Pass Gate G0)
-- [ ] Runnable prototype plugin commands/listeners implemented in `src/main/java/`.
+- [x] Runnable prototype plugin commands/listeners implemented in `src/main/java/`; server execution remains pending. See [the opt-in fixture guide](RENDERING_PROTOTYPE.md).
 - [ ] Empirical placement and expanded footprint verified on Java 26.3 and Bedrock PE clients.
 - [ ] Real world light block placement and waterlogged preservation demonstrated in-game.
 - [ ] Compaction, collision, and complete cleanup demonstrated.

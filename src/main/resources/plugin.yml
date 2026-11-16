@@ -4,3 +4,28 @@ main: com.ninja6.infernolantern.InfernoLanternPlugin
 api-version: '26.3'
 description: Configurable compact lanterns that expand into defensive towers.
 website: https://github.com/Ninja6-MC/InfernoLantern
+commands:
+  infernolantern:
+    description: InfernoLantern help, status and opt-in rendering prototype.
+    aliases: [ilantern]
+    usage: /<command> help
+permissions:
+  infernolantern.use:
+    description: Native lantern use subject to action eligibility.
+    default: true
+  infernolantern.admin:
+    description: Administrative lantern actions.
+    default: op
+    children:
+      infernolantern.admin.status: true
+      infernolantern.admin.reload: true
+      infernolantern.admin.award: true
+      infernolantern.admin.override: true
+  infernolantern.admin.status:
+    default: false
+  infernolantern.admin.reload:
+    default: false
+  infernolantern.admin.award:
+    default: false
+  infernolantern.admin.override:
+    default: false
