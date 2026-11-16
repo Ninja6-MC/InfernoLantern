@@ -104,3 +104,13 @@ Numeric balance, final geometry, final control UX, dragon reward policy and late
 - [Floodgate 2.2.5 build 141](https://download.geysermc.org/v2/projects/floodgate/versions/2.2.5/builds/141)
 - [Geyser custom item mappings](https://geysermc.org/wiki/geyser/custom-items/)
 - [Geyser custom block mappings](https://geysermc.org/wiki/geyser/custom-blocks/)
+
+## Temporary Rendering Prototype Interface
+
+On 2026-11-16 the maintainer approved the experimental `/infernolantern prototype` action
+with `place`, `remove` and `cleanup` arguments, also reachable through `/ilantern`. It is
+restricted to operators and additionally requires `prototype.enabled: true`. The bare
+prototype action opens the targeted fixture menu. No permanent permission node or
+production award contract is introduced. This temporary interface supports the remaining
+#5 rendering tests and can be retired with the fixture harness. Help and administrative
+status use their previously approved authorization rules.

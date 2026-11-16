@@ -1,0 +1,5 @@
+# Disposable rendering fixtures only. Production gameplay is not implemented.
+prototype:
+  enabled: false
+  # Experimental shared vertical calibration; client parity still requires live tests.
+  visual-y-offset: 0.0

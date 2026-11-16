@@ -24,6 +24,8 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.3.build.249-stable")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.3")
 }
 
 java {
@@ -63,9 +65,19 @@ val verifyPluginJar = tasks.register<Exec>("verifyPluginJar") {
 }
 
 tasks.test {
+    useJUnitPlatform()
     dependsOn(buildToolTests)
 }
 
 tasks.check {
     dependsOn(verifyPluginJar)
+}
+
+val prototypePacks = tasks.register<Exec>("prototypePacks") {
+    group = "build"
+    description = "Builds experimental Java/Bedrock packs and Geyser mappings."
+    inputs.file("scripts/build_prototype_packs.py")
+    inputs.dir("src/main/resources/assets/infernolantern")
+    outputs.dir(layout.buildDirectory.dir("prototype-packs"))
+    commandLine(python.get(), "scripts/build_prototype_packs.py")
 }
