@@ -1,29 +1,43 @@
 # Rendering and Interaction Feasibility Evidence
 
 Task: #5. Gate: G0 (Rendering and Mob Feasibility).
-Evaluated: 2026-11-15.
-Status: Prototype assets, architectural design and executable fixture implementation complete; runtime execution pending.
+Asset analysis: 2026-11-15. Live result record: 2026-11-16.
+Status: The core rendering feasibility criteria of #5 are demonstrated on the recorded Java/Android Bedrock test pair, with the limitations and pending follow-ups below. Full Gate G0 remains open for #6's zombie targeting, retaliation, damage and target-release proof.
 
-## Scope
+## Scope and Evidence Boundary
 
-This evidence record evaluates visual rendering, client asset formats, physical
-interaction ergonomics, and environmental constraints for the compact base and expanded
-tower representations of Inferno Lantern. It supplies the initial model assets and
-architectural analysis for Task 1.3 (#5).
+This record contains sanitized live observations supplied for the PR #40 fixture build, the editable model/export specification and the selected representation for the next feasibility task. It records what was exercised without extending those observations to untested versions, controller input, production persistence, crash durability or combat. The executable procedure and recovery details are in [the fixture guide](RENDERING_PROTOTYPE.md).
 
-Task 1.3 and Gate G0 remain open pending executable prototype implementation, live client
-evidence (Java mouse/keyboard and Bedrock touch), real light placement, collision, and
-compaction/unload verification. Dedicated in-game combat testing (zombie pathfinding,
-retaliation, damage debits) belongs to Task 1.4 (#6). Persistent state journaling and
-operation transactions are built in Task 2.1 (#8). Final artwork packaging and production
-branding overrides remain in Task 6.1 (#23).
+The #5 scope is compact/deployed appearance, independent controls on Java mouse and Bedrock touch, real light, declared clearance/collision, compaction and cleanup including chunk unload and a clean restart. Two-operator concurrency and an active Bedrock pack-refusal test were not completed; they remain explicit production follow-ups rather than rendering passes. Final art and pack delivery belong to #23, production lifecycle concurrency to #10, production fluid preservation to #21 and durable recovery to #8-#11. The defence switch is only a flag: no zombie proof is implied by a successful toggle.
+
+The planned test pins in [the interface record](INTERFACES_AND_TEST_TARGETS.md) are unchanged. The actual run used the deviations below; this record does not claim live validation of Paper build 249 or Geyser build 1302.
+
+## Tested Software and Artifact Identity
+
+| Component | Recorded live build | Evidence boundary |
+| :--- | :--- | :--- |
+| Server | Paper 26.3 build 211, `26.3-211-main@2d602d6` | Deviation from planned build 249; only the exercised fixture behavior is accepted. |
+| Java runtime | OpenJDK 64-Bit Server VM `25.0.5.0.3+1-1-24.04.1-Ubuntu` | Recorded runtime, not a performance result. |
+| Geyser | 2.12.1-SNAPSHOT development build 134, `git-DEV-e94bed1` | Deviation from planned official build 1302; no blanket bridge/version compatibility claim. |
+| Floodgate | 2.2.5-SNAPSHOT build 141, `b141-81b65cc` | Matches the planned authentication-provider build. |
+| Java client/input | Minecraft 26.3, Fabric Loader 0.20.1, mouse input | Executed client; unmodified-client and controller coverage are not inferred. |
+| Bedrock client/input | Reported version `1.26.62.1`, Android tablet, touch; observed protocol 2225 | Version retained as reported, without converting it into a supported-version range or changing the planned PE target. Findings apply to this tested input mode. |
+
+| Artifact | Source / SHA-256 |
+| :--- | :--- |
+| Plugin | `InfernoLantern-0.0.0-SNAPSHOT-gf3aea45255cd.jar`, source `f3aea45255cddfe3c602bb531b297800f949d3e0`; `617980ec1d742b2a277d9c35a270649626694cd3ad41ad3bccfd5f872ad364fa` |
+| Java resource pack | `infernolantern-prototype-java.zip`; `2c21821cc2362cc1d9fc1d0e80aebb71de3e9c1e7c07a01b9899573451c1b84d` |
+| Bedrock resource pack | `infernolantern-prototype-bedrock.mcpack`; `7845402cacff9fdac61384842368c5bd369591f6a5560dfe1b1f25dedd34a642` |
+| Geyser mapping | `infernolantern-prototype-mappings.json`; `a3962bc5be25e94a2ef38b63c7e34d8eba49e5078f11b33043d78db1ad996119` |
+
+The deployed artifacts were checked against the retained build digests. This report contains no environment addresses, player identity, private world coordinates, raw configuration/log dumps or identifying screenshots.
 
 ---
 
 ## 1. Prototype Models and Asset Specifications
 
 Editable source models, textures, animations, and client format exports are committed in
-`src/main/resources/assets/infernolantern/`.
+`src/main/resources/assets/infernolantern/`. The switch and attack-head descriptions below identify artwork roles; the executed fixture uses menu controls and implements no combat or individually clickable model switches.
 
 ### 1.1 Compact Lantern Base (`compact_lantern`)
 
@@ -57,7 +71,7 @@ Editable source models, textures, animations, and client format exports are comm
   5. `Outer_Columns`: 4 reinforced vertical corner pillars shielding the combustion core.
   6. `Tower_Roof` ($Y: 43 \to 48$): 16-sided stepped pagoda roof crowned with an antique spear finial.
 - **Client Exports:**
-  - Java Block Model: `models/block/expanded_lantern.json` (106 elements). To satisfy vanilla Java client parser limits (`CuboidModelElement.Deserializer` enforcing $[-16.0, 32.0]$), coordinates are normalized to $[0.0, 16.0]$ centered horizontally at $[8, 8]$. The server-side display entity applies transformation scale $[3.0, 3.0, 3.0]$ and placement offsets to achieve the 3.0m in-world volume.
+  - Java Block Model: `models/block/expanded_lantern.json` (106 elements). To satisfy vanilla Java client parser limits (`CuboidModelElement.Deserializer` enforcing $[-16.0, 32.0]$), coordinates are normalized to $[0.0, 16.0]$ centered horizontally at $[8, 8]$. This is the normalized source export. The executed fixture derives an ArmorStand head-slot item from it; its additional head transform is documented in [the fixture guide](RENDERING_PROTOTYPE.md#representation-and-limits). It does not spawn a display entity.
   - Bedrock Geometry: `models/bedrock/expanded_lantern.geo.json` (`geometry.infernolantern.expanded_lantern`, 6 bones, 106 cubes).
   - Procedural Generator: `scripts/generate_expanded_lantern.py`.
 
@@ -65,8 +79,8 @@ Editable source models, textures, animations, and client format exports are comm
 
 - `textures/block/lantern_frame.png` ($64 \times 64$): High-resolution palette texture featuring dark oxidized wrought iron base plates, antique brass trims, and highlighted column fluting.
 - `textures/block/lantern_glow.png` ($64 \times 512$): 8-frame seamless vertical strip depicting molten gold/lava liquid convection.
-- `textures/block/lantern_glow.png.mcmeta`: Java vanilla animation descriptor configured with `"interpolate": true` and `"frametime": 3` for fluid 20 FPS molten motion.
-- `textures/flipbook_textures.json`: Bedrock/Geyser flipbook texture mapping binding `lantern_glow` frames to tick cycles.
+- `textures/block/lantern_glow.png.mcmeta`: Java vanilla animation descriptor configured with `"interpolate": true` and `"frametime": 3` for interpolated three-tick keyframes.
+- `textures/flipbook_textures.json`: Source block flipbook metadata. The executed Bedrock attachable uses glow frame zero; animated attachable parity is not implemented or accepted by this test.
 
 ### 1.4 Reproducible Export and Normalization Pipeline
 
@@ -96,9 +110,7 @@ To transform full-scale coordinates $(X, Y, Z)$ into legal client bounds:
   $$U_{\text{Java}} = U_{\text{pixel}} \times \frac{16}{\text{width}}, \quad V_{\text{Java}} = V_{\text{pixel}} \times \frac{16}{\text{height}}$$
   For the $64 \times 64$ texture palette, this applies a factor of $16/64 = 0.25$, mapping an $8 \times 8$
   pixel texture region to $[0.0, 0.0, 2.0, 2.0]$.
-- **Runtime Expansion:** In-game, the server-side `ItemDisplay` or `BlockDisplay` applies transformation
-  scale $[3.0, 3.0, 3.0]$ centered at $[0.5, 0.0, 0.5]$ to expand the normalized $[0, 16]$ model to the
-  full $1 \times 3 \times 1$ footprint.
+- **Display-Entity Option (not the executed fixture):** A display entity could scale the normalized model by $[3.0, 3.0, 3.0]$. The selected fixture instead uses the derived head-slot model and transform described in the fixture guide; its Java transform respects the item scale clamp.
 
 #### Reproducing Exports via Script Pipeline
 The pipeline is fully automated and deterministic in `scripts/generate_expanded_lantern.py`:
@@ -120,119 +132,75 @@ This command reproduces all three assets:
 
 ---
 
-## 2. Architectural Candidate Evaluation
+## 2. Representation Decision for Rendering Feasibility
 
-| Evaluation Criteria | Candidate A: Mapped Vanilla Block + Living Proxy | Candidate B: Display Entities + Managed Hitbox Components |
+| Candidate | Decision and evidence |
+| :--- | :--- |
+| Mapped vanilla block plus a future living target proxy | Not selected for this fixture. The full-height master needs legal Java model exports and additional mapping/collision design. No empirical rejection or multi-block seam measurement is claimed. |
+| Native `ItemDisplay` / `BlockDisplay` plus separate hitboxes | Not selected for this fixture. The run did not establish direct display-entity translation on Bedrock; an additional translation path would need its own proof. |
+| Invisible ArmorStand wearing a mapped custom helmet | Selected for the next feasibility step. Compact and expanded models rendered on both recorded clients using the derived Java item models, Geyser v2 item mappings and Bedrock attachables with the integrated-pack head pivot `[0, 23, 0]`. A separate damageable target path is still required by #6. |
+
+The executed fixture places no `Interaction` entities and does not test separate on-model switch hitboxes. Right-click/tap opens its nine-slot menu. Both clients receive the ArmorStand helmet representation; this does not rely on native Java display-entity translation. The ArmorStand is a visual component, not a demonstrated zombie target or authoritative production tower record.
+
+| Fixture state | Visible model / clearance | Implemented collision | World light |
+| :--- | :--- | :--- | :--- |
+| Compact | 1 x 1 x 1 | Barrier at the base | None |
+| Expanded | 1 x 3 x 1 | Barriers at base and base+1, a 1 x 2 x 1 shaft | `LIGHT` at base+2, level 0 or 15 |
+
+The upper light cell is not also a collision barrier. The selected visible volume is a single three-block column, not a 3 x 1 x 3 footprint. The primitive collision shaft and opt-in operator-only fixture are experiment constraints, not selected production geometry or access policy.
+
+## 3. Executed Rendering and Lifecycle Results
+
+The following table distinguishes reported live observations from implementation/policy review. No cell means that all client versions, devices or production conditions passed.
+
+| Test | Steps and observed result | Result / scope |
 | :--- | :--- | :--- |
-| **Model Height & Bounds** | **Rejected.** Vanilla block JSON models enforce strict coordinate bounds $[-16, 32]$. A 3-block tall model ($Y=48$) cannot be rendered by a single block model; it requires arbitrary multi-block coordinate slicing across 3 real block positions, causing visible seam artifacts during chunk meshing. | **Proposed.** `ItemDisplay` / `BlockDisplay` entities support transformation scaling and offsets. The normalized $[0, 16]$ model is scaled in-world by entity transformation (`scale = [3, 3, 3]`), rendering the entire 3-block tower without coordinate clipping. |
-| **Crossplay Parity (Geyser)** | **Fragile.** Requires registering custom blocks in Geyser with custom Bedrock resource pack block definitions. Custom blocks on Bedrock suffer from lighting tint desync, custom break times, and geometry size limits. | **Bridge Limitation.** Stock Geyser does not translate `ItemDisplay` or `BlockDisplay` out-of-the-box (official upstream [Geyser issue #3810](https://github.com/GeyserMC/Geyser/issues/3810) remains open). Display entities are invisible on unextended Bedrock clients. Bedrock visibility requires either: (a) Geyser Custom Entity API mappings with dedicated Bedrock client entity definitions (`entity/*.json`, render controllers), or (b) an invisible `ArmorStand` proxy holding the custom item, which Geyser translates natively. Candidate B requires runtime validation on the pinned bridge. |
-| **Physical Collision** | Native vanilla block collision box, but limited to integer or 1-block steps; extending to $1 \times 3 \times 1$ requires placing artificial barrier/structure blocks on adjacent tiles. | Server places invisible vanilla `BARRIER` blocks at coordinates $Y=1$ and $Y=2$ (pedestal base at $Y=0$ uses normal block collision). Players and mobs cannot walk through the shaft. |
-| **Player Interaction** | Relies on block click events (`PlayerInteractEvent`). Sub-block element targeting (clicking Switch A vs. Switch B) requires calculating cursor-to-face vector raycasts in Java code, which is prone to client/server latency desync. | Dedicated `Interaction` entities with tailored bounding boxes placed at $Y \approx 11 \to 13$ ($0.7\text{m} \to 0.8\text{m}$). Standard vanilla `PlayerInteractAtEntityEvent` delivers exact clicked component identity. |
-| **Mob Targeting & Damage** | Requires spawning an invisible living entity proxy (e.g. `ArmorStand` or `Slime`) inside the block. Hostile mob AI can target the living proxy, but requires manual proxy damage cancellation and health redirection. | An invisible living proxy (or custom Paper `MobGoals`) is spawned inside the tower volume. Mob melee attacks hit the proxy, triggering custom HP debits and repair locks. |
-| **Compaction & Cleanup** | Breaking or compacting requires multi-block state removal, risking orphaned ghost blocks if a block update is interrupted. | Compacting requires killing the display/interaction entities and clearing the $Y=1, 2$ barrier and light blocks. Atomic cleanup via tower UUID is instant and leaves no orphaned client tile entities. |
+| Join and pack use | Java and the recorded Android Bedrock client joined and rendered the supplied custom items. | Observed pass for the recorded pair; no mobile stability or tick-time measurement beyond this run. |
+| Compact placement | Place on solid support; compact model centred in one block with textures present and support unchanged. | Observed pass on Java and Bedrock. |
+| Expansion | Expand from the menu; three-block model aligned within the 1 x 3 x 1 clearance, without horizontal overhang. | Observed pass on Java and Bedrock. Compact-model shimmer is retained as an artwork limitation. |
+| Independent controls | Exercise off/off, light/on only, defence/on only and both/on; no combat occurs. | Observed pass. Light is level 0 or 15; defence is only a flag. |
+| Input and inventory | Operate menu actions using Java mouse and tested Android touch mode; no menu-item extraction or inventory loss reported. | Observed pass with the touch gesture and layout limitations in section 4. No controller claim. |
+| Real light | Toggle the apex LIGHT block and observe surrounding illumination as well as level-15 source state. | Observed pass; emissive textures alone were not counted as illumination. No fixed-radius or mob-spawn guarantee is inferred. |
+| Collision | Move against the fixture; the two-block barrier shaft prevents passage. | Observed pass for the tested movement; upper light-cell collision differs by design. |
+| Obstruction and overlap rejection | Solid apex obstruction blocks expansion; water/entity occupancy rejects placement; targeting an existing fixture does not create a duplicate. Unrelated state remains unchanged. | Observed pass for those cases. The implementation rejects all fluids; lava placement is not separately claimed as observed. |
+| Bucket protection | Try water/lava from main/offhand, including placement against an adjacent untracked face into the fixture volume. Fixture cells remain protected and buckets remain available. | Observed pass for the reported test cases. |
+| Rapid repeated actions | Burst expand/compact and light actions from one operator session; one visual and no escaped menu items or partial transitions. | Observed pass for one actor. Two-operator concurrency not executed; follow-up in #10. |
+| Compaction and removal | Compact clears upper barrier/light cells; remove clears the visual and base cell, retaining the support. | Observed pass on Java and Bedrock. |
+| Legacy manifest recovery | Deploy PR #40 with the original manifest; three retained barrier cells restore to air. | Observed pass; no manifest deletion or force-clear was used. |
+| Chunk unload/reload | Expand, leave the world, verify its loaded-chunk count reaches zero, then return. Fixture volume is clear and no tagged visual remains. | Observed pass, with `active fixtures=0; cleanup cells=0` after return. |
+| Clean restart with active fixture | Restart cleanly while expanded. Shutdown removes the visual and restores three cells; after boot the volume is clear and status is zero/zero. | Observed pass for graceful shutdown/restart; not an abrupt-crash or power-loss test. |
+| Disabled and nonoperator restrictions | Disabled creation commands reject. Nonoperator usage cannot create fixtures or inspect administrative status; generic help remains available. | Observed pass for command restrictions. Recovery listeners while disabled were audited; a retained-cell recovery run specifically under the disabled flag was not separately demonstrated. |
+| External block edit | Change a tracked cell to a distinct block, clean up, verify that block and one retained conflict survive; restore the recognizable fixture state and run normal cleanup. | Observed pass; final counts return to zero. Genuine waterlogging remains protected by the regression tests, not a new live waterlogging claim. |
+| Java pack disabled | Disable the Java pack; the custom helmet falls back to the vanilla carved-pumpkin appearance. | Observed failure-mode behavior, not successful custom rendering without a pack. |
+| Bedrock pack refusal | Inspect effective forced-pack policy with integrated pack active. | Policy audited; an actual refusal/disconnect run was not separately demonstrated. Production delivery acceptance remains in #23. |
 
-### Architectural Proposal
-Candidate B is proposed as the primary rendering architecture for the expanded tower. Candidate A is rejected for expanded towers due to the vanilla $[-16, 32]$ coordinate clamp and multi-block meshing artifacts. For the compact $1 \times 1 \times 1$ base, a hybrid approach is supported: an underlying placed block providing base collision and PDC storage, paired with an `ItemDisplay` or block model for high-fidelity animations.
+Final recorded state: zero active fixtures, zero cleanup cells and an 8-byte empty manifest header, with tested fixture cells restored to air and no orphaned visual entities. These are lifecycle observations, not proof of durable production transactions or unlimited repetition.
 
-Validation of Candidate B on Bedrock is gated by proving a supported translation path (Geyser Custom Entity mapping or ArmorStand proxy) during executable prototype testing.
+## 4. Client and Artwork Limitations
 
----
+- On the tested Android touch mode, a single tap selected a chest item locally. A selection/transfer gesture was needed to reach the server-side menu action. Each required control was operated using that gesture; single-tap chest operation was not established.
+- On the tested tablet layout, the ninth slot moved to another row and its barrier icon appeared blank. The slot was operated, but fixed nine-column presentation is not accepted for production touch UX. This observation is not a rule for all Bedrock devices or control schemes.
+- Compact-model shimmering while moving the Java camera was reported. Coplanar faces on rotated tiers are a suspected cause and are tracked for #23. A blanket 0.01-unit offset has not been validated; any art fix must preserve geometry bounds, legal rotations, UVs, source/editability and both export paths.
+- Paper Dialog controls are a future interface proposal. This fixture has no Dialog implementation and the proposal was not tested on this bridge. It is not an adopted production decision and does not turn #6 into a UI rewrite.
+- The Bedrock attachable uses glow frame zero. Animated Java textures do not establish animated Bedrock attachable parity. Final artwork, variant packaging and production pack readiness remain in #23.
 
-## 3. Ergonomics and Cross-Platform Interaction Analysis
+## 5. Environmental and Recovery Boundaries
 
-§2 of the Requirements specifies two independent deployed controls: **Light Toggle** and **Defence Toggle**.
+The fixture rejects fluid-filled placement/expansion space and does not replace or preserve water/lava as a deployed feature. Waterlogged LIGHT preservation remains production work in #21. The source-level piston, fluid-entry and explosion block guards are not a completed production environmental/protection matrix.
 
-### 3.1 Switch Placement and Survival Reach
-- **Height Placement:** Both switches are positioned on the base pedestal collar at $Y = 11 \to 13$ Blockbench units ($0.69\text{m} \to 0.81\text{m}$ above ground level).
-- **Survival Reach Mechanics:** Vanilla Minecraft survival interaction reach is strictly 3.0 blocks from player eye level ($Y_{\text{feet}} + 1.62\text{m}$).
-  - Positioning switches at waist level ($Y \approx 0.75\text{m}$) ensures that a player standing on even ground, elevated terrain, or a 1-block downward slope remains within valid reach distance ($\approx 1.8\text{m}$ raycast distance).
-  - Placing controls on the upper combustion chamber ($Y \ge 2.2\text{m}$) would fail reach checks for players standing on slopes or crouching.
+The initial shorthand barrier state did not equal Paper's canonical `minecraft:barrier[waterlogged=false]`, causing false cleanup conflicts. PR #40 canonicalizes full block states for new operations and old ILP1 manifest entries. The observed legacy cleanup and graceful lifecycle tests demonstrate that fix on the recorded build; they do not prove world-save ordering, abrupt-process recovery, power-loss durability or the operation journal planned in #8-#11. The existing manifest format and original-state snapshots were retained.
 
-### 3.2 Mouse vs. Touch / Controller Input
-- **Java Edition (Mouse / Keyboard):**
-  - Precise mouse crosshairs allow direct pixel raycasting against the individual `Interaction` entity hitboxes for Switch A (Light) and Switch B (Defence).
-  - Visual feedback: Sub-pixel switch lever toggle animation or particle burst confirms activation.
-- **Bedrock Edition (PE Touch Controls & Gamepad):**
-  - Capacitive touch screens lack cursor crosshairs; tapping small switch hitboxes on mobile screens is prone to false touches or misclicks.
-  - **Required Touch Parity Strategy:** When a player right-clicks / taps anywhere on the tower structure (or holds interact on Bedrock), an accessible controller UI menu opens with two large, labelled toggle buttons:
-    - `[ Toggle Light ]` (Current: ON / OFF)
-    - `[ Toggle Defence ]` (Current: ON / OFF)
-  - This ensures 100% operational parity for mobile and console players without requiring pixel-perfect finger taps.
+The visual ArmorStand is not proof of zombie reachability, retaliation, one-debit-per-hit routing, target release or loot/XP suppression. Those are #6's dedicated end-to-end acceptance requirements. Broader combat, final pack adapters and reward logic must not infer them from rendering success.
 
-### 3.3 Compaction Ergonomics
-- The top finial pull-handle ($Y = 3.0\text{m}$) is visually retained from the compact lantern to communicate mechanical continuity.
-- However, manual compaction cannot require physically clicking the 3.0m finial from the ground (exceeds reach on uneven ground).
-- Manual compaction is executed via:
-  1. An explicit `[ Compact Lantern ]` button inside the controller GUI menu.
-  2. Shift-right-clicking the ground pedestal base ($Y=0$) by an authorized controller or administrator.
+## 6. Scoped Acceptance and Remaining Gate
 
----
+- [x] Editable compact/expanded Blockbench sources, textures and reproducible export instructions are included.
+- [x] Same compact/deployed representation rendered within declared dimensions on the recorded Java and Android Bedrock clients.
+- [x] Independent menu controls were operated with Java mouse and tested touch gestures, with input/layout limits recorded.
+- [x] Real LIGHT source, the declared collision shaft, compaction/removal, legacy cleanup, actual unload/reload and a clean restart were observed.
+- [x] A representation is selected for the next feasibility task, with unsupported cases and actual build deviations recorded.
+- [ ] Two-operator concurrency remains unexecuted; track production transition validation in #10.
+- [ ] Active Bedrock pack refusal and production delivery failure handling remain unexecuted; track in #23.
+- [ ] Zombie reachability/retaliation, one HP debit per melee hit, release after compaction/removal and proxy loot/XP suppression remain #6.
 
-## 4. World Light and Environmental Integrity
-
-### 4.1 Emissive Textures vs. Server-Side World Light
-- Emissive texture configurations (such as OptiFine/Iris emissive properties or Bedrock material shaders) only modify client-side fragment shader brightness. They make the core visually glow in the dark, but emit **zero real world block light** ($L = 0$).
-- Hostile mobs (Zombies, Skeletons, Creepers) continue to spawn on adjacent blocks if world block light remains zero.
-
-### 4.2 Real Light Implementation Strategy
-- When the **Light Toggle** is active:
-  - The server places a vanilla `LIGHT` block with light level 15 at block coordinate $Y = 2$ (inside the elevated combustion core).
-  - Placing the light source at $Y = 2$ provides maximum radial ground illumination ($r \approx 15$ blocks) and prevents mob spawning in the defensive perimeter.
-- When the **Light Toggle** is deactivated:
-  - The `LIGHT` block at $Y = 2$ is removed (replaced with `AIR`).
-
-### 4.3 Fluid Integrity (Water and Lava)
-- **Water Placement:** If the tower expands in water, placing a normal `LIGHT` block would destroy the water source block, creating an air pocket and disrupting fluid flow.
-  - The `LIGHT` block must be placed with property `waterlogged = true`.
-  - When compacted or destroyed, the `waterlogged` state preserves the water source block without fluid drainage.
-- **Lava Behaviour:** Vanilla `LIGHT` blocks cannot be waterlogged in lava. By default, placement and expansion in lava reject safely with private player feedback, in accordance with §2 of the Requirements.
-
-### 4.4 Multi-Block Piston Protection
-- Display entities and barrier blocks do not naturally bind to piston movement.
-- A piston pushing block $Y=1$ or $Y=2$ would displace the barrier while leaving floating display entities.
-- Piston listeners must listen for `BlockPistonExtendEvent` and `BlockPistonRetractEvent`, checking all three vertical coordinates ($Y=0, 1, 2$). Any piston movement intersecting the tower volume must be cancelled.
-
----
-
-## 5. Unsupported Cases and Engine Constraints
-
-1. **Hostile Mob AI with `Interaction` Entities:**
-   - In Paper 26.3, `Interaction` entities extend `Entity`, not `LivingEntity`.
-   - Vanilla mob targeting (`NearestAttackableTargetGoal`, `MeleeAttackGoal`, and `Mob#setTarget`) strictly requires a `LivingEntity`.
-   - Directly configuring a Zombie to target an `Interaction` entity throws an `IllegalArgumentException`.
-   - **Resolution for Task 1.4:** Mob targeting must use an invisible, invulnerable, loot/XP-suppressed living proxy (e.g. `ArmorStand` or custom mob), or custom Paper `MobGoals` targeting the block coordinate.
-
-2. **Standalone Emissive Textures Without Server Light:**
-   - Emissive textures alone cannot satisfy Gate G0 lighting requirements. A real vanilla `LIGHT` block is mandatory.
-
-3. **In-Flight Compaction Puller at 3m Height:**
-   - Physical click interaction on the finial handle at $Y=3.0\text{m}$ is unsupported for survival players on ground level. Compaction is routed through the pedestal collar / UI menu.
-
-4. **Upstream Geyser Display Entity Translation (Issue #3810):**
-   - Stock Geyser does not natively translate Java `ItemDisplay` or `BlockDisplay` packets. Bedrock crossplay requires either custom Bedrock entity definitions via Geyser's Custom Entity API, or an invisible `ArmorStand` holding the custom item.
-
-5. **Client Block Model Coordinate Bounds ($[-16, 32]$):**
-   - Vanilla Java client parser (`CuboidModelElement.Deserializer`) rejects any block model with coordinates outside $[-16.0, 32.0]$. Full-scale 3-block structures must be exported within legal bounds and scaled via entity display transforms, rather than authored directly with coordinates $> 32$.
-
----
-
-## 6. Gate G0 Feasibility Checklist
-
-### 6.1 Completed Prototype Assets and Specifications
-- [x] Master Blockbench models authored for compact base ($1 \times 1 \times 1$) and expanded tower ($1 \times 3 \times 1$).
-- [x] Editable `.bbmodel` source files committed in repository assets.
-- [x] Dual-client format exports generated: Java Block/Item JSON (normalized to legal $[0, 16]$ bounds) and Bedrock Geometry `.geo.json` (6 bones, 106 cubes).
-- [x] Seamless animated molten core texture and metadata created (`.mcmeta` and `flipbook_textures.json`).
-- [x] Candidate A vs. Candidate B evaluated; Candidate B proposed for expanded deployment subject to Geyser bridge translation.
-- [x] Interaction reach ergonomics analyzed for mouse raycast and PE touch controls.
-- [x] Real world light strategy documented (vanilla `LIGHT` block at $Y=2$, `waterlogged = true` handling).
-- [x] Multi-block piston and fluid constraints documented.
-- [x] Engine constraints (Geyser #3810, vanilla $[-16, 32]$ bounds, non-living mob targeting) documented.
-
-### 6.2 Pending Runtime Verification (Required to Close #5 and Pass Gate G0)
-- [x] Runnable prototype plugin commands/listeners implemented in `src/main/java/`; server execution remains pending. See [the opt-in fixture guide](RENDERING_PROTOTYPE.md).
-- [ ] Empirical placement and expanded footprint verified on Java 26.3 and Bedrock PE clients.
-- [ ] Real world light block placement and waterlogged preservation demonstrated in-game.
-- [ ] Compaction, collision, and complete cleanup demonstrated.
-- [ ] Chunk unload and server restart lifecycle verified without entity leaks.
-- [ ] Separate mouse raycast and PE touch/menu controls verified on actual client builds.
+This evidence supports scoped #5 rendering acceptance with the documented prototype limitations. It does not mark full G0 complete. G0 remains open until #6's zombie proof passes; production lifecycle, recovery, UI, environmental and pack-delivery gates remain separate.

@@ -1,8 +1,6 @@
 # Rendering Prototype
 
-Task #5 remains pending live evidence. This opt-in experiment connects the merged models to
-an operator-only disposable fixture. It does not implement production lantern items, HP,
-combat, repair, permissions policy, rewards or durable tower state.
+The core #5 rendering criteria have been exercised on the recorded Java/Android Bedrock pair. Results, actual build deviations and remaining checks are in [the evidence record](RENDERING_EVIDENCE.md). Full G0 remains open for #6. This opt-in experiment is an operator-only disposable fixture; it does not implement production lantern items, HP, combat, repair, permissions policy, rewards or durable tower state.
 
 ## Build and Delivery
 
@@ -175,34 +173,30 @@ Earlier prototype builds recorded shorthand `minecraft:barrier` while Paper seri
 
 ## Live Acceptance Worksheet
 
-All rows below are **pending**, including server execution. Automated checks do not
-establish client rendering, actual emitted light, input usability or lifecycle events.
-Record exact builds, plugin commit/JAR digest and pack digests with each run. Retain only
-generic geometry, steps, observations and limitations; exclude player names/UUIDs,
-server addresses/names, private paths/world identifiers, organizations and Discord data.
+Use this worksheet for each new build or client pair; prior outcomes are not automatic passes for a new run. The 2026-11-16 results below summarize the [recorded live evidence](RENDERING_EVIDENCE.md#3-executed-rendering-and-lifecycle-results). Retain exact builds, artifact digests, generic steps and observations only. Exclude identities, addresses, private world coordinates/paths, organizations, Discord data and raw dumps.
 
-| Test | Expected observation | Result |
+| Test | Expected observation | Recorded outcome |
 | :--- | :--- | :--- |
-| Geyser preflight and mobile stability | Selected-build gameplay settings and effective forced-pack behavior confirmed; Java/PE join and pack acceptance work; no mobile crash before or after fixture use. | Pending |
-| Default-disabled and nonoperator | No fixture mutation; generic help remains available; status respects its permission. | Pending |
-| Compact placement, Java and PE | Same compact model, centred in one block; source support unchanged. | Pending |
-| Expand, Java and PE | Same three-block model, correctly centred with no horizontal overhang, acceptable textures and no invisible/missing parts. | Pending |
-| Light/defence combinations | Both off, light only, flag only and both on remain independent; no combat occurs. | Pending |
-| Mouse and PE touch | Each menu action is independently selectable, including compaction; no menu item escapes or inventory loss. | Pending |
-| Real illumination | Actual block light changes with the LIGHT level, including adjacent dark blocks after updates; emissive appearance alone does not count. | Pending |
-| Collision | Player/mob movement collides with the declared two-block shaft; upper voxel difference is recorded. | Pending |
-| Obstructed/fluid/entity placement and expansion | Private rejection; compact fixture and unrelated blocks/entities unchanged. | Pending |
-| Bucket placement | Water/lava buckets from either hand cannot replace or waterlog fixture cells, including placement against an adjacent untracked block face. Unrelated bucket use still works. | Pending |
-| Repeat clicks and two operators | No duplicate components, partial deployment or inventory transfer. | Pending |
-| Compact/remove/cleanup | Visuals, barriers and LIGHT cells disappear appropriately; original air restored; support remains. | Pending |
-| Chunk unload/reload | Fixture is removed before unload; returning leaves no visual, barrier or light. | Pending |
-| Clean restart and disabled-after-restart | No stale entities/blocks, including deferred unloaded cleanup. | Pending |
-| External changed block | Changed block survives cleanup; conflict is retained/reported; no public identifiers in evidence. | Pending |
-| Missing/declined pack | Missing mapping/pack is a visual/configuration failure. With the integrated pack active, refusal prevents the expected join flow; record actual refusal/disconnect behavior and do not mark crossplay passed. | Pending |
+| Geyser preflight and join | Effective settings confirmed; Java/PE join with supplied packs. | Observed on the tested pair. Different Paper/Geyser builds from the planned pins are recorded; no general stability claim. |
+| Default-disabled and nonoperator | Creation denied; help safe; administrative status permission respected. | Observed command restrictions. Disabled-mode recovery binding audited; a retained-cell recovery specifically while disabled was not separately observed. |
+| Compact placement | Same centred 1 x 1 x 1 model with support preserved. | Observed Java/Bedrock. |
+| Expansion | Same centred 1 x 3 x 1 model and clearance. | Observed Java/Bedrock; compact shimmer tracked for #23. |
+| Light/defence combinations | All four independent combinations; no combat. | Observed. Defence remains a flag. |
+| Mouse and touch | All controls usable; no extraction or inventory loss. | Observed with tested touch selection/transfer gesture and ninth-slot layout limitation. No controller coverage. |
+| Real illumination | Level-15 source and surrounding block illumination change. | Observed. |
+| Collision | Two-block shaft blocks movement; upper cell remains light-only. | Observed movement collision. |
+| Obstruction/fluid/entity/overlap | Private rejection with no partial deployment or unrelated changes. | Observed solid apex, water, entity and overlap cases. Other fluid arrangements remain unsupported. |
+| Bucket placement | Water/lava in either hand cannot overwrite/waterlog fixture cells, including adjacent-face placement. | Observed reported cases. |
+| Repeated actions | Single-actor bursts do not duplicate components or extract items. | Observed. |
+| Two operators | Concurrent/stale actions do not corrupt transitions or duplicate components. | Pending; production transition follow-up #10. |
+| Compact/remove/cleanup | Visuals and recorded blocks removed; original air/support preserved. | Observed Java/Bedrock, including PR #40 legacy barrier recovery. |
+| Chunk unload/reload | Actual unload, then no stale fixture on return. | Observed unload verified by loaded-chunk count reaching zero. |
+| Clean restart | Active fixture cleaned during graceful shutdown; zero counts and clear volume after boot. | Observed. No abrupt-crash/power-loss claim. |
+| External edit | Foreign block preserved and conflict retained; controlled restoration then normal cleanup. | Observed; final counts zero/zero. |
+| Java pack disabled | Explicit visual fallback/failure; not a custom-rendering pass. | Observed carved-pumpkin fallback. |
+| Bedrock pack refusal | Refusal/disconnect observed under effective forced policy. | Policy audited only; actual refusal run pending, production delivery follow-up #23. |
 
-After the worksheet passes, update [rendering evidence](RENDERING_EVIDENCE.md) with
-observations and select/reject the tested candidate. Keep #5 open until its acceptance
-criteria are met. Only then start the dedicated zombie retaliation/damage proof in #6.
+Final recorded baseline is `active fixtures=0; cleanup cells=0` and an 8-byte empty manifest. Preserve any future conflicts rather than deleting the manifest. The evidence supports scoped #5 rendering acceptance; issue sign-off remains with the maintainer. #6 must still establish zombie targeting/damage/release before full G0 is complete. Production fluid preservation, simultaneous-user transactions and pack readiness are not established by this worksheet.
 
 ## Upstream Format References
 
