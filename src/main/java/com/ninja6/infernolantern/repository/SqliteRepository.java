@@ -1,0 +1,308 @@
+package com.ninja6.infernolantern.repository;
+
+import java.nio.file.*;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.*;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
+
+/** Async storage only. A committed database intent is not a committed Minecraft effect. */
+public final class SqliteRepository {
+    private final ArrayBlockingQueue<Job<?>> queue;
+    private final Object admission = new Object();
+    private final CompletableFuture<SqliteRepository> ready = new CompletableFuture<>();
+    private final CompletableFuture<Void> closed = new CompletableFuture<>();
+    private volatile boolean closing;
+    private volatile Throwable fatal;
+    private Connection connection;
+    private final Thread worker;
+    private record Job<T>(Callable<T> action, CompletableFuture<T> future) {
+        void run() { try { future.complete(action.call()); } catch(Throwable e) { future.completeExceptionally(e); if(e instanceof Error error)throw error; } }
+    }
+    private SqliteRepository(Path file,int capacity) {
+        if(capacity<1||capacity>100_000)throw new IllegalArgumentException("Queue capacity");
+        queue=new ArrayBlockingQueue<>(capacity);
+        worker=new Thread(()->run(file),"infernolantern-repository");
+        worker.setDaemon(true);
+        worker.start();
+    }
+    public static CompletableFuture<SqliteRepository> open(Path file,int queueCapacity) {
+        Objects.requireNonNull(file);
+        try { return new SqliteRepository(file.toAbsolutePath(),queueCapacity).ready; }
+        catch(RuntimeException e) { return CompletableFuture.failedFuture(e); }
+    }
+    private void run(Path file) {
+        Throwable failure=null;
+        try {
+            Path parent=file.getParent();if(parent!=null)Files.createDirectories(parent);
+            // Explicit registration also works from the isolated plugin class loader.
+            Class.forName("org.sqlite.JDBC");
+            var configuration=new org.sqlite.SQLiteConfig();
+            configuration.setBusyTimeout(5000);
+            configuration.setTransactionMode(org.sqlite.SQLiteConfig.TransactionMode.IMMEDIATE);
+            connection=configuration.createConnection("jdbc:sqlite:"+file);
+            try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT sqlite_version()")){
+                if(!rows.next()||!"3.54.1".equals(rows.getString(1)))throw new SQLException("Unexpected SQLite engine version");
+            }
+            Schema.initialize(connection);
+            validateStoredRows();
+            ready.complete(this);
+            while(fatal==null) {
+                Job<?> job=queue.poll(100,TimeUnit.MILLISECONDS);
+                if(job!=null)job.run();
+                synchronized(admission){if(closing&&queue.isEmpty())break;}
+            }
+            if(fatal!=null)throw new RepositoryException("Repository became unavailable",fatal);
+        }catch(Throwable e){failure=e;ready.completeExceptionally(e);}
+        finally {
+            synchronized(admission){closing=true;}
+            Job<?> job;while((job=queue.poll())!=null)job.future().completeExceptionally(failure==null?new RepositoryException("Repository closed"):failure);
+            try {if(connection!=null)connection.close();}catch(SQLException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
+            if(failure==null)closed.complete(null);else closed.completeExceptionally(failure);
+        }
+    }
+    private <T> CompletableFuture<T> submit(Callable<T> action) {
+        var future=new CompletableFuture<T>();
+        synchronized(admission){
+            if(closing||fatal!=null)future.completeExceptionally(new RepositoryException("Repository is closing or failed"));
+            else if(!queue.offer(new Job<>(action,future)))future.completeExceptionally(new RejectedExecutionException("Repository request queue is full; retry later"));
+        }
+        return future;
+    }
+    /** Stop admission, drain accepted requests, then close on the database thread. Never join on a world thread. */
+    public CompletableFuture<Void> closeAsync() { synchronized(admission){closing=true;} return closed; }
+    public int queuedRequests() {return queue.size();}
+    public CompletableFuture<String> sqliteVersion(){return submit(()->{try(var s=connection.createStatement();var r=s.executeQuery("SELECT sqlite_version()")){r.next();return r.getString(1);}});}
+    private <T> T transaction(Callable<T> action)throws Exception {
+        connection.setAutoCommit(false);
+        try {T result=action.call();connection.commit();return result;}
+        catch(Exception|Error e){try{connection.rollback();}catch(SQLException rollback){e.addSuppressed(rollback);fatal=e;}throw e;}
+        finally {try{connection.setAutoCommit(true);}catch(SQLException e){fatal=e;throw e;}}
+    }
+    private <T> T snapshot(Callable<T> action)throws Exception {
+        // Explicit DEFERRED read transaction keeps multi-query rows/components on one WAL snapshot.
+        try(var statement=connection.createStatement()){
+            statement.execute("BEGIN DEFERRED");
+            try{T value=action.call();statement.execute("COMMIT");return value;}
+            catch(Exception|Error failure){try{statement.execute("ROLLBACK");}catch(SQLException rollback){failure.addSuppressed(rollback);fatal=failure;}throw failure;}
+        }
+    }
+    private PreparedStatement statement(String sql,Object...values)throws SQLException {
+        var p=connection.prepareStatement(sql);
+        try {for(int i=0;i<values.length;i++)p.setObject(i+1,values[i] instanceof UUID id?id.toString():values[i]);return p;}
+        catch(SQLException e){p.close();throw e;}
+    }
+    private int update(String sql,Object...values)throws SQLException{try(var p=statement(sql,values)){return p.executeUpdate();}}
+    private static void require(boolean condition,String message){if(!condition)throw new RepositoryException.Conflict(message);}
+    private static UUID uuid(String value){return value==null?null:UUID.fromString(value);}
+    private static long next(long version){return Math.incrementExact(version);}
+    private static int page(int limit){if(limit<1||limit>MAX_PAGE)throw new IllegalArgumentException("Page size must be 1.."+MAX_PAGE);return limit;}
+
+    public CompletableFuture<Optional<Variant>> variant(String id){identifier(id);return submit(()->snapshot(()->Optional.ofNullable(loadVariant(id))));}
+    public CompletableFuture<Variant> createVariant(Variant variant){Objects.requireNonNull(variant);return submit(()->transaction(()->{
+        require(variant.rowVersion()==0,"New variant version must be zero");
+        update("INSERT INTO variants VALUES(?,?,?,?,?,?)",variant.id(),variant.definitionRevision(),variant.status().name(),variant.lastValidDefinition().version(),variant.lastValidDefinition().content(),0);
+        return variant;
+    }));}
+    public CompletableFuture<Variant> compareAndSetVariant(long expected,Variant replacement){Objects.requireNonNull(replacement);return submit(()->transaction(()->{
+        Variant old=loadVariant(replacement.id());require(old!=null&&old.rowVersion()==expected,"Stale variant");
+        require(replacement.rowVersion()==next(expected),"Next variant version required");
+        require(replacement.definitionRevision()>=old.definitionRevision(),"Definition revision regressed");
+        if(replacement.definitionRevision()==old.definitionRevision())require(replacement.lastValidDefinition().equals(old.lastValidDefinition()),"Definition changed without revision");
+        require(update("UPDATE variants SET definition_revision=?,status=?,payload_version=?,definition=?,row_version=? WHERE id=? AND row_version=?",replacement.definitionRevision(),replacement.status().name(),replacement.lastValidDefinition().version(),replacement.lastValidDefinition().content(),replacement.rowVersion(),replacement.id(),expected)==1,"Variant CAS lost");return replacement;
+    }));}
+    private Variant loadVariant(String id)throws SQLException{
+        try(var p=statement("SELECT * FROM variants WHERE id=?",id);var r=p.executeQuery()){
+            return r.next()?new Variant(r.getString("id"),r.getLong("definition_revision"),VariantStatus.valueOf(r.getString("status")),new Document(r.getInt("payload_version"),r.getString("definition")),r.getLong("row_version")):null;
+        }
+    }
+    public CompletableFuture<TowerSnapshot> createTower(Tower tower){Objects.requireNonNull(tower);return submit(()->transaction(()->{
+        require(tower.form()==Form.PORTABLE,"Initial storage insertion must be portable");
+        var state=new State(tower,null,List.of());SnapshotCodec.encode(state);
+        writeTower(state,0,null,true,0,null);return new TowerSnapshot(state,0,null);
+    }));}
+    public CompletableFuture<Optional<TowerSnapshot>> tower(UUID id){Objects.requireNonNull(id);return submit(()->snapshot(()->Optional.ofNullable(loadTower(id))));}
+    /** Paged snapshots have no shared live collection or database cursor. UUID lexical cursor is exclusive. */
+    public CompletableFuture<List<TowerSnapshot>> towers(UUID after,int limit){page(limit);return submit(()->snapshot(()->{
+        var result=new ArrayList<TowerSnapshot>();
+        for(UUID id:ids("SELECT id FROM towers WHERE id>? ORDER BY id LIMIT ?",after==null?"":after.toString(),limit))result.add(loadTower(id));
+        return List.copyOf(result);
+    }));}
+    /** Only data within an unchanged representation can use direct CAS. Form/identity/manifest changes require a journal. */
+    public CompletableFuture<TowerSnapshot> compareAndSetTower(long expected,Tower replacement){Objects.requireNonNull(replacement);return submit(()->transaction(()->{
+        TowerSnapshot old=ownedTower(replacement.id(),expected,null);
+        Tower before=old.state().tower();
+        require(sameRepresentation(before,replacement),"Representation changes require durable intent");
+        State state=new State(replacement,old.state().ground(),old.state().components());
+        writeTower(state,next(expected),null,false,expected,null);return new TowerSnapshot(state,next(expected),null);
+    }));}
+    private static boolean sameRepresentation(Tower a,Tower b){return a.id().equals(b.id())&&a.variantId().equals(b.variantId())&&a.form()==b.form()&&a.generation()==b.generation()&&a.deploymentRevision()==b.deploymentRevision()&&Objects.equals(a.controller(),b.controller())&&Objects.equals(a.position(),b.position());}
+    private TowerSnapshot ownedTower(UUID id,long version,UUID operation)throws Exception{
+        TowerSnapshot value=loadTower(id);require(value!=null&&value.rowVersion()==version&&Objects.equals(value.activeOperation(),operation),"Stale tower or operation ownership");return value;
+    }
+    private TowerSnapshot loadTower(UUID id)throws Exception{
+        try(var p=statement("SELECT * FROM towers WHERE id=?",id);var r=p.executeQuery()){
+            if(!r.next())return null;
+            String world=r.getString("world");
+            Position position=world==null?null:new Position(uuid(world),r.getInt("x"),r.getInt("y"),r.getInt("z"),r.getString("orientation"));
+            Tower t=new Tower(uuid(r.getString("id")),r.getString("variant_id"),r.getDouble("hp"),r.getDouble("maximum_hp"),Form.valueOf(r.getString("form")),r.getLong("generation"),r.getLong("deployment_revision"),uuid(r.getString("controller")),position,r.getBoolean("light"),r.getBoolean("defence"),r.getLong("expand_after"),r.getLong("repair_after"));
+            long version=r.getLong("row_version");UUID operation=uuid(r.getString("active_operation"));
+            Ground ground=null;
+            try(var gp=statement("SELECT * FROM ground_representations WHERE tower_id=?",id);var gr=gp.executeQuery()){
+                if(gr.next()){
+                    if(gr.getLong("generation")!=t.generation()||gr.getInt("payload_version")!=1)throw new RepositoryException("Ground snapshot mismatch");
+                    ground=new Ground(uuid(gr.getString("entity_id")),uuid(gr.getString("world")),gr.getInt("chunk_x"),gr.getInt("chunk_z"),uuid(gr.getString("delivery_operation")),gr.getString("status"));
+                }
+            }
+            var components=new ArrayList<Component>();
+            try(var mp=statement("SELECT * FROM manifest_components WHERE tower_id=? ORDER BY component_id LIMIT ?",id,MAX_COMPONENTS+1);var mr=mp.executeQuery()){
+                while(mr.next()){
+                    if(mr.getLong("deployment_revision")!=t.deploymentRevision()||mr.getInt("payload_version")!=1)throw new RepositoryException("Manifest snapshot mismatch");
+                    components.add(new Component(mr.getString("component_id"),ComponentKind.valueOf(mr.getString("kind")),uuid(mr.getString("world")),mr.getInt("x"),mr.getInt("y"),mr.getInt("z"),mr.getString("original_state"),mr.getString("expected_state"),uuid(mr.getString("entity_id")),mr.getString("entity_type")));
+                }
+            }
+            return new TowerSnapshot(new State(t,ground,components),version,operation);
+        }
+    }
+    private void writeTower(State state,long version,UUID operation,boolean insert,long expectedVersion,UUID expectedOperation)throws Exception{
+        SnapshotCodec.encode(state);Tower t=state.tower();Position p=t.position();
+        Object[] values={t.variantId(),t.hp(),t.maximumHp(),t.form().name(),t.generation(),t.deploymentRevision(),t.controller(),p==null?null:p.world(),p==null?null:p.x(),p==null?null:p.y(),p==null?null:p.z(),p==null?null:p.orientation(),t.light(),t.defence(),t.expandAfter(),t.repairAfter(),version,operation,t.id()};
+        if(insert)update("INSERT INTO towers(variant_id,hp,maximum_hp,form,generation,deployment_revision,controller,world,x,y,z,orientation,light,defence,expand_after,repair_after,row_version,active_operation,id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",values);
+        else {
+            Object[] guarded=Arrays.copyOf(values,values.length+2);guarded[values.length]=expectedVersion;guarded[values.length+1]=expectedOperation;
+            require(update("UPDATE towers SET variant_id=?,hp=?,maximum_hp=?,form=?,generation=?,deployment_revision=?,controller=?,world=?,x=?,y=?,z=?,orientation=?,light=?,defence=?,expand_after=?,repair_after=?,row_version=?,active_operation=? WHERE id=? AND row_version=? AND active_operation IS ?",guarded)==1,"Tower CAS lost");
+        }
+        update("DELETE FROM ground_representations WHERE tower_id=?",t.id());
+        update("DELETE FROM manifest_components WHERE tower_id=?",t.id());
+        Ground g=state.ground();if(g!=null)update("INSERT INTO ground_representations VALUES(?,?,?,?,?,?,?,?,1)",t.id(),t.generation(),g.entity(),g.world(),g.chunkX(),g.chunkZ(),g.deliveryOperation(),g.status());
+        for(Component c:state.components())update("INSERT INTO manifest_components VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)",t.id(),t.deploymentRevision(),c.id(),c.kind().name(),c.world(),c.x(),c.y(),c.z(),c.originalState(),c.expectedState(),c.entity(),c.entityType());
+    }
+
+    public CompletableFuture<Operation> beginIntent(Intent intent){Objects.requireNonNull(intent);return submit(()->transaction(()->{
+        Operation existing=loadOperation(intent.id());
+        if(existing!=null){require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
+        TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
+        require(before.generation()==intent.expectedGeneration()&&before.deploymentRevision()==intent.expectedDeploymentRevision(),"Stale representation generation/revision");
+        require(before.variantId().equals(after.variantId())&&after.generation()>=before.generation()&&after.deploymentRevision()>=before.deploymentRevision(),"Intent identity/revision regression");
+        byte[] beforeBytes=SnapshotCodec.encode(tower.state()),afterBytes=SnapshotCodec.encode(intent.after());
+        update("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,0,?)",intent.id(),intent.towerId(),intent.expectedRowVersion(),intent.expectedGeneration(),intent.expectedDeploymentRevision(),intent.kind(),beforeBytes,afterBytes,intent.effects().version(),intent.effects().content(),Phase.INTENT.name(),"Intent recorded; world effects unverified");
+        require(update("UPDATE towers SET active_operation=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",intent.id(),next(intent.expectedRowVersion()),intent.towerId(),intent.expectedRowVersion())==1,"Intent CAS lost");
+        return loadOperation(intent.id());
+    }));}
+    public CompletableFuture<Optional<Operation>> operation(UUID id){Objects.requireNonNull(id);return submit(()->snapshot(()->Optional.ofNullable(loadOperation(id))));}
+    public CompletableFuture<List<Operation>> pendingOperations(UUID after,int limit){page(limit);return submit(()->snapshot(()->{
+        var result=new ArrayList<Operation>();
+        for(UUID id:ids("SELECT id FROM operations WHERE id>? AND phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING') ORDER BY id LIMIT ?",after==null?"":after.toString(),limit))result.add(loadOperation(id));
+        return List.copyOf(result);
+    }));}
+    public CompletableFuture<Operation> advanceOperation(UUID id,long expected,Phase from,Phase to,String evidence){Objects.requireNonNull(from);Objects.requireNonNull(to);text(evidence,MAX_PAYLOAD);return submit(()->transaction(()->{
+        Operation op=requireOperation(id,expected);require(op.phase()==from,"Stale operation phase");
+        boolean allowed=(from==Phase.INTENT&&(to==Phase.EFFECTS_APPLIED||to==Phase.RECONCILING))||(from==Phase.EFFECTS_APPLIED&&to==Phase.RECONCILING)||(from==Phase.RECONCILING&&to==Phase.EFFECTS_APPLIED);
+        require(allowed,"Invalid phase progression");ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),id);
+        require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=? AND phase=?",to.name(),next(expected),evidence,id,expected,from.name())==1,"Operation CAS lost");return loadOperation(id);
+    }));}
+    /** Caller must have verified physical effects on the owning scheduler. This method only commits database state. */
+    public CompletableFuture<Operation> completeOperation(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false);}
+    /** Caller-supplied reconciliation evidence is not database proof of restored world/player saves. */
+    public CompletableFuture<Operation> resolveRollback(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,true);}
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback){Objects.requireNonNull(id);return submit(()->transaction(()->{
+        Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
+        if(op.phase()==terminal)return op; // Same immutable operation identity, no effects are replayed.
+        require(op.rowVersion()==expected&&op.phase()==(rollback?Phase.RECONCILING:Phase.EFFECTS_APPLIED),"Operation is not ready for completion");
+        ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),id);
+        Escrow escrow=loadEscrow(id);
+        if(escrow!=null)require(rollback?(escrow.payment()==PaymentPhase.REFUNDED&&escrow.hpPhase()==HpPhase.NOT_APPLIED):(escrow.payment()==PaymentPhase.COMMITTED&&escrow.hpPhase()==HpPhase.APPLIED),"Escrow not settled; retain reconciliation");
+        writeTower(rollback?op.before():op.intent().after(),Math.addExact(op.intent().expectedRowVersion(),2),null,false,next(op.intent().expectedRowVersion()),id);
+        require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=?",terminal.name(),next(expected),evidence,id,expected)==1,"Completion CAS lost");return loadOperation(id);
+    }));}
+    private Operation requireOperation(UUID id,long version)throws Exception{Operation op=loadOperation(id);require(op!=null&&op.rowVersion()==version&&op.pending(),"Stale or terminal operation");return op;}
+    private Operation loadOperation(UUID id)throws Exception{
+        try(var p=statement("SELECT * FROM operations WHERE id=?",id);var r=p.executeQuery()){
+            if(!r.next())return null;
+            State before=SnapshotCodec.decode(r.getBytes("before_state")),after=SnapshotCodec.decode(r.getBytes("after_state"));
+            Intent intent=new Intent(uuid(r.getString("id")),uuid(r.getString("tower_id")),r.getLong("expected_version"),r.getLong("expected_generation"),r.getLong("expected_revision"),r.getString("kind"),after,new Document(r.getInt("effects_version"),r.getString("effects")));
+            if(!before.tower().id().equals(intent.towerId())||before.tower().generation()!=intent.expectedGeneration()||before.tower().deploymentRevision()!=intent.expectedDeploymentRevision())throw new RepositoryException("Corrupt journal ownership");
+            return new Operation(intent,before,Phase.valueOf(r.getString("phase")),r.getLong("row_version"),r.getString("evidence"));
+        }
+    }
+
+    /** Award metadata never creates/delivers an item; quantity is not bounded by a gameplay tower count. */
+    public CompletableFuture<Award> saveAward(Award award,long expected){Objects.requireNonNull(award);return submit(()->transaction(()->{
+        Award old=loadAward(award.id());
+        if(expected==-1){
+            require(old==null&&award.rowVersion()==0&&award.status()!=AwardStatus.DELIVERED,"New award must be pending or paused");
+            update("INSERT INTO awards VALUES(?,?,?,?,?,?,?,1)",award.id(),award.sourceKey(),award.recipient(),award.variantId(),award.quantity(),award.status().name(),0);
+        }else{
+            require(old!=null&&old.rowVersion()==expected&&award.rowVersion()==next(expected),"Award CAS lost");
+            require(old.sourceKey().equals(award.sourceKey())&&old.recipient().equals(award.recipient())&&old.variantId().equals(award.variantId())&&old.quantity()==award.quantity(),"Award provenance is immutable");
+            if(award.status()==AwardStatus.DELIVERED)require(awardCount(award.id())==award.quantity(),"Award identities incomplete");
+            require(update("UPDATE awards SET status=?,row_version=? WHERE id=? AND row_version=?",award.status().name(),award.rowVersion(),award.id(),expected)==1,"Award CAS lost");
+        }return award;
+    }));}
+    /** Append a bounded batch of existing, unclaimed identities, atomically with award CAS. */
+    public CompletableFuture<Award> associateAwardTowers(UUID awardId,long expected,Map<UUID,Long> towerVersions){
+        Map<UUID,Long> versions=Map.copyOf(towerVersions);page(versions.size());
+        return submit(()->transaction(()->{
+            Award award=loadAward(awardId);require(award!=null&&award.rowVersion()==expected&&award.status()!=AwardStatus.DELIVERED,"Stale or delivered award");
+            require(awardCount(awardId)<=award.quantity()-versions.size(),"Award quantity exceeded");
+            for(var pair:versions.entrySet()){
+                TowerSnapshot tower=ownedTower(pair.getKey(),pair.getValue(),null);
+                require(tower.state().tower().variantId().equals(award.variantId()),"Award variant mismatch");
+                update("INSERT INTO award_towers VALUES(?,?)",awardId,pair.getKey());
+            }
+            require(update("UPDATE awards SET row_version=? WHERE id=? AND row_version=?",next(expected),awardId,expected)==1,"Award CAS lost");
+            return loadAward(awardId);
+        }));
+    }
+    public CompletableFuture<List<UUID>> awardTowerIds(UUID awardId,UUID after,int limit){Objects.requireNonNull(awardId);page(limit);return submit(()->snapshot(()->List.copyOf(ids("SELECT tower_id AS id FROM award_towers WHERE award_id=? AND tower_id>? ORDER BY tower_id LIMIT ?",awardId,after==null?"":after.toString(),limit))));}
+    private long awardCount(UUID id)throws SQLException{try(var p=statement("SELECT count(*) FROM award_towers WHERE award_id=?",id);var r=p.executeQuery()){r.next();return r.getLong(1);}}
+    public CompletableFuture<Optional<Award>> award(UUID id){Objects.requireNonNull(id);return submit(()->snapshot(()->Optional.ofNullable(loadAward(id))));}
+    public CompletableFuture<Optional<Award>> awardBySource(String source,UUID recipient,String variant){text(source,1024);Objects.requireNonNull(recipient);identifier(variant);return submit(()->snapshot(()->{
+        List<UUID> ids=ids("SELECT id FROM awards WHERE source_key=? AND recipient=? AND variant_id=?",source,recipient,variant);return ids.isEmpty()?Optional.empty():Optional.of(loadAward(ids.getFirst()));
+    }));}
+    private Award loadAward(UUID id)throws Exception{
+        try(var p=statement("SELECT * FROM awards WHERE id=?",id);var r=p.executeQuery()){
+            if(!r.next())return null;
+            Award award=new Award(uuid(r.getString("id")),r.getString("source_key"),uuid(r.getString("recipient")),r.getString("variant_id"),r.getLong("quantity"),AwardStatus.valueOf(r.getString("status")),r.getLong("row_version"));
+            long count=awardCount(id);
+            if(r.getInt("payload_version")!=1||count>award.quantity()||(award.status()==AwardStatus.DELIVERED&&count!=award.quantity()))throw new RepositoryException("Award allocation mismatch");
+            try(var links=statement("SELECT 1 FROM award_towers a JOIN towers t ON a.tower_id=t.id WHERE a.award_id=? AND t.variant_id<>? LIMIT 1",id,award.variantId());var rows=links.executeQuery()){if(rows.next())throw new RepositoryException("Award variant link mismatch");}
+            return award;
+        }
+    }
+    /** Exact resource bytes must be captured on the owning scheduler before this call. */
+    public CompletableFuture<Escrow> saveEscrow(Escrow escrow,long expected,long operationVersion){Objects.requireNonNull(escrow);return submit(()->transaction(()->{
+        Operation op=requireOperation(escrow.operation(),operationVersion);
+        require(op.intent().towerId().equals(escrow.towerId())&&op.intent().expectedDeploymentRevision()==escrow.deploymentRevision(),"Escrow operation mismatch");
+        ownedTower(escrow.towerId(),next(op.intent().expectedRowVersion()),escrow.operation());
+        Escrow old=loadEscrow(escrow.operation());
+        if(expected==-1){require(old==null&&escrow.rowVersion()==0,"Escrow already exists");update("INSERT INTO repair_escrows VALUES(?,?,?,?,?,?,?,?,?,1)",escrow.operation(),escrow.towerId(),escrow.deploymentRevision(),escrow.contributor(),escrow.resourceFormat(),escrow.resources().copy(),escrow.payment().name(),escrow.hpPhase().name(),0);}
+        else {
+            require(old!=null&&old.rowVersion()==expected&&escrow.rowVersion()==next(expected),"Escrow CAS lost");
+            require(old.towerId().equals(escrow.towerId())&&old.deploymentRevision()==escrow.deploymentRevision()&&old.contributor().equals(escrow.contributor())&&old.resourceFormat()==escrow.resourceFormat()&&old.resources().equals(escrow.resources()),"Escrow provenance/resources immutable");
+            require(update("UPDATE repair_escrows SET payment=?,hp_phase=?,row_version=? WHERE operation_id=? AND row_version=?",escrow.payment().name(),escrow.hpPhase().name(),escrow.rowVersion(),escrow.operation(),expected)==1,"Escrow CAS lost");
+        }return escrow;
+    }));}
+    public CompletableFuture<Optional<Escrow>> escrow(UUID operation){Objects.requireNonNull(operation);return submit(()->snapshot(()->Optional.ofNullable(loadEscrow(operation))));}
+    private Escrow loadEscrow(UUID id)throws SQLException{
+        try(var p=statement("SELECT * FROM repair_escrows WHERE operation_id=?",id);var r=p.executeQuery()){
+            if(!r.next())return null;if(r.getInt("payload_version")!=1)throw new SQLException("Unknown escrow payload version");
+            return new Escrow(uuid(r.getString("operation_id")),uuid(r.getString("tower_id")),r.getLong("deployment_revision"),uuid(r.getString("contributor")),r.getInt("resource_format"),new ResourceBytes(r.getBytes("resources")),PaymentPhase.valueOf(r.getString("payment")),HpPhase.valueOf(r.getString("hp_phase")),r.getLong("row_version"));
+        }
+    }
+    private List<UUID> ids(String sql,Object...values)throws SQLException{var result=new ArrayList<UUID>();try(var p=statement(sql,values);var r=p.executeQuery()){while(r.next())result.add(uuid(r.getString("id")));}return result;}
+    private void validateStoredRows()throws Exception{
+        try(var s=connection.createStatement();var r=s.executeQuery("PRAGMA foreign_key_check")){if(r.next())throw new SQLException("Database reference integrity failed");}
+        for(String table:List.of("variants","towers","operations","awards","repair_escrows")){
+            String column=table.equals("repair_escrows")?"operation_id":"id";String cursor="";
+            while(true){
+                var keys=new ArrayList<String>();try(var p=statement("SELECT "+column+" FROM "+table+" WHERE "+column+">? ORDER BY "+column+" LIMIT ?",cursor,MAX_PAGE);var r=p.executeQuery()){while(r.next())keys.add(r.getString(1));}
+                if(keys.isEmpty())break;
+                for(String key:keys){
+                    switch(table){case "variants"->loadVariant(key);case "towers"->{TowerSnapshot t=loadTower(uuid(key));if(t.activeOperation()!=null){Operation op=loadOperation(t.activeOperation());require(op!=null&&op.pending()&&op.intent().towerId().equals(t.state().tower().id())&&t.rowVersion()==next(op.intent().expectedRowVersion()),"Invalid journal ownership");}}case "operations"->{Operation op=loadOperation(uuid(key));if(op.pending())ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),op.intent().id());}case "awards"->loadAward(uuid(key));case "repair_escrows"->loadEscrow(uuid(key));default->throw new IllegalStateException();}
+                }
+                cursor=keys.getLast();
+            }
+        }
+    }
+}
