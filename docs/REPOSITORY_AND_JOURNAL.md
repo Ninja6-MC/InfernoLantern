@@ -1,6 +1,12 @@
 # Authoritative Repository and Operation Journal
 
-Task #8 implements a server-independent storage foundation. It is **not wired into the current prototype entry point**: starting the existing plugin does not open this database, import `prototype-cleanup.bin`, persist prototype HP, or activate production gameplay. The rendering/combat experiments retain their existing cleanup mechanism. The Java APIs are internal implementation contracts, not a public acquisition or third-party integration API. Later item/transition/reconciliation tasks must connect the repository's readiness and pending-operation gates before enabling world mutations.
+Task #8 implements a server-independent storage foundation. The default-off disposable
+[item harness](ITEM_LIFECYCLE.md) now opens a separate `item-prototype.db` when testing
+is enabled or an existing test store needs protection. The rendering/combat experiments
+retain their separate `prototype-cleanup.bin` mechanism; no prototype HP or cleanup data
+is imported. These Java APIs are internal implementation contracts, not a public
+acquisition or third-party integration API. Production transitions and reconciliation
+remain gated by their later tasks and recorded native evidence.
 
 ## Storage and Deployment Boundary
 
@@ -44,9 +50,9 @@ Award metadata cannot mutate tower state. Appending identities requires current 
 
 All reads and writes are admitted through one bounded queue. Capacity is an explicit technical setting (1..100,000 requests); a full queue returns an exceptional future with `RejectedExecutionException` before admission. Callers must retain their source state and retry/reject privately as appropriate. This does not limit how many towers may exist. Reads return immutable snapshots and at most 256 rows per request, using an exclusive lexical UUID cursor. Pagination across different requests is not one global database snapshot. Per-state manifests have a technical bound of 4,096 components and 1 MiB encoded state; resource bytes are bounded to 1 MiB. Oversized requests fail before their world effects may begin.
 
-Completion callbacks may run on the database thread or immediately on the attaching caller if a future already completed. Never use `join()`/`get()` from a world thread or access live world/player objects in a database callback. `WorldScheduler` accepts an immutable world/chunk anchor; `PaperWorldScheduler` marshals an action through Paper's task scheduler and rejects missing/unloaded owner chunks without loading them. Its adapter is compiled here; actual gameplay scheduling integration is later work. It is not a Folia compatibility claim.
+Completion callbacks may run on the database thread or immediately on the attaching caller if a future already completed. Never use `join()`/`get()` from a world thread or access live world/player objects in a database callback. `WorldScheduler` accepts an immutable world/chunk anchor; `PaperWorldScheduler` marshals an action through Paper's task scheduler and rejects missing/unloaded owner chunks without loading them. The disposable item harness uses this adapter; production gameplay scheduling remains later work. It is not a Folia compatibility claim.
 
-`closeAsync()` immediately stops admission and returns a future; it does not wait or perform I/O on its caller. Accepted requests drain in order, then the worker closes its connection and completes that future. Requests arriving after close fail. A caller coordinating process shutdown must await that future outside world threads; process termination can discard requests that never committed. Completed database commits and uncommitted queued requests must not be conflated. Close the world-scheduler adapter during owner-thread plugin disable so abandoned callbacks fail rather than waiting forever. No current prototype lifecycle is changed by this unwired service.
+`closeAsync()` immediately stops admission and returns a future; it does not wait or perform I/O on its caller. Accepted requests drain in order, then the worker closes its connection and completes that future. Requests arriving after close fail. A caller coordinating process shutdown must await that future outside world threads; process termination can discard requests that never committed. Completed database commits and uncommitted queued requests must not be conflated. Close the world-scheduler adapter during owner-thread plugin disable so abandoned callbacks fail rather than waiting forever. The rendering/combat cleanup lifecycle is unchanged; the item harness closes its independent store asynchronously.
 
 ## Repository Verification
 

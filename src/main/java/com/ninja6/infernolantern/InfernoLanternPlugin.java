@@ -1,6 +1,8 @@
 package com.ninja6.infernolantern;
 
 import com.ninja6.infernolantern.prototype.RenderingPrototype;
+import com.ninja6.infernolantern.prototype.ItemPrototype;
+import com.ninja6.infernolantern.item.GroundPolicy;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -14,6 +16,8 @@ import java.util.Locale;
 /** Plugin entry point and opt-in feasibility fixture wiring. */
 public final class InfernoLanternPlugin extends JavaPlugin {
     private RenderingPrototype prototype;
+    private ItemPrototype items;
+    private boolean itemCreationEnabled() { return getConfig().getBoolean("prototype.enabled") && getConfig().getBoolean("prototype.item-lifecycle.enabled"); }
 
     @Override
     public void onEnable() {
@@ -30,11 +34,16 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         } catch (IOException | RuntimeException failure) {
             getLogger().severe("Prototype cleanup manifest could not be loaded. Preserve it and inspect locally before testing.");
             getServer().getPluginManager().disablePlugin(this);
+            return;
         }
+        items = new ItemPrototype(this, this::itemCreationEnabled, new GroundPolicy(
+                getConfig().getBoolean("prototype.item-lifecycle.survives-fire-lava", true),
+                getConfig().getBoolean("prototype.item-lifecycle.despawns", true)));
     }
 
     @Override
     public void onDisable() {
+        if (items != null) items.close();
         if (prototype != null) prototype.close();
     }
 
@@ -46,15 +55,19 @@ public final class InfernoLanternPlugin extends JavaPlugin {
                 sender.sendMessage("/" + label + " help");
                 if (sender.hasPermission("infernolantern.admin.status")) sender.sendMessage("/" + label + " status");
                 if (sender.isOp() && getConfig().getBoolean("prototype.enabled")) sender.sendMessage("/" + label + " prototype [place|remove|cleanup] - disposable rendering fixtures");
+                if (sender.isOp() && itemCreationEnabled()) sender.sendMessage("/" + label + " prototype item - one disposable item in an empty selected slot");
             }
             case "status" -> {
                 if (!sender.hasPermission("infernolantern.admin.status")) sender.sendMessage("You do not have permission to inspect status.");
                 else sender.sendMessage("Rendering prototype: " + (getConfig().getBoolean("prototype.enabled") ? "enabled" : "disabled")
-                        + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + prototype.combatStatus() + ". Runtime feasibility evidence pending.");
+                        + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + prototype.combatStatus() + ". Runtime feasibility evidence pending. Item prototype: " + items.status() + ".");
             }
             case "prototype" -> {
                 if (!(sender instanceof Player player)) sender.sendMessage("Prototype fixtures require a player session.");
-                else prototype.command(player, Arrays.copyOfRange(args, 1, args.length));
+                else if (args.length >= 2 && args[1].equalsIgnoreCase("item")) {
+                    if (args.length != 2) player.sendMessage("Use /" + label + " prototype item with an empty selected hotbar slot.");
+                    else items.command(player);
+                } else prototype.command(player, Arrays.copyOfRange(args, 1, args.length));
             }
             default -> sender.sendMessage("Unknown action. Use /" + label + " help.");
         }
@@ -70,7 +83,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             return actions.stream().filter(action -> action.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("prototype") && sender.isOp() && getConfig().getBoolean("prototype.enabled"))
-            return List.of("place", "remove", "cleanup").stream().filter(action -> action.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
+            return (itemCreationEnabled() ? List.of("place", "remove", "cleanup", "item") : List.of("place", "remove", "cleanup")).stream().filter(action -> action.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         return List.of();
     }
 }

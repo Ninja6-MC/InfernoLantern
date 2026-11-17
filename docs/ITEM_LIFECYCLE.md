@@ -1,12 +1,13 @@
 # Unique Item and Ground Lifecycle Foundation
 
-Task #9 is **partial**. This change adds internal services and a compiled Paper adapter;
-it does not register them in the plugin entry point, open a production database, issue
-items, change the existing rendering/combat experiments, or introduce a command or
-permission. Runtime wiring and disposable fixture issuance await a separate interface
-decision. All native/live acceptance below is pending. Task #10 still owns world
-placement; #11 owns restart/save-boundary reconciliation; #13 owns the variant catalog
-and final configuration; #24 owns production awards. No playable release is claimed.
+Task #9 is **partial**. The approved default-off item harness now wires the repository,
+services and Paper adapter for disposable runtime testing. `/infernolantern prototype item`
+(alias `/ilantern prototype item`) requires an operator, both creation gates, a ready store
+and an empty selected slot. It does not implement production awards or world placement.
+All native/live acceptance below is pending. Task #10 owns world placement; #11 owns
+restart/save-boundary reconciliation; #13 owns the final variant catalog/configuration;
+#24 owns production awards. Existing rendering/combat experiments and their cleanup
+manifest remain separate. See [the live test brief](ITEM_LIVE_TEST_BRIEF.md).
 
 ## Identity Contract
 
@@ -72,10 +73,26 @@ The service never waits for database futures from a world thread.
 
 ## Paper Adapter and Staging
 
-The adapter is owner-thread-only and currently unwired. Its caller must provide an
-initialized repository, scheduler, catalog policy function and controlled lifecycle;
-close the adapter/service and scheduler before closing the repository asynchronously.
-Do not use an adapter instance as a production startup-reconciliation gate.
+The adapter is owner-thread-only. The disposable harness installs a fail-closed token
+guard before asynchronous database opening. Fresh startup with creation disabled does not
+create a database; an existing store is still opened so prior items remain protected.
+Open/schema failure or any pending journal keeps mutations unavailable. The harness also
+pauses when an unactivated inventory/storage delivery marker is observed. It never scans
+all player saves or assigns a permanent holder. Close the adapter/services and scheduler
+before closing the repository asynchronously; never block the world thread waiting for I/O.
+This is a conservative prototype readiness gate, not production reconciliation.
+
+The test-only variant is `prototype.item-fixture`, with a plain PAPER appearance, zero
+initial HP, maximum HP 100, no controller and no grants. These values identify disposable
+fixtures only, not a selected production variant/balance. The command captures session,
+selected empty slot and exact staged bytes. `FixtureDelivery` durably creates the row and
+intent before writing an unavailable inventory item. Temporary item PDC `item_delivery`
+contains the operation UUID; it is separate from the four valid identity fields, and the
+identity reader rejects any item carrying it. After staged-item verification, the row is
+completed before a final owner/session/slot check removes that marker. A failed activation
+records a separate frozen review intent; ambiguous items remain unavailable across restart.
+No startup path clears the marker or replays delivery. Multiple concurrent issuance attempts
+for one player are rejected locally. This is not an idempotent production award contract.
 
 A manual drop cancels vanilla mutation so Paper retains the original inventory item.
 The following owner tick captures the exact restored selected slot. Inventory/cursor
@@ -153,8 +170,8 @@ failure. PDC tests cover exact field names/types, malformed/partial/newer schema
 non-stackable issuance and template immutability. These are service/boundary tests;
 they do not execute Paper, vanilla physics, inventory/death events or a client.
 
-All rows below are **PENDING LIVE**, and runtime wiring/fixture setup must exist before
-executing them. Use disposable identities and record only generic versions, artifact
+All rows below are **PENDING LIVE**. The approved disposable harness prepares item-only
+execution; native placement row 3 remains blocked on #10. Use disposable identities and record only generic versions, artifact
 hashes, synthetic counters and pass/fail findings. Do not publish player/server identity,
 world identifiers, real coordinates, host details, private configuration or raw logs.
 
@@ -173,7 +190,7 @@ world identifiers, real coordinates, host details, private configuration or raw 
 | 11 | Fault injection at every SQL/effect/scheduler/disable boundary leaves at most one usable row. Shutdown never joins database I/O on the world thread. Verify no orphan usable staging entities, no global item changes, and precise quarantine records for unresolved save differences. |
 | 12 | Remove disposable items only after authoritative inspection, preserve unresolved evidence, verify no current test ground entities or pending transitions remain, then disable fixture creation. This is separate from `prototype-cleanup.bin` teardown. |
 
-Task #9 remains open until runtime integration and its actual acceptance evidence pass.
+Task #9 remains open until its actual acceptance evidence passes.
 Unresolved save differences stay frozen for #11; they are not counted as a passed recovery
 scenario merely because no duplicate was immediately visible.
 

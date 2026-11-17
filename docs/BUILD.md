@@ -28,3 +28,13 @@ The build-context name must be observed on a real passing PR before task #32 add
 - [Official distribution and wrapper checksums](https://gradle.org/release-checksums/)
 - [Paper plugin descriptor](https://docs.papermc.io/paper/dev/plugin-yml/)
 - [Gradle setup action wrapper validation](https://github.com/gradle/actions/blob/main/docs/wrapper-validation.md)
+
+## Disposable Item Harness Kit
+
+`./gradlew clean itemTestKit --offline --no-daemon` runs the repository checks and writes
+one checked candidate JAR, source/build metadata, generic fixture configuration example,
+service worksheet, live test brief and `SHA256SUMS` to ignored `build/item-test-kit/`.
+The builder performs no server access or deployment. Rebuild after the final source commit
+so the JAR version and `BUILD_INFO.json` identify that exact candidate. No resource pack
+is needed for the generic PAPER fixture. Native tests and #10 placement remain pending;
+see [the live test brief](ITEM_LIVE_TEST_BRIEF.md).
