@@ -38,3 +38,8 @@ The builder performs no server access or deployment. Rebuild after the final sou
 so the JAR version and `BUILD_INFO.json` identify that exact candidate. No resource pack
 is needed for the generic PAPER fixture. Native tests and #10 placement remain pending;
 see [the live test brief](ITEM_LIVE_TEST_BRIEF.md).
+
+The SQLite driver is a nested, SHA-256-pinned private dependency. Main code has no direct
+`org.sqlite` linkage; packaged-driver regression tests initialize a distinct older host
+driver first and verify the repository still uses its private 3.54.1 engine. The
+3.49.1.0 artifact is a test fixture only and is never included in the deployable JAR.

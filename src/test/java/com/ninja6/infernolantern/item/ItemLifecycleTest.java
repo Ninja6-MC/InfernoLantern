@@ -168,7 +168,7 @@ class ItemLifecycleTest {
         assertEquals(ItemLifecycle.Outcome.REJECTED, drain(service.execute(wrongWorld, successful)).outcome());
     }
     @Test void completionStorageFailureLeavesQuarantinedOwnershipAndNeverReplays() throws Exception {
-        try (var connection = java.sql.DriverManager.getConnection("jdbc:sqlite:" + directory.resolve("items.db")); var statement = connection.createStatement()) {
+        try (var connection = com.ninja6.infernolantern.repository.SqliteTestConnections.open(directory.resolve("items.db")); var statement = connection.createStatement()) {
             statement.execute("CREATE TRIGGER fail_item_completion BEFORE UPDATE ON towers WHEN NEW.form='GROUND' BEGIN SELECT RAISE(ABORT,'synthetic item completion failure'); END");
         }
         var request = request(ItemLifecycle.Action.DROP, token(1), entity);

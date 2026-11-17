@@ -24,6 +24,27 @@ rendering/zombie fixtures remain separate and use their original cleanup manifes
    A failed database, pending journal or observed unactivated item must stay unavailable;
    preserve that evidence rather than deleting the store to obtain a green startup.
 
+## SQLite Startup Retest
+
+The earlier candidate at `f2e45d88e4c700e0512203806961a5fc9b16e8ee` failed enabled
+startup after reporting an effective SQLite 3.49.1 instead of required 3.54.1. Disabled
+creation gates, non-operator rejection and failed-open refusal were reported successful;
+no fixtures were issued. This is partial startup-row evidence, not acceptance of the
+whole row or active-item teardown. Drop/pickup races and the other native rows remain
+unexecuted. The claim that Linux binds one process-wide SQLite version was not proven:
+a local regression now runs host 3.49.1 and private 3.54.1 simultaneously on separate files.
+
+Use only the new candidate identified by this kit's `BUILD_INFO.json` and `SHA256SUMS`.
+Retain the failed candidate and offline evidence. Do not replace Paper's libraries,
+delete the database, lower the engine check or modify global SQLite loader properties.
+Repeat the disabled baseline and enabled startup with intentional settings preserved.
+Successful startup must log `Item prototype store ready; validated SQLite 3.54.1; native
+acceptance pending.` Record that generic diagnostic and whether issuance becomes ready.
+It confirms the engine check passed, not a completed item lifecycle. If startup still
+fails, stop and report the bounded failure without reissuing or clearing evidence.
+Then execute the original worksheet from active issuance onward; Java and exact-version
+PE tests are still required. Preserve #10 placement and #11 recovery limitations.
+
 ## Execute
 
 Use `/infernolantern prototype item` or `/ilantern prototype item`, without extra

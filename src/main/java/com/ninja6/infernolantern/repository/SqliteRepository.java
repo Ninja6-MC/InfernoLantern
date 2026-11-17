@@ -15,6 +15,7 @@ public final class SqliteRepository {
     private volatile boolean closing;
     private volatile Throwable fatal;
     private Connection connection;
+    private String validatedEngineVersion;
     private final Thread worker;
     private record Job<T>(Callable<T> action, CompletableFuture<T> future) {
         void run() { try { future.complete(action.call()); } catch(Throwable e) { future.completeExceptionally(e); if(e instanceof Error error)throw error; } }
@@ -35,14 +36,10 @@ public final class SqliteRepository {
         Throwable failure=null;
         try {
             Path parent=file.getParent();if(parent!=null)Files.createDirectories(parent);
-            // Explicit registration also works from the isolated plugin class loader.
-            Class.forName("org.sqlite.JDBC");
-            var configuration=new org.sqlite.SQLiteConfig();
-            configuration.setBusyTimeout(5000);
-            configuration.setTransactionMode(org.sqlite.SQLiteConfig.TransactionMode.IMMEDIATE);
-            connection=configuration.createConnection("jdbc:sqlite:"+file);
+            connection=PrivateSqlite.open(file);
             try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT sqlite_version()")){
-                if(!rows.next()||!"3.54.1".equals(rows.getString(1)))throw new SQLException("Unexpected SQLite engine version");
+                if(!rows.next())throw new SQLException("Missing validated SQLite version");
+                validatedEngineVersion=rows.getString(1);
             }
             Schema.initialize(connection);
             validateStoredRows();
@@ -71,6 +68,8 @@ public final class SqliteRepository {
     }
     /** Stop admission, drain accepted requests, then close on the database thread. Never join on a world thread. */
     public CompletableFuture<Void> closeAsync() { synchronized(admission){closing=true;} return closed; }
+    /** Immutable startup diagnostic, published with the successfully opened repository. */
+    public String validatedEngineVersion(){return validatedEngineVersion;}
     public int queuedRequests() {return queue.size();}
     public CompletableFuture<String> sqliteVersion(){return submit(()->{try(var s=connection.createStatement();var r=s.executeQuery("SELECT sqlite_version()")){r.next();return r.getString(1);}});}
     private <T> T transaction(Callable<T> action)throws Exception {
