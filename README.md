@@ -35,3 +35,5 @@ These documents describe intended behaviour. The repository includes a minimal p
 GNU General Public License v3.0. See [LICENSE](LICENSE).
 
 Repository and journal foundation: [storage contract and benchmark](docs/REPOSITORY_AND_JOURNAL.md). It is not wired into prototype gameplay.
+
+Item identity and ground lifecycle foundation: [service contract and pending live worksheet](docs/ITEM_LIFECYCLE.md). It is not wired into prototype gameplay; task #9 remains partial.
