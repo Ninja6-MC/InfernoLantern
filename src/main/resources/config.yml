@@ -6,3 +6,9 @@ prototype:
   # Separate disposable native-zombie experiment; never production defence policy.
   combat-experiment:
     enabled: false
+  # Disposable item lifecycle fixtures; both this gate and prototype.enabled are required.
+  # Existing tokens stay protected after creation is disabled. No production awards.
+  item-lifecycle:
+    enabled: false
+    survives-fire-lava: true
+    despawns: true

@@ -10,6 +10,7 @@ import java.util.*;
 public final class PaperItemIdentity {
     private final NamespacedKey schema = key("item_schema"), variant = key("item_variant"),
             tower = key("item_tower"), generation = key("item_generation");
+    public static final NamespacedKey DELIVERY = key("item_delivery");
     public static final NamespacedKey OPERATION = key("item_operation");
     private static NamespacedKey key(String name) { return new NamespacedKey("infernolantern", name); }
     private static boolean air(ItemStack stack) {
@@ -18,11 +19,11 @@ public final class PaperItemIdentity {
     public boolean marked(ItemStack stack) {
         if (air(stack)) return false;
         var data = stack.getPersistentDataContainer();
-        return data.has(schema) || data.has(variant) || data.has(tower) || data.has(generation);
+        return data.has(schema) || data.has(variant) || data.has(tower) || data.has(generation) || data.has(DELIVERY);
     }
     /** Malformed/unknown schemas and illegal stack amounts remain recognizable, but unusable. */
     public Optional<ItemToken> read(ItemStack stack) {
-        if (!marked(stack) || stack.getAmount() != 1) return Optional.empty();
+        if (!marked(stack) || stack.getAmount() != 1 || stack.getPersistentDataContainer().has(DELIVERY)) return Optional.empty();
         try {
             var data = stack.getPersistentDataContainer();
             return Optional.of(new ItemToken(Objects.requireNonNull(data.get(schema, PersistentDataType.INTEGER)),

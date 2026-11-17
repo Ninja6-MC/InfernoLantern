@@ -106,3 +106,11 @@ tasks.register<JavaExec>("repositoryBenchmark") {
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass.set("com.ninja6.infernolantern.repository.RepositoryBenchmark")
 }
+
+// Local artifact preparation only: no deployment, server configuration or network access.
+tasks.register<Exec>("itemTestKit") {
+    group = "build"
+    description = "Packages the checked disposable item harness, live worksheet and checksums."
+    dependsOn(tasks.check)
+    commandLine(python.get(), "scripts/build_item_test_kit.py", "--jar", tasks.jar.get().archiveFile.get().asFile.absolutePath)
+}

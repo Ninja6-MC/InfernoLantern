@@ -114,3 +114,15 @@ prototype action opens the targeted fixture menu. No permanent permission node o
 production award contract is introduced. This temporary interface supports the remaining
 #5 rendering tests and can be retired with the fixture harness. Help and administrative
 status use their previously approved authorization rules.
+
+## Temporary Item Lifecycle Prototype Interface
+
+On 2026-11-17 the maintainer approved `/infernolantern prototype item`, also reachable
+through `/ilantern prototype item`, with no extra arguments. It is operator-only and
+requires both `prototype.enabled: true` and `prototype.item-lifecycle.enabled: true`,
+which default to false. It prepares exactly one generic disposable identity in an empty
+selected hotbar slot after durable intent and source/session revalidation. No permanent
+permission node, production award arguments or acquisition contract is introduced.
+Help/tab completion expose it only under the same operator/creation gates. Existing item
+protection remains active after creation flags are disabled. Runtime readiness and pending
+journal evidence are reported through the already approved administrative `status` action.

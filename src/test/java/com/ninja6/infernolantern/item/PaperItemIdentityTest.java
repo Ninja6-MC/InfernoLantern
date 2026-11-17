@@ -42,6 +42,12 @@ class PaperItemIdentityTest {
         assertTrue(identity.marked(stack)); assertTrue(identity.read(stack).isEmpty());
         assertFalse(identity.marked(new Stack())); assertFalse(identity.marked(null));
     }
+    @Test void temporaryDeliveryMarkerMakesOtherwiseValidItemUnavailableUntilActivation() {
+        Stack stack=(Stack)identity.create(new Stack(),token,GroundPolicy.DEFAULT);
+        stack.values.put(PaperItemIdentity.DELIVERY,new Value(String.class,new UUID(0,2).toString()));
+        assertTrue(identity.marked(stack));assertTrue(identity.read(stack).isEmpty());
+        stack.values.remove(PaperItemIdentity.DELIVERY);assertEquals(token,identity.read(stack).orElseThrow());
+    }
     record Value(Class<?> primitive, Object value) {}
     static final class Stack extends ItemStack {
         int amount = 1, maximumStack;
