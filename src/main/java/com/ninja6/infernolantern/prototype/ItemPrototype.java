@@ -51,6 +51,7 @@ public final class ItemPrototype implements Listener, AutoCloseable {
                         delivery=new FixtureDelivery(opened.repository(),scheduler);
                         adapter=new PaperGroundItems(plugin,opened.repository(),lifecycle,scheduler,variant->policy);
                         freeze.close();ready=true;status="ready; native acceptance pending";
+                        plugin.getLogger().info("Item prototype store ready; validated SQLite "+opened.repository().validatedEngineVersion()+"; native acceptance pending.");
                     });}catch(RuntimeException unavailable){store.closeAsync();}
                 });
     }

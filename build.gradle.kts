@@ -23,10 +23,12 @@ repositories {
 }
 
 val sqliteRuntime = configurations.create("sqliteRuntime")
+val sqliteHostFixture = configurations.create("sqliteHostFixture")
 
 dependencies {
-    implementation("org.xerial:sqlite-jdbc:3.54.1.0") { isTransitive = false }
+    testImplementation("org.xerial:sqlite-jdbc:3.54.1.0") { isTransitive = false }
     sqliteRuntime("org.xerial:sqlite-jdbc:3.54.1.0") { isTransitive = false }
+    sqliteHostFixture("org.xerial:sqlite-jdbc:3.49.1.0") { isTransitive = false }
     compileOnly("io.papermc.paper:paper-api:26.3.build.249-stable")
     testImplementation("io.papermc.paper:paper-api:26.3.build.249-stable")
     testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
@@ -42,14 +44,16 @@ tasks.withType<JavaCompile>().configureEach {
     options.release.set(25)
 }
 
-// Include only the pinned JDBC driver, its native resources, service entry and notices.
-// Paper supplies the optional SLF4J API; do not bundle a second logging API or server API.
-tasks.jar {
-    from(sqliteRuntime.map { if (it.isDirectory) it else zipTree(it) }) {
-        exclude("META-INF/MANIFEST.MF", "META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA")
-    }
-    duplicatesStrategy = DuplicatesStrategy.FAIL
+// Preserve the unmodified driver/resources/notices behind a private loader. Never expose
+// org.sqlite or a JDBC service to Paper's parent-first application classpath.
+val privateJdbc = tasks.register<Copy>("privateJdbc") {
+    from(sqliteRuntime)
+    into(layout.buildDirectory.dir("private-jdbc/com/ninja6/infernolantern/internal"))
+    rename { "sqlite-jdbc.jar" }
 }
+sourceSets.main { resources.srcDir(layout.buildDirectory.dir("private-jdbc")) }
+tasks.processResources { dependsOn(privateJdbc) }
+tasks.jar { duplicatesStrategy = DuplicatesStrategy.FAIL }
 
 val pluginVersion = version.toString()
 
@@ -81,7 +85,10 @@ val verifyPluginJar = tasks.register<Exec>("verifyPluginJar") {
 tasks.test {
     useJUnitPlatform()
     dependsOn(tasks.jar)
-    doFirst { systemProperty("pluginJar", tasks.jar.get().archiveFile.get().asFile.absolutePath) }
+    doFirst {
+        systemProperty("pluginJar", tasks.jar.get().archiveFile.get().asFile.absolutePath)
+        systemProperty("hostSqliteJar", sqliteHostFixture.singleFile.absolutePath)
+    }
     dependsOn(buildToolTests)
 }
 

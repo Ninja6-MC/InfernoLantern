@@ -105,10 +105,10 @@ class RepositoryTest {
         assertEquals(0,get(r.tower(towerId)).orElseThrow().rowVersion());assertTrue(get(r.pendingOperations(null,10)).isEmpty());
         // Trigger a real SQLite constraint error midway through completion, after durable intent.
         get(r.beginIntent(intent(id,compact())));get(r.advanceOperation(id,0,Phase.INTENT,Phase.EFFECTS_APPLIED,"effects verified"));
-        try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+file());var s=c.createStatement()){s.execute("CREATE TRIGGER fail_manifest BEFORE INSERT ON manifest_components BEGIN SELECT RAISE(ABORT,'injected write failure'); END");}
+        try(Connection c=PrivateSqlite.open(file());var s=c.createStatement()){s.execute("CREATE TRIGGER fail_manifest BEFORE INSERT ON manifest_components BEGIN SELECT RAISE(ABORT,'injected write failure'); END");}
         assertInstanceOf(SQLException.class,failed(r.completeOperation(id,1,"caller proof")));
         assertEquals(Form.PORTABLE,get(r.tower(towerId)).orElseThrow().state().tower().form());assertEquals(Phase.EFFECTS_APPLIED,get(r.operation(id)).orElseThrow().phase());
-        try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+file());var s=c.createStatement()){s.execute("DROP TRIGGER fail_manifest");}
+        try(Connection c=PrivateSqlite.open(file());var s=c.createStatement()){s.execute("DROP TRIGGER fail_manifest");}
         get(r.completeOperation(id,1,"retry after storage repaired"));assertEquals(compact(),get(r.tower(towerId)).orElseThrow().state());
     }
     @Test void escrowBytesAreDefensiveAndCannotBypassOwnershipOrSettleEarly()throws Exception{
@@ -138,23 +138,23 @@ class RepositoryTest {
     }
     @Test void futureUnrelatedAndMalformedDatabasesFailWithoutContentChanges()throws Exception{
         Class.forName("org.sqlite.JDBC");
-        Path unrelated=directory.resolve("unrelated.db");try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+unrelated);var s=c.createStatement()){s.execute("CREATE TABLE other(value TEXT)");s.execute("INSERT INTO other VALUES('preserve')");}
+        Path unrelated=directory.resolve("unrelated.db");try(Connection c=PrivateSqlite.open(unrelated);var s=c.createStatement()){s.execute("CREATE TABLE other(value TEXT)");s.execute("INSERT INTO other VALUES('preserve')");}
         byte[] before=Files.readAllBytes(unrelated);assertInstanceOf(SQLException.class,failed(SqliteRepository.open(unrelated,16)));assertArrayEquals(before,Files.readAllBytes(unrelated));
-        var r=open();seed(r);get(r.closeAsync());try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+file());var s=c.createStatement()){s.execute("PRAGMA user_version=999");}
+        var r=open();seed(r);get(r.closeAsync());try(Connection c=PrivateSqlite.open(file());var s=c.createStatement()){s.execute("PRAGMA user_version=999");}
         before=Files.readAllBytes(file());assertInstanceOf(SQLException.class,failed(SqliteRepository.open(file(),16)));assertArrayEquals(before,Files.readAllBytes(file()));
         Path bad=directory.resolve("bad.db");Files.writeString(bad,"not a database");before=Files.readAllBytes(bad);assertInstanceOf(SQLException.class,failed(SqliteRepository.open(bad,16)));assertArrayEquals(before,Files.readAllBytes(bad));
     }
     @Test void alteredSchemaOrMalformedJournalCannotOpen()throws Exception{
         var r=open();seed(r);get(r.beginIntent(intent(new UUID(0,9),compact())));get(r.closeAsync());
-        try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+file());var s=c.createStatement()){s.execute("UPDATE operations SET after_state=x'0001'");}
+        try(Connection c=PrivateSqlite.open(file());var s=c.createStatement()){s.execute("UPDATE operations SET after_state=x'0001'");}
         assertInstanceOf(java.io.IOException.class,failed(SqliteRepository.open(file(),16)));
         Path other=directory.resolve("altered.db");var second=open(other,16);get(second.closeAsync());
-        try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+other);var s=c.createStatement()){s.execute("ALTER TABLE towers ADD COLUMN unexpected INTEGER");}
+        try(Connection c=PrivateSqlite.open(other);var s=c.createStatement()){s.execute("ALTER TABLE towers ADD COLUMN unexpected INTEGER");}
         assertInstanceOf(SQLException.class,failed(SqliteRepository.open(other,16)));
     }
     @Test void v1MigrationPreservesExistingTowerAndVariant()throws Exception{
         Class.forName("org.sqlite.JDBC");
-        try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+file());var s=c.createStatement()){
+        try(Connection c=PrivateSqlite.open(file());var s=c.createStatement()){
             s.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,checksum TEXT NOT NULL)");
             for(String sql:Schema.MIGRATIONS.getFirst())s.execute(sql);
             s.execute("INSERT INTO schema_migrations VALUES(1,'"+Schema.checksum(1)+"')");s.execute("PRAGMA application_id="+Schema.APPLICATION_ID);s.execute("PRAGMA user_version=1");
@@ -162,19 +162,19 @@ class RepositoryTest {
             s.execute("INSERT INTO towers VALUES('"+towerId+"','test',20,100,'PORTABLE',5,2,NULL,NULL,NULL,NULL,NULL,NULL,0,0,41,43,8,NULL)");
         }
         var r=open();assertEquals(7,get(r.variant("test")).orElseThrow().rowVersion());var saved=get(r.tower(towerId)).orElseThrow();assertEquals(20,saved.state().tower().hp());assertEquals(8,saved.rowVersion());assertEquals(5,saved.state().tower().generation());
-        try(Connection c=DriverManager.getConnection("jdbc:sqlite:"+file())){assertEquals(2,Schema.pragma(c,"user_version"));}
+        try(Connection c=PrivateSqlite.open(file())){assertEquals(2,Schema.pragma(c,"user_version"));}
     }
     @Test void backpressureAndCloseAreBoundedAndCallbacksStayOffCaller()throws Exception{
         var r=open(file(),1);seed(r);long caller=Thread.currentThread().threadId();
         // Hold a genuine SQLite writer lock so the repository worker is occupied.
-        try(Connection blocker=DriverManager.getConnection("jdbc:sqlite:"+file());var lock=blocker.createStatement()){
+        try(Connection blocker=PrivateSqlite.open(file());var lock=blocker.createStatement()){
             lock.execute("BEGIN IMMEDIATE");
             var first=r.compareAndSetTower(0,portable(towerId,49));
             Thread.sleep(50);
             var queued=r.tower(towerId);assertInstanceOf(RejectedExecutionException.class,failed(r.tower(towerId)));
             var closed=r.closeAsync();assertFalse(closed.isDone());assertInstanceOf(RepositoryException.class,failed(r.tower(towerId)));
-            long[] execution={caller};first.thenRun(()->execution[0]=Thread.currentThread().threadId());
-            lock.execute("ROLLBACK");get(first);get(queued);get(closed);assertNotEquals(caller,execution[0]);
+            long[] execution={caller};var callback=first.thenRun(()->execution[0]=Thread.currentThread().threadId());
+            lock.execute("ROLLBACK");get(first);get(queued);get(closed);get(callback);assertNotEquals(caller,execution[0]);
         }
     }
     @Test void snapshotsDefensivelyCopyComponentsAndRejectMalformedWireFormat()throws Exception{
