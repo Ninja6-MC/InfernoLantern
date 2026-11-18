@@ -39,6 +39,11 @@ public final class RepositoryRecords {
     public record Ground(UUID entity, UUID world, int chunkX, int chunkZ, UUID deliveryOperation, String status) {
         public Ground { Objects.requireNonNull(entity); Objects.requireNonNull(world); Objects.requireNonNull(deliveryOperation); text(status, 64); }
     }
+    /** A declared occupied/clearance voxel, not necessarily a physically replaced block. */
+    public record Cell(UUID world,int x,int y,int z) { public Cell { Objects.requireNonNull(world); } }
+    public record Reservation(Cell cell,UUID tower,UUID operation) {
+        public Reservation { Objects.requireNonNull(cell);Objects.requireNonNull(tower); }
+    }
     public record Component(String id, ComponentKind kind, UUID world, int x, int y, int z,
                             String originalState, String expectedState, UUID entity, String entityType) {
         public Component {

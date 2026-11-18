@@ -47,3 +47,5 @@ driver first and verify the repository still uses its private 3.54.1 engine. The
 ## Separate item acceptance listener
 
 `./gradlew clean itemAcceptanceKit --offline --no-daemon` prepares a checked core/helper pair and bounded cancellation scenarios in `build/item-acceptance-kit`. The helper is default disabled, excluded from the sole production JAR/release artifact set and has no command or permission node. Preparation does not authorize installation. Read [the helper brief](ITEM_ACCEPTANCE_HELPER.md) before requesting approval; preserve existing quarantined data and use a separately authorized disposable setup.
+
+The structure transaction foundation introduces [schema 3 and an unwired Paper effect adapter](STRUCTURE_TRANSITIONS.md). Repository opening actively migrates eligible existing stores even though native structure handlers are not registered. Do not deploy it into the preserved quarantined test store or use an older candidate to downgrade a migrated store. No new structure live-test command or installation approval is supplied.

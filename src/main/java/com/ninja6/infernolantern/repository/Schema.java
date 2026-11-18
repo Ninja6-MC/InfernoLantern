@@ -8,7 +8,7 @@ import java.util.*;
 /** Migrations are validated before any persistent pragma or schema write. */
 final class Schema {
     static final int APPLICATION_ID=0x494C4442; // ILDB
-    static final int VERSION=2;
+    static final int VERSION=3;
     static final List<List<String>> MIGRATIONS=List.of(List.of(
         "CREATE TABLE variants(id TEXT PRIMARY KEY, definition_revision INTEGER NOT NULL CHECK(definition_revision>=0), status TEXT NOT NULL CHECK(status IN ('ACTIVE','RETIRED')), payload_version INTEGER NOT NULL CHECK(payload_version>0), definition TEXT NOT NULL, row_version INTEGER NOT NULL CHECK(row_version>=0))",
         "CREATE TABLE towers(id TEXT PRIMARY KEY, variant_id TEXT NOT NULL REFERENCES variants(id), hp REAL NOT NULL CHECK(hp>=0), maximum_hp REAL NOT NULL CHECK(maximum_hp>0 AND hp<=maximum_hp), form TEXT NOT NULL CHECK(form IN ('PORTABLE','GROUND','COMPACT','EXPANDED','LOST')), generation INTEGER NOT NULL CHECK(generation>=0), deployment_revision INTEGER NOT NULL CHECK(deployment_revision>=0), controller TEXT, world TEXT, x INTEGER, y INTEGER, z INTEGER, orientation TEXT, light INTEGER NOT NULL CHECK(light IN (0,1)), defence INTEGER NOT NULL CHECK(defence IN (0,1)), expand_after INTEGER NOT NULL CHECK(expand_after>=0), repair_after INTEGER NOT NULL CHECK(repair_after>=0), row_version INTEGER NOT NULL CHECK(row_version>=0), active_operation TEXT UNIQUE, CHECK((form='EXPANDED')=(controller IS NOT NULL)), CHECK((form IN ('COMPACT','EXPANDED'))=(world IS NOT NULL)), CHECK((world IS NULL AND x IS NULL AND y IS NULL AND z IS NULL AND orientation IS NULL) OR (world IS NOT NULL AND x IS NOT NULL AND y IS NOT NULL AND z IS NOT NULL AND orientation IS NOT NULL)))",
@@ -22,8 +22,12 @@ final class Schema {
         "CREATE TABLE awards(id TEXT PRIMARY KEY, source_key TEXT NOT NULL, recipient TEXT NOT NULL, variant_id TEXT NOT NULL REFERENCES variants(id), quantity INTEGER NOT NULL CHECK(quantity>0), status TEXT NOT NULL CHECK(status IN ('PENDING','DELIVERED','PAUSED')), row_version INTEGER NOT NULL CHECK(row_version>=0), payload_version INTEGER NOT NULL CHECK(payload_version=1), UNIQUE(source_key,recipient,variant_id))",
         "CREATE TABLE award_towers(award_id TEXT NOT NULL REFERENCES awards(id), tower_id TEXT NOT NULL UNIQUE REFERENCES towers(id),PRIMARY KEY(award_id,tower_id))",
         "CREATE TABLE repair_escrows(operation_id TEXT PRIMARY KEY REFERENCES operations(id),tower_id TEXT NOT NULL REFERENCES towers(id),deployment_revision INTEGER NOT NULL CHECK(deployment_revision>=0),contributor TEXT NOT NULL,resource_format INTEGER NOT NULL CHECK(resource_format>0),resources BLOB NOT NULL,payment TEXT NOT NULL CHECK(payment IN ('RESERVED','COMMITTED','REFUND_PENDING','REFUNDED','RECONCILING')),hp_phase TEXT NOT NULL CHECK(hp_phase IN ('NOT_APPLIED','APPLIED','RECONCILING')),row_version INTEGER NOT NULL CHECK(row_version>=0),payload_version INTEGER NOT NULL CHECK(payload_version=1))"
+    ),List.of(
+        "CREATE TABLE structure_cells(world TEXT NOT NULL,x INTEGER NOT NULL,y INTEGER NOT NULL,z INTEGER NOT NULL,tower_id TEXT NOT NULL REFERENCES towers(id),operation_id TEXT REFERENCES operations(id),PRIMARY KEY(world,x,y,z))",
+        "CREATE INDEX structure_cells_tower ON structure_cells(tower_id)"
     ));
     private Schema(){}
+    private static RepositoryRecords.State decode(byte[] bytes)throws SQLException{try{return SnapshotCodec.decode(bytes);}catch(java.io.IOException e){throw new SQLException("Invalid legacy operation snapshot",e);}}
     static int pragma(Connection c,String key)throws SQLException{try(var s=c.createStatement();var r=s.executeQuery("PRAGMA "+key)){if(!r.next())throw new SQLException("Missing pragma "+key);return r.getInt(1);}}
     static String checksum(int version){try{byte[] bytes=String.join("\n",MIGRATIONS.get(version-1)).getBytes(StandardCharsets.UTF_8);return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));}catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
     static void initialize(Connection c)throws SQLException{
@@ -44,6 +48,15 @@ final class Schema {
         try(var s=c.createStatement()){
             if(version==0)s.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,checksum TEXT NOT NULL)");
             for(int next=version+1;next<=VERSION;next++){
+                if(next==3){
+                    // Old manifests never declared their full clearance volume. Do not invent it.
+                    try(var rows=s.executeQuery("SELECT 1 FROM towers WHERE form IN ('COMPACT','EXPANDED') LIMIT 1")){
+                        if(rows.next())throw new SQLException("Legacy structure clearance is unknown; preserve database for migration review");
+                    }
+                    try(var rows=s.executeQuery("SELECT after_state FROM operations WHERE phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING')")){
+                        while(rows.next())if(!decode(rows.getBytes(1)).components().isEmpty())throw new SQLException("Legacy pending structure clearance is unknown; preserve database");
+                    }
+                }
                 for(String sql:MIGRATIONS.get(next-1))s.execute(sql);
                 try(var insert=c.prepareStatement("INSERT INTO schema_migrations VALUES(?,?)")){insert.setInt(1,next);insert.setString(2,checksum(next));insert.executeUpdate();}
                 s.execute("PRAGMA user_version="+next);
