@@ -68,6 +68,7 @@ class PaperStructureEffectsTest {
     }
     @Test void actualAdapterReservesUnchangedVoxelAndRestoresOwnedEffects(){
         Request request=request();var effects=effects(layout());var prepared=effects.prepare(request,before());assertNotNull(prepared);assertEquals(3,prepared.manifest().size());
+        assertEquals(com.ninja6.infernolantern.recovery.RecoveryEnvelope.Profile.STRUCTURE,com.ninja6.infernolantern.recovery.RecoveryEnvelope.decode(prepared.evidence()).orElseThrow().profile());
         Claim claim=claim(request,prepared);assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));assertEquals("minecraft:barrier",blocks.get(new Cell(worldId,4,71,4)));
         assertTrue(effects.rollback(claim));assertEquals("minecraft:air",blocks.get(new Cell(worldId,4,71,4)));assertEquals("minecraft:barrier",blocks.get(new Cell(worldId,4,70,4)));
     }

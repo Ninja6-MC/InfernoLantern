@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.item;
 
 import com.ninja6.infernolantern.repository.*;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import java.util.*;
 import java.util.concurrent.*;
@@ -53,7 +54,8 @@ public final class ItemLifecycle implements AutoCloseable {
                 TowerSnapshot before = found.get(); State after = after(request, before.state());
                 Intent intent = new Intent(request.operation(), request.token().tower(), before.rowVersion(),
                         request.token().generation(), before.state().tower().deploymentRevision(),
-                        "item-" + request.action().name().toLowerCase(Locale.ROOT), after, request.effects());
+                        "item-" + request.action().name().toLowerCase(Locale.ROOT), after,
+                        RecoveryEnvelope.item("item-"+request.action().name().toLowerCase(Locale.ROOT),request.anchor(),request.effects()));
                 intentAttempted.set(true);
                 return repository.beginIntent(intent).thenCompose(operation -> {
                     Claim claim = new Claim(request, operation, token(after.tower()));
@@ -105,7 +107,7 @@ public final class ItemLifecycle implements AutoCloseable {
     }
     private static boolean sameReceipt(Request r, Operation op) {
         return op.intent().kind().equals("item-" + r.action().name().toLowerCase(Locale.ROOT))
-                && op.intent().effects().equals(r.effects())
+                && (op.intent().effects().equals(r.effects())||op.intent().effects().equals(RecoveryEnvelope.item("item-"+r.action().name().toLowerCase(Locale.ROOT),r.anchor(),r.effects())))
                 && matches(r, new TowerSnapshot(op.before(), op.intent().expectedRowVersion(), null))
                 && after(r, op.before()).equals(op.intent().after());
     }
