@@ -39,3 +39,5 @@ Repository and journal foundation: [storage contract and benchmark](docs/REPOSIT
 Item identity and ground lifecycle foundation: [service contract and pending live worksheet](docs/ITEM_LIFECYCLE.md). The approved default-off disposable harness is described in the [live test brief](docs/ITEM_LIVE_TEST_BRIEF.md); task #9 remains partial until native acceptance.
 
 Structure transition foundation: [journaled service, Paper effect port and pending integration](docs/STRUCTURE_TRANSITIONS.md). Native structure handlers remain unwired; schema 3 migration is active on repository open. Task #10 is partial.
+
+Reconciliation foundation: [evidence contracts, recovery matrix and pending integration](docs/RECONCILIATION.md). The service is unwired and does not authorize repair of existing test saves. Task #11 remains partial.

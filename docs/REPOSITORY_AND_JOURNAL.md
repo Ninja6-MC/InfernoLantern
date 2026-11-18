@@ -50,6 +50,8 @@ The `ILS1` binary snapshot codec is versioned, length-bounded and rejects traili
 
 A stable tower snapshot may retain its pre-operation form while `active_operation` is set. `mutationReady()` is false; callers must treat it as unavailable, not as a second usable representation. Every pending journal entry survives reopening and is exposed through bounded pages for the later reconciliation service. A database transaction never atomically commits Minecraft world, entity, player or inventory saves. Task #11 must handle those independent save boundaries and ambiguous physical outcomes.
 
+The partial [reconciliation service](RECONCILIATION.md) now adds fresh-only `finalizeReconciliation` for a winning evidence-backed recovery decision. Unlike a low-level idempotent receipt, a repeated finalizer rejects instead of granting publication/activation ownership. Current item/fixture/structure producers emit versioned recovery envelopes while retaining original caller evidence; old/unsupported pending evidence remains administrative. No startup coordinator or coverage proof is supplied by this storage layer, and no schema migration or existing journal rewrite is introduced by the envelope format.
+
 Award metadata cannot mutate tower state. Appending identities requires current unfrozen tower versions, matching variants and award-row CAS; source provenance and existing identity links are immutable. Repair escrow writes require the current pending operation version plus tower/deployment ownership. Operation completion/rollback rejects unsettled escrow phases. These are storage guards, not administrative issuance, recipient eligibility, delivery, resource payment or repair-rounding implementations.
 
 ## Threading, Bounds and Shutdown

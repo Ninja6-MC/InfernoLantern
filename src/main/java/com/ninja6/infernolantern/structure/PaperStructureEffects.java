@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.structure;
 
 import com.ninja6.infernolantern.item.*;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import org.bukkit.*;
 import org.bukkit.block.data.*;
@@ -161,6 +162,9 @@ public final class PaperStructureEffects implements WorldEffects {
                 +";visualTemplates="+visualItems.stream().map(item->Base64.getEncoder().encodeToString(item.serializeAsBytes())).toList()
                 +";beforeVisuals="+oldHelmets.entrySet().stream().map(e->e.getKey()+":"+(bytes(e.getValue())==null?"none":Base64.getEncoder().encodeToString(bytes(e.getValue())))).toList();
         if(physicalEvidence.getBytes(java.nio.charset.StandardCharsets.UTF_8).length+(long)visualItems.size()*256+256>com.ninja6.infernolantern.repository.RepositoryRecords.MAX_PAYLOAD)return null;
+        RecoveryEnvelope.Inventory inventory=source==null?null:new RecoveryEnvelope.Inventory(r.actor(),sourceSlot,new ResourceBytes(source),null);
+        String anticipated=physicalEvidence+";stagedVisuals="+Collections.nCopies(visualItems.size(),new UUID(0,0))+";stagedGround="+(dropping?new UUID(0,0):"none");
+        try{RecoveryEnvelope.structure("structure-"+r.action().name().toLowerCase(Locale.ROOT),r.anchor(),new Document(1,anticipated),inventory);}catch(IllegalArgumentException oversized){return null;}
         if(!dropping){
             int i=0;
             for(Visual visual:layout.visuals()){
@@ -189,7 +193,7 @@ public final class PaperStructureEffects implements WorldEffects {
             ground=new Ground(stagedDrop.getUniqueId(),base.world(),base.x()>>4,base.z()>>4,r.operation(),"active");
         }
         String evidence=physicalEvidence+";stagedVisuals="+stagedVisuals.stream().map(Entity::getUniqueId).toList()+";stagedGround="+(ground==null?"none":ground.entity());
-        preparation=new Preparation(manifest,ground,new Document(1,evidence));return preparation;
+        preparation=new Preparation(manifest,ground,RecoveryEnvelope.structure("structure-"+r.action().name().toLowerCase(Locale.ROOT),r.anchor(),new Document(1,evidence),inventory));return preparation;
     }
     @Override public boolean validate(Claim claim){owner();return claim.preparation()==preparation&&session(claim.request())&&access.allowed(request,before.state());}
     private boolean stageExact(){

@@ -226,12 +226,14 @@ public final class SqliteRepository {
         require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=? AND phase=?",to.name(),next(expected),evidence,id,expected,from.name())==1,"Operation CAS lost");return loadOperation(id);
     }));}
     /** Caller must have verified physical effects on the owning scheduler. This method only commits database state. */
-    public CompletableFuture<Operation> completeOperation(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false);}
+    public CompletableFuture<Operation> completeOperation(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,true);}
     /** Caller-supplied reconciliation evidence is not database proof of restored world/player saves. */
-    public CompletableFuture<Operation> resolveRollback(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,true);}
-    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback){Objects.requireNonNull(id);return submit(()->transaction(()->{
+    public CompletableFuture<Operation> resolveRollback(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,true,true);}
+    /** Only the winning fresh finalizer may publish/activate a recovery outcome. Receipts grant no effect ownership. */
+    public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false);}
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt){Objects.requireNonNull(id);return submit(()->transaction(()->{
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
-        if(op.phase()==terminal)return op; // Same immutable operation identity, no effects are replayed.
+        if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
         require(op.rowVersion()==expected&&op.phase()==(rollback?Phase.RECONCILING:Phase.EFFECTS_APPLIED),"Operation is not ready for completion");
         ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),id);
         Escrow escrow=loadEscrow(id);

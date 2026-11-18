@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.structure;
 
 import com.ninja6.infernolantern.repository.*;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import java.util.*;
 import java.util.concurrent.*;
@@ -64,7 +65,11 @@ public final class StructureLifecycle implements AutoCloseable {
                     if(prepared==null)return done(Outcome.REJECTED,request.operation());
                     Intent intent;
                     try { State after=after(request,before.state(),prepared);
-                        intent=new Intent(request.operation(),request.tower(),before.rowVersion(),request.generation(),request.revision(),kind(request),after,new Document(1,fingerprint(request)+"\n"+prepared.evidence().content()));
+                        var context=RecoveryEnvelope.decode(prepared.evidence()).filter(c->c.kind().equals(kind(request))&&c.anchor().equals(request.anchor()));
+                        Document original=RecoveryEnvelope.original(prepared.evidence());
+                        Document payload=new Document(1,fingerprint(request)+"\n"+original.content());
+                        Document recovery=context.isPresent()?RecoveryEnvelope.structure(kind(request),request.anchor(),payload,context.get().inventory()):RecoveryEnvelope.administrative(kind(request),request.anchor(),payload);
+                        intent=new Intent(request.operation(),request.tower(),before.rowVersion(),request.generation(),request.revision(),kind(request),after,recovery);
                     } catch(RuntimeException invalid){return discard(request,effects,prepared);}
                     return repository.beginNewIntent(intent).handle((operation,failure)->{
                         if(failure==null)return run(new Claim(request,operation,prepared),effects);
@@ -179,7 +184,7 @@ public final class StructureLifecycle implements AutoCloseable {
     private static String fingerprint(Request r){return r.toString();}
     private static String kind(Request r){return "structure-"+r.action().name().toLowerCase(Locale.ROOT);}
     private static boolean sameReceipt(Request r,Operation op){
-        return op.intent().effects().content().startsWith(fingerprint(r)+"\n")&&op.intent().towerId().equals(r.tower())&&op.intent().kind().equals(kind(r))&&op.intent().expectedRowVersion()==r.rowVersion()
+        return RecoveryEnvelope.original(op.intent().effects()).content().startsWith(fingerprint(r)+"\n")&&op.intent().towerId().equals(r.tower())&&op.intent().kind().equals(kind(r))&&op.intent().expectedRowVersion()==r.rowVersion()
                 &&op.intent().expectedGeneration()==r.generation()&&op.intent().expectedDeploymentRevision()==r.revision();
     }
     private static Throwable unwrap(Throwable e){while(e instanceof CompletionException&&e.getCause()!=null)e=e.getCause();return e;}

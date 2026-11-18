@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.item;
 
 import com.ninja6.infernolantern.repository.*;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -30,7 +31,8 @@ public final class FixtureDelivery implements AutoCloseable {
         Tower initial = new Tower(request.tower(), VARIANT, 0, 100, Form.PORTABLE, 0, 0, null, null, false, false, 0, 0);
         Tower delivered = new Tower(request.tower(), VARIANT, 0, 100, Form.PORTABLE, 1, 0, null, null, false, false, 0, 0);
         State after = new State(delivered, null, List.of());
-        Intent intent = new Intent(request.operation(), request.tower(), 0, 0, 0, "fixture-item-delivery", after, request.evidence());
+        Intent intent = new Intent(request.operation(), request.tower(), 0, 0, 0, "fixture-item-delivery", after,
+                RecoveryEnvelope.fixture("fixture-item-delivery",request.anchor(),request.evidence(),request.operation()));
         return repository.operation(request.operation()).thenCompose(existing -> {
             if (existing.isPresent()) return CompletableFuture.completedFuture(result(request, ItemLifecycle.Outcome.QUARANTINED));
             return repository.createTower(initial).thenCompose(tower -> {
@@ -63,7 +65,8 @@ public final class FixtureDelivery implements AutoCloseable {
                 if (row.isEmpty() || !row.get().mutationReady() || !row.get().state().equals(after))
                     return CompletableFuture.completedFuture(result(request, ItemLifecycle.Outcome.QUARANTINED));
                 UUID review = UUID.nameUUIDFromBytes((request.operation() + ":activation").getBytes(StandardCharsets.UTF_8));
-                Intent intent = new Intent(review, request.tower(), row.get().rowVersion(), 1, 0, "fixture-activation-review", after, request.evidence());
+                Intent intent = new Intent(review, request.tower(), row.get().rowVersion(), 1, 0, "fixture-activation-review", after,
+                        RecoveryEnvelope.fixture("fixture-activation-review",request.anchor(),request.evidence(),request.operation()));
                 return repository.beginIntent(intent).thenCompose(operation -> quarantine(request, operation));
             });
         }).exceptionally(failure -> result(request, ItemLifecycle.Outcome.QUARANTINED));
