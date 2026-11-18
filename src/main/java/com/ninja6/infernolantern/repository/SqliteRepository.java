@@ -174,20 +174,45 @@ public final class SqliteRepository {
         update("DELETE FROM ground_representations WHERE tower_id=?",t.id());
         update("DELETE FROM manifest_components WHERE tower_id=?",t.id());
         Ground g=state.ground();if(g!=null)update("INSERT INTO ground_representations VALUES(?,?,?,?,?,?,?,?,1)",t.id(),t.generation(),g.entity(),g.world(),g.chunkX(),g.chunkZ(),g.deliveryOperation(),g.status());
+        syncCells(t.id(), List.of(state), null);
         for(Component c:state.components())update("INSERT INTO manifest_components VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)",t.id(),t.deploymentRevision(),c.id(),c.kind().name(),c.world(),c.x(),c.y(),c.z(),c.originalState(),c.expectedState(),c.entity(),c.entityType());
     }
 
-    public CompletableFuture<Operation> beginIntent(Intent intent){Objects.requireNonNull(intent);return submit(()->transaction(()->{
+    public CompletableFuture<Operation> beginIntent(Intent intent){return beginIntent(intent,true);}
+    /** Fresh-only physical effect admission. Existing receipts must never grant a second effect owner. */
+    public CompletableFuture<Operation> beginNewIntent(Intent intent){return beginIntent(intent,false);}
+    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt){Objects.requireNonNull(intent);return submit(()->transaction(()->{
         Operation existing=loadOperation(intent.id());
-        if(existing!=null){require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
+        if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
         require(before.generation()==intent.expectedGeneration()&&before.deploymentRevision()==intent.expectedDeploymentRevision(),"Stale representation generation/revision");
         require(before.variantId().equals(after.variantId())&&after.generation()>=before.generation()&&after.deploymentRevision()>=before.deploymentRevision(),"Intent identity/revision regression");
         byte[] beforeBytes=SnapshotCodec.encode(tower.state()),afterBytes=SnapshotCodec.encode(intent.after());
         update("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,0,?)",intent.id(),intent.towerId(),intent.expectedRowVersion(),intent.expectedGeneration(),intent.expectedDeploymentRevision(),intent.kind(),beforeBytes,afterBytes,intent.effects().version(),intent.effects().content(),Phase.INTENT.name(),"Intent recorded; world effects unverified");
+        syncCells(intent.towerId(), List.of(tower.state(), intent.after()), intent.id());
         require(update("UPDATE towers SET active_operation=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",intent.id(),next(intent.expectedRowVersion()),intent.towerId(),intent.expectedRowVersion())==1,"Intent CAS lost");
         return loadOperation(intent.id());
     }));}
+    private static Set<Cell> cells(List<State> states){
+        var result=new HashSet<Cell>();
+        for(State state:states)for(Component c:state.components())result.add(new Cell(c.world(),c.x(),c.y(),c.z()));
+        return result;
+    }
+    private void syncCells(UUID tower,List<State> states,UUID operation)throws SQLException{
+        Set<Cell> wanted=cells(states);
+        for(Cell cell:wanted)try(var p=statement("SELECT tower_id FROM structure_cells WHERE world=? AND x=? AND y=? AND z=?",cell.world(),cell.x(),cell.y(),cell.z());var r=p.executeQuery()){
+            require(!r.next()||tower.equals(uuid(r.getString(1))),"Structure clearance already reserved");
+        }
+        update("DELETE FROM structure_cells WHERE tower_id=?",tower);
+        for(Cell cell:wanted)update("INSERT INTO structure_cells VALUES(?,?,?,?,?,?)",cell.world(),cell.x(),cell.y(),cell.z(),tower,operation);
+    }
+    public CompletableFuture<List<Reservation>> structureCells(UUID tower){Objects.requireNonNull(tower);return submit(()->snapshot(()->loadCells(tower)));}
+    private List<Reservation> loadCells(UUID tower)throws SQLException{
+        var result=new ArrayList<Reservation>();
+        try(var p=statement("SELECT * FROM structure_cells WHERE tower_id=? ORDER BY world,x,y,z LIMIT ?",tower,MAX_COMPONENTS*2+1);var r=p.executeQuery()){
+            while(r.next())result.add(new Reservation(new Cell(uuid(r.getString("world")),r.getInt("x"),r.getInt("y"),r.getInt("z")),tower,uuid(r.getString("operation_id"))));
+        }require(result.size()<=MAX_COMPONENTS*2,"Cell reservation bounds");return List.copyOf(result);
+    }
     public CompletableFuture<Optional<Operation>> operation(UUID id){Objects.requireNonNull(id);return submit(()->snapshot(()->Optional.ofNullable(loadOperation(id))));}
     public CompletableFuture<List<Operation>> pendingOperations(UUID after,int limit){page(limit);return submit(()->snapshot(()->{
         var result=new ArrayList<Operation>();
@@ -290,6 +315,13 @@ public final class SqliteRepository {
         }
     }
     private List<UUID> ids(String sql,Object...values)throws SQLException{var result=new ArrayList<UUID>();try(var p=statement(sql,values);var r=p.executeQuery()){while(r.next())result.add(uuid(r.getString("id")));}return result;}
+    private void validateCells(TowerSnapshot tower)throws Exception{
+        var states=new ArrayList<State>();states.add(tower.state());
+        if(tower.activeOperation()!=null){Operation operation=loadOperation(tower.activeOperation());require(operation!=null,"Missing cell operation");states.add(operation.intent().after());}
+        List<Reservation> actual=loadCells(tower.state().tower().id());
+        require(actual.stream().allMatch(r->Objects.equals(r.operation(),tower.activeOperation()))
+                &&new HashSet<>(actual.stream().map(Reservation::cell).toList()).equals(cells(states)),"Structure clearance reservation mismatch");
+    }
     private void validateStoredRows()throws Exception{
         try(var s=connection.createStatement();var r=s.executeQuery("PRAGMA foreign_key_check")){if(r.next())throw new SQLException("Database reference integrity failed");}
         for(String table:List.of("variants","towers","operations","awards","repair_escrows")){
@@ -298,7 +330,7 @@ public final class SqliteRepository {
                 var keys=new ArrayList<String>();try(var p=statement("SELECT "+column+" FROM "+table+" WHERE "+column+">? ORDER BY "+column+" LIMIT ?",cursor,MAX_PAGE);var r=p.executeQuery()){while(r.next())keys.add(r.getString(1));}
                 if(keys.isEmpty())break;
                 for(String key:keys){
-                    switch(table){case "variants"->loadVariant(key);case "towers"->{TowerSnapshot t=loadTower(uuid(key));if(t.activeOperation()!=null){Operation op=loadOperation(t.activeOperation());require(op!=null&&op.pending()&&op.intent().towerId().equals(t.state().tower().id())&&t.rowVersion()==next(op.intent().expectedRowVersion()),"Invalid journal ownership");}}case "operations"->{Operation op=loadOperation(uuid(key));if(op.pending())ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),op.intent().id());}case "awards"->loadAward(uuid(key));case "repair_escrows"->loadEscrow(uuid(key));default->throw new IllegalStateException();}
+                    switch(table){case "variants"->loadVariant(key);case "towers"->{TowerSnapshot t=loadTower(uuid(key));validateCells(t);if(t.activeOperation()!=null){Operation op=loadOperation(t.activeOperation());require(op!=null&&op.pending()&&op.intent().towerId().equals(t.state().tower().id())&&t.rowVersion()==next(op.intent().expectedRowVersion()),"Invalid journal ownership");}}case "operations"->{Operation op=loadOperation(uuid(key));if(op.pending())ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),op.intent().id());}case "awards"->loadAward(uuid(key));case "repair_escrows"->loadEscrow(uuid(key));default->throw new IllegalStateException();}
                 }
                 cursor=keys.getLast();
             }

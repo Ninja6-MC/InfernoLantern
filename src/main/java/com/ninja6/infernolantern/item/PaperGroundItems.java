@@ -70,6 +70,11 @@ public final class PaperGroundItems implements Listener, AutoCloseable {
         internalRemovals.add(item.getUniqueId());
         try { item.remove(); } finally { internalRemovals.remove(item.getUniqueId()); known.remove(item.getUniqueId()); }
     }
+    /** Owner-thread integration for a journal-completed structure recovery drop. Never grants authority from metadata. */
+    public void inspectCommittedDrop(Item item) {
+        if (!Bukkit.isPrimaryThread() || closed) throw new IllegalStateException("Ground adapter unavailable on owning thread");
+        inspectLoaded(Objects.requireNonNull(item));
+    }
     private void inspectLoaded(Item item) {
         track(item);
         if (!identity.marked(item.getItemStack())) return;

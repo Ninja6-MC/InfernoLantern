@@ -26,7 +26,7 @@ WAL is for a single host/local filesystem, not a network share. Its `.db`, `-wal
 
 ## Versioned Records
 
-Schema migration 1 creates variant, tower and operation records. Migration 2 adds ground representations, structure components, award metadata/identity links and repair escrow. Migration history has immutable SQL checksums; schema changes require a new migration rather than editing an existing production migration.
+Schema migration 1 creates variant, tower and operation records. Migration 2 adds ground representations, structure components, award metadata/identity links and repair escrow. Migration 3 adds exclusive structure-clearance cells, including unchanged reserved voxels and pending before/after unions. It refuses legacy placed/pending structure manifests whose complete geometry is unknown; it does not guess or repair old footprints. See [structure transitions](STRUCTURE_TRANSITIONS.md) for the active-on-open migration and downgrade boundary. Migration history has immutable SQL checksums; schema changes require a new migration rather than editing an existing production migration.
 
 | Record | First-class fields and ownership |
 | :--- | :--- |
@@ -43,7 +43,7 @@ The `ILS1` binary snapshot codec is versioned, length-bounded and rejects traili
 ## CAS and Durable Intent Protocol
 
 1. Capture source identity, expected row/generation/deployment revision and immutable before/after/effect data on the owning scheduler. Validate gameplay/protection there; the repository cannot perform those checks.
-2. `beginIntent` checks all expected values, records the intent, claims `active_operation` and increments the tower row version in one database transaction. Only one nonterminal operation may own a tower. Reusing the same operation ID and identical intent returns its existing receipt; different intent data with that ID fails.
+2. `beginIntent` checks all expected values, records the intent, claims `active_operation` and increments the tower row version in one database transaction. Only one nonterminal operation may own a tower. Reusing the same operation ID and identical intent returns its existing receipt; different intent data with that ID fails. `beginNewIntent` is fresh-only admission for physical-effect services and rejects all existing operation IDs, preventing receipt reuse as a second effect owner. Pending structure intents atomically reserve the union of before/after clearance; completion or proven rollback installs the final footprint, while quarantine retains exclusion across reopen.
 3. Return asynchronously to the owning world scheduler and revalidate the source/revision/authorization before applying named idempotent effects. The database performs **none** of those effects. Direct tower CAS is limited to an unchanged representation; it cannot change form, generation, deployment revision, controller, anchor or manifest outside the journal.
 4. The caller records verified effect progress using operation-version/phase CAS. `EFFECTS_APPLIED` means the caller asserted that phase; it is not database inspection of Minecraft saves. `completeOperation` requires the matching active operation and frozen tower version, commits the intended tower/ground/manifest together, clears ownership and records completion atomically. Repeated completion returns the stored operation receipt without replaying anything or changing a newer tower.
 5. Ambiguous evidence moves the operation to RECONCILING and leaves the tower frozen. `resolveRollback` is available only from that phase, with explicit caller-supplied evidence that the original representation was restored. It restores the database snapshot; it neither refunds resources nor proves an inventory/chunk save was restored. No startup path automatically completes or compensates pending operations.
@@ -64,7 +64,7 @@ Completion callbacks may run on the database thread or immediately on the attach
 
 The existing suite plus repository tests cover:
 
-- Fresh schema and v1-to-v2 migration preserving versions, health, timers and retirement data.
+- Fresh schema and eligible v1/v2-to-v3 migration preserving versions, health, timers and retirement data; unknown legacy structure geometry fails transactionally.
 - Unknown/future/unrelated or altered schema rejection without overwriting database contents; malformed journal decoding fails closed.
 - Concurrent CAS with one winner, frozen intent ownership, identity/generation checks and prevention of direct representation mutation.
 - Pending intent reopen, guarded phase progress, idempotent completion, explicit reconciliation/rollback and real SQL-triggered mid-completion failure with full rollback.

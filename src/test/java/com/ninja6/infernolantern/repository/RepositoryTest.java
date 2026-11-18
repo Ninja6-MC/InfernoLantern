@@ -162,7 +162,7 @@ class RepositoryTest {
             s.execute("INSERT INTO towers VALUES('"+towerId+"','test',20,100,'PORTABLE',5,2,NULL,NULL,NULL,NULL,NULL,NULL,0,0,41,43,8,NULL)");
         }
         var r=open();assertEquals(7,get(r.variant("test")).orElseThrow().rowVersion());var saved=get(r.tower(towerId)).orElseThrow();assertEquals(20,saved.state().tower().hp());assertEquals(8,saved.rowVersion());assertEquals(5,saved.state().tower().generation());
-        try(Connection c=PrivateSqlite.open(file())){assertEquals(2,Schema.pragma(c,"user_version"));}
+        try(Connection c=PrivateSqlite.open(file())){assertEquals(Schema.VERSION,Schema.pragma(c,"user_version"));}
     }
     @Test void backpressureAndCloseAreBoundedAndCallbacksStayOffCaller()throws Exception{
         var r=open(file(),1);seed(r);long caller=Thread.currentThread().threadId();
