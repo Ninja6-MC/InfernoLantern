@@ -121,3 +121,36 @@ tasks.register<Exec>("itemTestKit") {
     dependsOn(tasks.check)
     commandLine(python.get(), "scripts/build_item_test_kit.py", "--jar", tasks.jar.get().archiveFile.get().asFile.absolutePath)
 }
+
+// Explicit local test artifact only. Never included in build/libs or the release JAR set.
+val itemAcceptance = sourceSets.create("itemAcceptance") {
+    compileClasspath += sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+    runtimeClasspath += output + compileClasspath
+}
+sourceSets.test {
+    compileClasspath += itemAcceptance.output
+    runtimeClasspath += itemAcceptance.output
+}
+tasks.named<ProcessResources>(itemAcceptance.processResourcesTaskName) {
+    inputs.property("version", pluginVersion)
+    filesMatching(listOf("plugin.yml", "acceptance-build.properties")) { expand("version" to pluginVersion) }
+}
+val itemAcceptanceJar = tasks.register<Jar>("itemAcceptanceJar") {
+    group = "verification"
+    description = "Builds a separate default-disabled disposable pickup denial listener."
+    dependsOn(tasks.named(itemAcceptance.classesTaskName))
+    archiveBaseName.set("InfernoLanternItemAcceptance")
+    destinationDirectory.set(layout.buildDirectory.dir("acceptance-helper"))
+    from(itemAcceptance.output)
+}
+tasks.test { dependsOn(tasks.named(itemAcceptance.classesTaskName)) }
+
+// Preparing this kit does not authorize installation or arm a live listener.
+tasks.register<Exec>("itemAcceptanceKit") {
+    group = "verification"
+    description = "Packages an exact core/helper pair and bounded cancellation scenarios."
+    dependsOn(tasks.check, itemAcceptanceJar)
+    commandLine(python.get(), "scripts/build_item_acceptance_kit.py", "--core",
+        tasks.jar.get().archiveFile.get().asFile.absolutePath, "--helper",
+        itemAcceptanceJar.get().archiveFile.get().asFile.absolutePath)
+}
