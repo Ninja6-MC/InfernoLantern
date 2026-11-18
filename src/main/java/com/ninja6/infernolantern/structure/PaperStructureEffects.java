@@ -50,6 +50,8 @@ public final class PaperStructureEffects implements WorldEffects {
     private final List<ArmorStand> stagedVisuals=new ArrayList<>(),oldVisuals=new ArrayList<>();
     private final List<ItemStack> visualItems=new ArrayList<>();
     private final Map<UUID,ItemStack> oldHelmets=new HashMap<>();
+    private record OldVisual(Location position,boolean marker,boolean invisible,boolean invulnerable,boolean gravity,String operation) {}
+    private final Map<UUID,OldVisual> oldSnapshots=new HashMap<>();
     private final Set<UUID> quiesced=new HashSet<>();
     private final Map<UUID,Location> stageLocations=new HashMap<>();
     private Request request;
@@ -90,12 +92,20 @@ public final class PaperStructureEffects implements WorldEffects {
     private boolean atStage(Entity e){Location expected=stageLocations.get(e.getUniqueId());Location actual=e.getLocation();return expected!=null&&expected.getWorld().equals(actual.getWorld())&&expected.getX()==actual.getX()&&expected.getY()==actual.getY()&&expected.getZ()==actual.getZ();}
     private boolean visualStage(ArmorStand e){return ours(e)&&atStage(e)&&e.isMarker()&&e.isInvisible()&&e.isInvulnerable()&&!e.hasGravity()&&bytes(e.getEquipment().getHelmet())==null;}
     private boolean ours(Entity e){return owned(e,Math.incrementExact(request.revision()))&&request.operation().toString().equals(e.getPersistentDataContainer().get(OPERATION,PersistentDataType.STRING));}
+    private boolean oldVisualExact(ArmorStand stand,boolean quiet){
+        OldVisual captured=oldSnapshots.get(stand.getUniqueId());
+        return captured!=null&&owned(stand,request.revision())&&captured.position().equals(stand.getLocation())
+                &&captured.marker()==stand.isMarker()&&captured.invisible()==stand.isInvisible()
+                &&captured.invulnerable()==stand.isInvulnerable()&&captured.gravity()==stand.hasGravity()
+                &&Objects.equals(captured.operation(),stand.getPersistentDataContainer().get(OPERATION,PersistentDataType.STRING))
+                &&Arrays.equals(quiet?null:bytes(oldHelmets.get(stand.getUniqueId())),bytes(stand.getEquipment().getHelmet()));
+    }
     private boolean oldExact(){
         for(Component c:before.state().components()){
             if(c.kind()==ComponentKind.BLOCK){if(!state(cell(c)).equals(c.expectedState()))return false;}
             else {Entity e=world().getEntity(c.entity());if(!(e instanceof ArmorStand stand)||!owned(e,request.revision()))return false;
                 Location at=e.getLocation();if(at.getX()!=c.x()+.5||at.getY()!=c.y()||at.getZ()!=c.z()+.5)return false;
-                if(oldHelmets.containsKey(c.entity())&&!quiesced.contains(c.entity())&&!Arrays.equals(bytes(oldHelmets.get(c.entity())),bytes(stand.getEquipment().getHelmet())))return false;}
+                if(oldSnapshots.containsKey(c.entity())&&!oldVisualExact(stand,quiesced.contains(c.entity())))return false;}
         }return true;
     }
     private String replacement(Voxel voxel,String original){
@@ -121,7 +131,8 @@ public final class PaperStructureEffects implements WorldEffects {
         }
         for(Component c:before.state().components()){
             if(c.kind()==ComponentKind.BLOCK)captured.put(cell(c),state(cell(c)));
-            else {ArmorStand stand=(ArmorStand)world().getEntity(c.entity());oldVisuals.add(stand);ItemStack helmet=stand.getEquipment().getHelmet();oldHelmets.put(stand.getUniqueId(),helmet==null?null:helmet.clone());}
+            else {ArmorStand stand=(ArmorStand)world().getEntity(c.entity());oldVisuals.add(stand);ItemStack helmet=stand.getEquipment().getHelmet();oldHelmets.put(stand.getUniqueId(),helmet==null?null:helmet.clone());
+                oldSnapshots.put(stand.getUniqueId(),new OldVisual(stand.getLocation().clone(),stand.isMarker(),stand.isInvisible(),stand.isInvulnerable(),stand.hasGravity(),stand.getPersistentDataContainer().get(OPERATION,PersistentDataType.STRING)));}
         }
         var manifest=new ArrayList<Component>();
         if(!dropping){
@@ -196,7 +207,7 @@ public final class PaperStructureEffects implements WorldEffects {
         for(Component c:before.state().components())if(c.kind()==ComponentKind.BLOCK)target.put(cell(c),c.originalState());
         for(Component c:preparation.manifest())if(c.kind()==ComponentKind.BLOCK)target.put(cell(c),c.expectedState());
         for(var entry:target.entrySet())if(!state(entry.getKey()).equals(entry.getValue())){mutated.put(entry.getKey(),entry.getValue());write(entry.getKey(),entry.getValue());}
-        for(ArmorStand stand:oldVisuals){if(!owned(stand,request.revision()))return false;quiesced.add(stand.getUniqueId());stand.getEquipment().setHelmet(null);}
+        for(ArmorStand stand:oldVisuals){if(!oldVisualExact(stand,false))return false;quiesced.add(stand.getUniqueId());stand.getEquipment().setHelmet(null);}
         if(request.action()==Action.PLACE){if(!exactSource())return false;player.getInventory().setItem(sourceSlot,null);consumed=true;}
         applied=true;return true;
     }
@@ -207,7 +218,7 @@ public final class PaperStructureEffects implements WorldEffects {
             if(c.kind()==ComponentKind.BLOCK){if(!state(cell(c)).equals(c.expectedState()))return false;}
             else if(!(world().getEntity(c.entity()) instanceof ArmorStand stand)||!visualStage(stand))return false;
         }
-        for(ArmorStand stand:oldVisuals)if(!owned(stand,request.revision())||bytes(stand.getEquipment().getHelmet())!=null)return false;
+        for(ArmorStand stand:oldVisuals)if(!oldVisualExact(stand,true))return false;
         return true;
     }
     @Override public boolean rollback(Claim claim){
@@ -219,7 +230,7 @@ public final class PaperStructureEffects implements WorldEffects {
             write(entry.getKey(),captured.get(entry.getKey()));
         }
         for(ArmorStand stand:stagedVisuals){if(visualStage(stand))stand.remove();else restored=false;}
-        for(ArmorStand stand:oldVisuals)if(quiesced.contains(stand.getUniqueId())){if(!owned(stand,request.revision())||bytes(stand.getEquipment().getHelmet())!=null){restored=false;continue;}stand.getEquipment().setHelmet(oldHelmets.get(stand.getUniqueId()));quiesced.remove(stand.getUniqueId());}
+        for(ArmorStand stand:oldVisuals)if(quiesced.contains(stand.getUniqueId())){if(!oldVisualExact(stand,true)){restored=false;continue;}stand.getEquipment().setHelmet(oldHelmets.get(stand.getUniqueId()));quiesced.remove(stand.getUniqueId());}
         if(stagedDrop!=null){if(stageExact())stagedDrop.remove();else restored=false;}
         if(consumed){if(session(request)&&emptySource()){player.getInventory().setItem(sourceSlot,ItemStack.deserializeBytes(source));consumed=false;}else restored=false;}
         return restored&&oldExact()&&(request.action()!=Action.PLACE||exactSource());
@@ -231,7 +242,7 @@ public final class PaperStructureEffects implements WorldEffects {
     }
     @Override public boolean activate(Claim claim,TowerSnapshot completed){
         owner();if(!completed.mutationReady()||completed.rowVersion()!=Math.addExact(request.rowVersion(),2)||!completed.state().equals(claim.operation().intent().after())||!verify(claim))return false;
-        for(ArmorStand stand:oldVisuals){if(!owned(stand,request.revision()))return false;stand.remove();}
+        for(ArmorStand stand:oldVisuals){if(!oldVisualExact(stand,true))return false;stand.remove();}
         for(int i=0;i<stagedVisuals.size();i++)stagedVisuals.get(i).getEquipment().setHelmet(visualItems.get(i));
         if(stagedDrop!=null){
             stagedDrop.getPersistentDataContainer().remove(STAGED);stagedDrop.setInvulnerable(false);stagedDrop.setGravity(true);stagedDrop.setUnlimitedLifetime(!groundPolicy.despawns());
