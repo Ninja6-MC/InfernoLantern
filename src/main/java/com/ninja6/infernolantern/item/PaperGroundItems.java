@@ -227,7 +227,7 @@ public final class PaperGroundItems implements Listener, AutoCloseable {
         if (!(event.getEntity() instanceof Player player) || busy.contains(item.getUniqueId())) return;
         var parsed = identity.read(item.getItemStack());
         if (parsed.isEmpty()) { privateRejection(player); return; }
-        if (!providerAllowsPickup(player, item)) return;
+        if (!providerAllowsPickup(player, item, PickupValidationContext.Stage.PRE_INTENT)) return;
         int slot = player.getInventory().firstEmpty();
         if (slot < 0) return;
         UUID operation = UUID.randomUUID(), session = session(player), entityId = item.getUniqueId();
@@ -240,7 +240,7 @@ public final class PaperGroundItems implements Listener, AutoCloseable {
             if (!sameSession(player, session) || !item.isValid() || !exact(item.getItemStack(), bytes)
                     || !player.getWorld().equals(item.getWorld()) || player.getLocation().distanceSquared(item.getLocation()) > 9
                     || player.getInventory().getItem(slot) != null) return false;
-            if (!providerAllowsPickup(player, item) || !item.isValid() || !exact(item.getItemStack(), bytes)
+            if (!providerAllowsPickup(player, item, PickupValidationContext.Stage.EFFECT) || !item.isValid() || !exact(item.getItemStack(), bytes)
                     || player.getInventory().getItem(slot) != null || !sameSession(player, session)) return false;
             ItemStack portable = identity.create(item.getItemStack(), claim.resultingToken(), policy(token));
             player.getInventory().setItem(slot, portable);
@@ -254,10 +254,11 @@ public final class PaperGroundItems implements Listener, AutoCloseable {
         }));
     }
     private EntityPickupItemEvent validationPickup;
-    private boolean providerAllowsPickup(Player player, Item item) {
+    private boolean providerAllowsPickup(Player player, Item item, PickupValidationContext.Stage stage) {
         EntityPickupItemEvent check = new EntityPickupItemEvent(player, item, 0);
         EntityPickupItemEvent previous = validationPickup; validationPickup = check;
-        try { Bukkit.getPluginManager().callEvent(check); } finally { validationPickup = previous; }
+        try { PickupValidationContext.during(check, stage, () -> { Bukkit.getPluginManager().callEvent(check); return null; }); }
+        finally { validationPickup = previous; }
         return !check.isCancelled();
     }
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)

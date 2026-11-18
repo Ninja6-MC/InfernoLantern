@@ -43,3 +43,7 @@ The SQLite driver is a nested, SHA-256-pinned private dependency. Main code has 
 `org.sqlite` linkage; packaged-driver regression tests initialize a distinct older host
 driver first and verify the repository still uses its private 3.54.1 engine. The
 3.49.1.0 artifact is a test fixture only and is never included in the deployable JAR.
+
+## Separate item acceptance listener
+
+`./gradlew clean itemAcceptanceKit --offline --no-daemon` prepares a checked core/helper pair and bounded cancellation scenarios in `build/item-acceptance-kit`. The helper is default disabled, excluded from the sole production JAR/release artifact set and has no command or permission node. Preparation does not authorize installation. Read [the helper brief](ITEM_ACCEPTANCE_HELPER.md) before requesting approval; preserve existing quarantined data and use a separately authorized disposable setup.

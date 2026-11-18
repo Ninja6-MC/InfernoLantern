@@ -1,0 +1,6 @@
+name: InfernoLanternItemAcceptance
+version: '${version}'
+main: com.ninja6.infernolantern.acceptance.ItemAcceptancePlugin
+api-version: '26.3'
+depend: [InfernoLantern]
+description: Default-disabled disposable fixture pickup cancellation test listener.

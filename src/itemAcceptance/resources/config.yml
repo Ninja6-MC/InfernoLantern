@@ -1,0 +1,8 @@
+# Test listener only. Installation and arming require separate maintainer approval.
+enabled: false
+# control, original, pre-intent, effect. No mode changes without a clean restart.
+scenario: control
+# Bounded to 10..300 seconds; one first eligible fixture per plugin enable.
+ttl-seconds: 120
+# Bounded to 1..4096 matching pickup event callbacks.
+max-events: 512
