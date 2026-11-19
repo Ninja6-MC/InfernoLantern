@@ -8,6 +8,7 @@ import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 
@@ -86,11 +87,13 @@ public final class ZombieCombat implements AutoCloseable {
         final Settings settings;
         final WorldScheduler.Anchor anchor;
         final UUID proxyToken = UUID.randomUUID();
+        final ArrayDeque<AcceptedMelee> melee = new ArrayDeque<>();
         TowerSnapshot row;
         SqliteRepository.TowerObservation observation;
         CommitPermit idle = new CommitPermit();
         UUID proxy, timedOut;
         Lease lease;
+        AcceptedMelee activeMelee;
         long nextAttack;
         boolean busy;
         volatile boolean unavailable;
@@ -114,17 +117,20 @@ public final class ZombieCombat implements AutoCloseable {
     private static final class Lease {
         final Deployment deployment;
         final UUID zombie;
+        final UUID proxy;
         final CommitPermit permit = new CommitPermit();
-        final ArrayDeque<Double> incoming = new ArrayDeque<>();
-        boolean hit, targeted;
+        boolean hit, targeted, detached;
         long meleeSince;
 
         Lease(Deployment deployment, UUID zombie, long tick) {
             this.deployment = deployment;
             this.zombie = zombie;
+            proxy = deployment.proxy;
             meleeSince = tick;
         }
     }
+
+    private record AcceptedMelee(Lease source, double amount) {}
 
     public ZombieCombat(SqliteRepository repository, CatalogService catalog, WorldScheduler scheduler,
                         TowerHealth health, WorldPort world, Runnable requireOwner, LongSupplier clock,
@@ -178,7 +184,7 @@ public final class ZombieCombat implements AutoCloseable {
         Deployment current = deployments.get(tower.id());
         if (current == null || !current.sameDeployment(tower) || !row.mutationReady()
                 || !catalog.isPublished(current.catalog) || current.unavailable || current.lease != null
-                || current.busy || unsettledCooling.contains(tower.id())) return null;
+                || current.busy || pendingMelee(current) || unsettledCooling.contains(tower.id())) return null;
         return current.idle;
     }
 
@@ -205,9 +211,14 @@ public final class ZombieCombat implements AutoCloseable {
             release(current, true);
             suspend(current);
         }
-        if (current.lease == null || !effective(current)) suspend(current);
+        Lease lease = current.lease;
+        if (!effective(current) || lease == null && !detachedMeleeAllowed(current)
+                || lease != null && lease.targeted && !ownedTargetAllowed(lease)) {
+            suspend(current);
+            lease = null;
+        }
         if (current.busy || unsettledCooling.contains(current.tower.id()) || inFlight.get() >= concurrency) return;
-        if (current.lease == null && tick < current.nextAttack) return;
+        if (current.lease == null && !pendingMelee(current) && tick < current.nextAttack) return;
         if (!current(current)) {
             refresh(current);
             return;
@@ -217,13 +228,12 @@ public final class ZombieCombat implements AutoCloseable {
             closeObservation(current);
             return;
         }
-        Lease lease = current.lease;
         if (lease != null && !reachable(lease)) {
             suspend(current);
             lease = null;
         }
-        if (lease != null && !lease.incoming.isEmpty()) {
-            damage(lease, lease.incoming.removeFirst());
+        if (!current.melee.isEmpty()) {
+            damage(current.melee.removeFirst());
             return;
         }
         if (tick < current.nextAttack) return;
@@ -323,18 +333,53 @@ public final class ZombieCombat implements AutoCloseable {
         return repository.recordRepairCooling(current.catalog.revision(), current.row, attackedAt, null);
     }
 
-    private void damage(Lease lease, double amount) {
+    private void damage(AcceptedMelee hit) {
+        Lease lease = hit.source();
         Deployment current = lease.deployment;
-        if (!incomingAllowed(lease)) return;
+        if (!acceptedDamageAllowed(lease)) {
+            suspend(current);
+            return;
+        }
+        current.activeMelee = hit;
         var configured = current.catalog.entries().get(current.tower.variantId()).definition().repair();
         long cooling = configured == null ? 0 : configured.coolingMillis();
-        submit(current, health.damage(current.catalog, current.row, new TowerHealth.Damage(amount, cooling),
-                row -> incomingAllowed(lease) ? new TowerHealth.Admission(lease.permit) : null,
+        submit(current, health.damage(current.catalog, current.row, new TowerHealth.Damage(hit.amount(), cooling),
+                row -> acceptedDamageAllowed(lease) ? new TowerHealth.Admission(lease.permit) : null,
                 UUID.randomUUID(), world.defeatEffects()), (result, failure) -> {
-                    if (failure == null && current.lease == lease && registered(current)) {
-                        if (result.settled().state().tower().hp() == 0) suspend(current);
-                    } else if (failure != null && registered(current)) suspend(current);
+                    current.activeMelee = null;
+                    if (!registered(current)) return;
+                    if (failure != null || result.settled().state().tower().hp() == 0
+                            || current.lease == null && current.melee.isEmpty()) {
+                        suspend(current);
+                        closeObservation(current);
+                    }
                 });
+    }
+
+    private boolean acceptedDamageAllowed(Lease source) {
+        Deployment deployment = source.deployment;
+        if (!source.detached) return incomingAllowed(source);
+        // A newer unrelated target does not revoke the earlier, already accepted native event.
+        return current(deployment) && effective(deployment) && detachedProtectionAllows(source)
+                && current(deployment);
+    }
+
+    private boolean detachedMeleeAllowed(Deployment deployment) {
+        AcceptedMelee hit = deployment.activeMelee;
+        if (hit == null) hit = deployment.melee.peekFirst();
+        return hit != null && detachedProtectionAllows(hit.source());
+    }
+
+    private boolean detachedProtectionAllows(Lease source) {
+        Deployment deployment = source.deployment;
+        return source.detached && source.proxy.equals(deployment.proxy)
+                && world.allows(Action.TARGET, deployment.row, source.proxy, source.zombie)
+                && world.allows(Action.MELEE, deployment.row, source.proxy, source.zombie)
+                && source.proxy.equals(deployment.proxy);
+    }
+
+    private static boolean pendingMelee(Deployment deployment) {
+        return deployment.activeMelee != null || !deployment.melee.isEmpty();
     }
 
     /** Exact lease captured before damage is zeroed. Only the native adapter can request one. */
@@ -359,8 +404,8 @@ public final class ZombieCombat implements AutoCloseable {
         proof.delivered = true;
         if (!Double.isFinite(amount) || amount <= 0) return false;
         Lease lease = proof.lease;
-        if (!incomingAllowed(lease) || lease.incoming.size() >= MAX_QUEUED_HITS) return false;
-        lease.incoming.addLast(amount);
+        if (!incomingAllowed(lease) || lease.deployment.melee.size() >= MAX_QUEUED_HITS) return false;
+        lease.deployment.melee.addLast(new AcceptedMelee(lease, amount));
         lease.meleeSince = tick;
         return true;
     }
@@ -386,9 +431,11 @@ public final class ZombieCombat implements AutoCloseable {
         requireOwner.run();
         Lease lease = zombies.get(zombie);
         if (lease == null) return;
-        if (Objects.equals(lease.deployment.proxy, proxy)) lease.targeted = true;
-        else if (lease.targeted) {
+        if (Objects.equals(lease.proxy, proxy)) {
+            lease.targeted = lease.deployment.settings.mode() != Mode.NORMAL;
+        } else if (lease.targeted) {
             // The event has not published its newer target yet; leave it untouched.
+            lease.detached = true;
             forget(lease.deployment, false);
         }
     }
@@ -411,14 +458,22 @@ public final class ZombieCombat implements AutoCloseable {
     }
 
     private boolean incomingAllowed(Lease lease) {
-        return lease.targeted && allows(lease, Action.MELEE)
-                && world.hasOwnedTarget(lease.zombie, lease.deployment.proxy);
+        return lease.targeted && allows(lease, Action.MELEE) && ownedTargetAllowed(lease)
+                && current(lease.deployment);
+    }
+
+    private boolean ownedTargetAllowed(Lease lease) {
+        Deployment deployment = lease.deployment;
+        return leaseCurrent(lease) && world.hasOwnedTarget(lease.zombie, deployment.proxy)
+                && world.allows(Action.TARGET, deployment.row, deployment.proxy, lease.zombie)
+                && leaseCurrent(lease) && world.hasOwnedTarget(lease.zombie, deployment.proxy);
     }
 
     private boolean allows(Lease lease, Action action) {
         Deployment deployment = lease.deployment;
         return leaseCurrent(lease) && current(deployment) && effective(deployment) && reachable(lease)
-                && world.allows(action, deployment.row, deployment.proxy, lease.zombie) && current(deployment);
+                && world.allows(action, deployment.row, deployment.proxy, lease.zombie)
+                && leaseCurrent(lease) && current(deployment);
     }
 
     private boolean reachable(Lease lease) {
@@ -460,13 +515,16 @@ public final class ZombieCombat implements AutoCloseable {
         if (old == null) return null;
         deployment.lease = null;
         zombies.remove(old.zombie, old);
-        old.permit.revoke();
+        if (!old.detached || !pendingMelee(deployment)) old.permit.revoke();
         if (timeout) deployment.timedOut = old.zombie;
         deployment.idle = new CommitPermit();
         return old;
     }
 
     private void suspend(Deployment deployment) {
+        if (deployment.activeMelee != null) deployment.activeMelee.source().permit.revoke();
+        deployment.melee.forEach(hit -> hit.source().permit.revoke());
+        deployment.melee.clear();
         try {
             release(deployment, false);
         } finally {
@@ -486,18 +544,26 @@ public final class ZombieCombat implements AutoCloseable {
         deployment.busy = true;
         inFlight.incrementAndGet();
         operation.whenComplete((result, failure) -> {
+            var released = new AtomicBoolean();
+            Runnable releaseSlot = () -> {
+                if (released.compareAndSet(false, true)) inFlight.decrementAndGet();
+            };
             try {
                 scheduler.supply(deployment.anchor, () -> {
+                    // A later owner tick can run before the scheduling future publishes completion.
+                    releaseSlot.run();
                     deployment.busy = false;
                     completed.accept(result, failure);
                     return null;
                 }).whenComplete((ignored, unavailable) -> {
-                    inFlight.decrementAndGet();
-                    if (unavailable != null) unavailable(deployment, result);
+                    if (unavailable != null) {
+                        unavailable(deployment, result);
+                        releaseSlot.run();
+                    }
                 });
             } catch (RuntimeException unavailable) {
-                inFlight.decrementAndGet();
                 unavailable(deployment, result);
+                releaseSlot.run();
             }
         });
     }

@@ -153,6 +153,83 @@ class ZombieCombatTest {
         assertTrue(world.removed.contains(proxy));
     }
 
+    @Test void ownerDeliveryReleasesWorkCapacityBeforeSchedulingFuturePublishes() throws Exception {
+        combat.track(tower, settings, new Settings(Mode.NORMAL, 6, 2, 1_000));
+        combat.tick(0);
+        owner.deferCompletion = true;
+        owner.next();
+        owner.deferCompletion = false;
+        try {
+            combat.tick(0);
+            assertEquals(List.of(FIRST), world.attacks, "Owner work must release its slot before the next tick");
+        } finally {
+            owner.publishDeferred();
+        }
+        owner.next();
+    }
+
+    @Test void targetPermissionLossRejectsCapturedAndQueuedMeleeAndReleasesOwnedTarget() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        var queued = combat.captureMelee(proxy, FIRST);
+        var captured = combat.captureMelee(proxy, FIRST);
+        assertTrue(combat.melee(queued, 5));
+        combat.tick(2);
+        owner.waitForWork();
+        world.denied.add(Action.TARGET);
+        assertFalse(combat.melee(captured, 2));
+        assertNull(combat.captureMelee(proxy, FIRST));
+        combat.tick(3); // Revalidate even while the health request is awaiting owner authorization.
+        assertFalse(world.targets.containsKey(FIRST));
+        assertTrue(world.removed.contains(proxy));
+        owner.next();
+        owner.next();
+        assertEquals(75, current().state().tower().hp());
+    }
+
+    @Test void alreadyAcceptedDamageSettlesOnceAfterUnrelatedTargetReplacement() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        var accepted = combat.captureMelee(proxy, FIRST);
+        var notYetAccepted = combat.captureMelee(proxy, FIRST);
+        assertTrue(combat.melee(accepted, 3.5));
+        assertFalse(combat.melee(accepted, 3.5));
+        combat.targetChanged(FIRST, null);
+        world.targets.put(FIRST, EXTERNAL);
+        assertFalse(combat.melee(notYetAccepted, 20));
+        assertNull(combat.captureMelee(proxy, FIRST));
+        assertNull(combat.idle(current()));
+        combat.tick(2);
+        owner.next();
+        owner.next();
+        assertEquals(71.5, current().state().tower().hp());
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertTrue(world.removed.contains(proxy));
+    }
+
+    @Test void detachedDamageCannotCrossProviderDenial() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        combat.targetChanged(FIRST, null);
+        world.targets.put(FIRST, EXTERNAL);
+        combat.tick(2);
+        owner.waitForWork();
+        world.denied.add(Action.MELEE);
+        combat.tick(3);
+        owner.next();
+        owner.next();
+        assertEquals(75, current().state().tower().hp());
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertTrue(world.removed.contains(proxy));
+    }
+
     @Test void acquiredLeaseRevokesIdlePermitAndQueuedMeleeCannotCrossUnload() throws Exception {
         combat.track(tower, settings, new Settings(Mode.RETALIATION, 6, 2, 1_000));
         var idle = combat.idle(tower);
@@ -354,13 +431,25 @@ class ZombieCombatTest {
     private static final class Owner implements WorldScheduler {
         final Thread thread = Thread.currentThread();
         final BlockingQueue<Runnable> work = new LinkedBlockingQueue<>();
+        boolean deferCompletion;
+        private Runnable deferred;
         @Override public <T> CompletableFuture<T> supply(Anchor anchor, Supplier<T> action) {
             var result = new CompletableFuture<T>();
             work.add(() -> {
-                try { result.complete(action.get()); }
-                catch (Throwable failure) { result.completeExceptionally(failure); }
+                try {
+                    T value = action.get();
+                    if (deferCompletion) deferred = () -> result.complete(value);
+                    else result.complete(value);
+                } catch (Throwable failure) {
+                    result.completeExceptionally(failure);
+                }
             });
             return result;
+        }
+        void publishDeferred() {
+            assertNotNull(deferred);
+            deferred.run();
+            deferred = null;
         }
         void require() { assertSame(thread, Thread.currentThread()); }
         void next() throws Exception {

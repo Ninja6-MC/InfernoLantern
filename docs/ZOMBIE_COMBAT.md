@@ -41,8 +41,9 @@ Release an owned retaliation or priority target after 200 ticks without a valid 
 melee event. Repeated outgoing beam hits do not postpone that timeout. The released
 zombie is excluded while still reachable, until the next timeout replaces that exclusion
 or a fresh deployment registration begins. Release clears only the exact owned target.
-If another target is selected, that event revokes the lease while leaving the external
-target alone.
+The owner loop rechecks current target permission and releases the owned target if it is
+lost. If another target is selected, that event revokes the lease while leaving the
+external target alone.
 
 ## Damage and repair
 
@@ -59,11 +60,14 @@ is unaffected. After the exact uncancelled positive outgoing damage event, the a
 attempts a twelve-point particle beam. A visual failure does not change the attack result.
 
 Incoming melee requires a direct native zombie attack, an exact current lease, owned
-target, current protection permission and a positive pre-shield final damage value.
+target, current targeting and melee permissions, and a positive pre-shield final damage
+value.
 The shield captures the exact lease at HIGHEST and zeros native proxy damage. MONITOR
 requires an uncancelled event and a still-zero native result. The exact event can deliver
-one melee observation. A bounded per-lease queue serializes accepted observations, and a
-revoked lease cannot transfer a queued hit to a new deployment. A damaged tower uses
+one melee observation. A bounded deployment queue serializes accepted observations.
+An unrelated target replacement closes the native lease to new hits. A hit already
+accepted against the same deployment can settle after fresh protection checks. Deployment
+changes, unloads and permission denial revoke pending damage. A damaged tower uses
 the existing authoritative health, repair cooling and defeat compaction path.
 Provider-native modifications after the proxy shield and external direct entity/health
 edits require independent compatibility tests.
