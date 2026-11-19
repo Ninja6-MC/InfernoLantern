@@ -98,3 +98,5 @@ SQLite is selected as the initial local backend for this bounded foundation. The
 - [SQLite synchronous durability modes](https://sqlite.org/pragma.html#pragma_synchronous)
 - [SQLite transaction modes](https://sqlite.org/lang_transaction.html)
 - [SQLite online backup API](https://sqlite.org/backup.html)
+
+Schema 4 adds explicit catalog-managed IDs, durable catalog publication revisions and catalog-owned award holds. Migration is active on repository open, but adopts no legacy/prototype variants. See [Configuration Catalog](CONFIGURATION_CATALOG.md) for publication, readiness, geometry/HP deferral and native integration boundaries. Older candidates reject schema 4; no downgrade or deployment into preserved evidence is authorized.

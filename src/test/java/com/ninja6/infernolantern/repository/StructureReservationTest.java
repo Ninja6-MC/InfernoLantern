@@ -82,7 +82,7 @@ class StructureReservationTest {
     }
     @Test void portableOnlyV2MigratesWithoutInventingReservations()throws Exception{
         legacy(false,false);var r=open();assertEquals(Form.PORTABLE,await(r.tower(id)).orElseThrow().state().tower().form());assertTrue(await(r.structureCells(id)).isEmpty());
-        try(var c=PrivateSqlite.open(file())){assertEquals(3,Schema.pragma(c,"user_version"));}
+        try(var c=PrivateSqlite.open(file())){assertEquals(Schema.VERSION,Schema.pragma(c,"user_version"));}
     }
     @Test void v2PlacedGeometryFailsMigrationAndPreservesOriginalSchema()throws Exception{
         legacy(true,false);byte[] original=Files.readAllBytes(file());assertThrows(ExecutionException.class,()->await(SqliteRepository.open(file(),64)));assertArrayEquals(original,Files.readAllBytes(file()));

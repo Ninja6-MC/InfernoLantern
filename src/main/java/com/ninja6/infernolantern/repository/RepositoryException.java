@@ -4,6 +4,10 @@ package com.ninja6.infernolantern.repository;
 public class RepositoryException extends RuntimeException {
     public RepositoryException(String message) { super(message); }
     public RepositoryException(String message, Throwable cause) { super(message, cause); }
+    /** A catalog guard rejected this transaction before any writes; physical compensation still needs proof. */
+    public static final class CatalogSuperseded extends RepositoryException {
+        public CatalogSuperseded(){super("Catalog changed before completion");}
+    }
     public static final class Conflict extends RepositoryException {
         public Conflict(String message) { super(message); }
     }

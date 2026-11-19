@@ -22,6 +22,10 @@ public final class RepositoryRecords {
     public record Variant(String id, long definitionRevision, VariantStatus status, Document lastValidDefinition, long rowVersion) {
         public Variant { identifier(id); nonnegative(definitionRevision); Objects.requireNonNull(status); Objects.requireNonNull(lastValidDefinition); nonnegative(rowVersion); }
     }
+    /** One durable catalog publication; unmanaged legacy/prototype definitions are not included. */
+    public record CatalogSnapshot(long revision, Document configuration, List<Variant> variants) {
+        public CatalogSnapshot { nonnegative(revision); Objects.requireNonNull(configuration); variants=List.copyOf(variants); }
+    }
     public record Position(UUID world, int x, int y, int z, String orientation) {
         public Position { Objects.requireNonNull(world); text(orientation, 64); }
     }
