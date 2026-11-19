@@ -10,6 +10,9 @@ including an exact explosion identity, world, the affected authoritative compone
 and one applicable raw damage amount for the whole lantern. The component list is an
 exposure proof, independent of a protection provider's outcome. Use the physical
 representation of each candidate tower to prove which of its components were exposed.
+Only owned entities and actual owned block replacements can supply exposure. Clearance
+reservations over unchanged terrain or empty cells still protect placement boundaries,
+but they are ineligible as affected components.
 A missing damage callback, a filtered block list, or nearby explosion coordinates alone
 cannot prove complete exposure, damage, or permission. Incorrect owners, unknown
 components, incomplete or uncorrelated evidence are ineligible. The service neither

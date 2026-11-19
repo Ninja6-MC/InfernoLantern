@@ -106,6 +106,17 @@ class StructureLifecycleTest {
         return observe(impact,impact.affected().stream().collect(java.util.stream.Collectors.toMap(
                 component->component,component->BlastImpact.Decision.ALLOW)));
     }
+    @Test void unchangedClearanceCannotAdmitABlast()throws Exception{
+        execute(Action.PLACE);execute(Action.EXPAND);
+        TowerSnapshot before=row();
+        var policy=new Policy(1,50,200,1000,false);
+        for(BlastImpact impact:List.of(blast(true,25,1,"cell.2"),blast(true,25,1,"cell.0","cell.2"))){
+            assertEquals(Outcome.REJECTED,drain(service.blast(before,policy,impact,new Effects(),this::allowBlast)).outcome());
+            assertTrue(await(repository.operation(impact.operation(id))).isEmpty());
+            assertEquals(before,row());
+        }
+        assertTrue(usableDrops.isEmpty());assertEquals("minecraft:barrier[waterlogged=false]",block(cell(70)));
+    }
     @Test void blastMixedDenialAndPartialExposureLeaveTheEntireStructureUntouched()throws Exception{
         execute(Action.PLACE);execute(Action.EXPAND);
         TowerSnapshot before=row();BlastImpact impact=blast(true,35,1,"cell.0","cell.1");

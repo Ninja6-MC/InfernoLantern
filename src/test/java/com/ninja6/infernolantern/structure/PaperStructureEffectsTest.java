@@ -139,6 +139,19 @@ class PaperStructureEffectsTest {
         @Override public boolean allowed(Request request,State before){return permission;}
         @Override public boolean mayRestore(Request request,State before){return permission;}
     };
+    @Test void actualBlastAdapterDoesNotStageAHitOnUnchangedClearance(){
+        var effects=new PaperStructureEffects(blastPhysical,new BlastTemplate(),GroundPolicy.DEFAULT,
+                item->fail("No item may activate"));
+        var components=new ArrayList<>(before().state().components());
+        components.add(new Component("clearance",ComponentKind.BLOCK,worldId,4,71,4,"minecraft:air","minecraft:air",null,null));
+        var tower=new Tower(towerId,"fixture",75,100,Form.EXPANDED,2,1,actor,base,true,false,0,44);
+        var source=new TowerSnapshot(new State(tower,null,components),2,null);
+        var impact=BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of("clearance"),25,1,true,1000,0);
+        var request=new Request(impact.operation(towerId),towerId,2,2,1,null,null,Action.BLAST,base,
+                new Policy(1,50,200,1000,false),impact);
+        assertNull(effects.prepare(request,source));assertNull(dropped);
+        assertEquals("minecraft:barrier",blocks.get(new Cell(worldId,4,70,4)));
+    }
     @Test void actualBlastAdapterStagesOneTokenAndRemovesOnlyItsOwnStructure(){
         var admitted=new ArrayList<Item>();
         var effects=new PaperStructureEffects(blastPhysical,new BlastTemplate(),GroundPolicy.DEFAULT,admitted::add);

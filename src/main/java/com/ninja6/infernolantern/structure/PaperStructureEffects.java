@@ -163,7 +163,8 @@ public final class PaperStructureEffects implements WorldEffects {
     }
     @Override public Preparation prepare(Request r,TowerSnapshot snapshot){
         owner();if(request!=null)throw new IllegalStateException("Effects already captured");request=r;before=snapshot;
-        if(!session(r)||!access.allowed(r,before.state())||!oldExact())return null;
+        if(!session(r)||r.action()==Action.BLAST&&!r.impact().matches(before.state())
+                ||!access.allowed(r,before.state())||!oldExact())return null;
         boolean dropping=r.action()==Action.BREAK||r.action()==Action.ADMIN_RECOVER||r.action()==Action.BLAST;
         if(r.action()==Action.PLACE){ItemStack item=player.getInventory().getItem(sourceSlot);
             if(identity.read(item).filter(ItemLifecycle.token(before.state().tower())::equals).isEmpty())return null;

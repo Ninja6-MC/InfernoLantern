@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.structure;
 
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Component;
+import com.ninja6.infernolantern.repository.RepositoryRecords.ComponentKind;
 import com.ninja6.infernolantern.repository.RepositoryRecords.State;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Tower;
 
@@ -22,6 +23,8 @@ import static com.ninja6.infernolantern.repository.RepositoryRecords.repairDeadl
 public record BlastImpact(UUID explosion, UUID world, Set<String> affected, double damage,
                           double multiplier, boolean respectProtection, boolean expanded,
                           long damageAtMillis, long repairCoolingMillis) {
+    private static final Set<String> AIR = Set.of("minecraft:air", "minecraft:cave_air", "minecraft:void_air");
+
     public enum Decision { ALLOW, DENY, UNKNOWN }
 
     /**
@@ -79,7 +82,12 @@ public record BlastImpact(UUID explosion, UUID world, Set<String> affected, doub
     public boolean matches(State before) {
         return before.tower().position() != null && world.equals(before.tower().position().world())
                 && expanded == (before.tower().controller() != null)
-                && before.components().stream().map(Component::id).collect(Collectors.toSet()).containsAll(affected);
+                && before.components().stream().filter(BlastImpact::physicalComponent).map(Component::id).collect(Collectors.toSet()).containsAll(affected);
+    }
+
+    private static boolean physicalComponent(Component component) {
+        if (component.kind() == ComponentKind.ENTITY) return true;
+        return !component.originalState().equals(component.expectedState()) && !AIR.contains(component.expectedState());
     }
 
     boolean permits(Observation observation) {
