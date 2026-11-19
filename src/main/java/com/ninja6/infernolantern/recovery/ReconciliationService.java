@@ -5,6 +5,7 @@ import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.LongSupplier;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 /** Explicit reconciliation calls only. No startup replay, force loading or replacement delivery. */
@@ -24,14 +25,22 @@ public final class ReconciliationService implements AutoCloseable {
         Observation inspect(Operation operation,TowerSnapshot tower,RecoveryEnvelope.Context context);
         /** Independently reread the exact source/target and coverage before a database decision. */
         boolean revalidate(Inspection inspection);
-        /** Revalidate again after the winning commit; activate only an existing exact staged representation. */
+        /** Revalidate after the winning commit. The resolved row includes any deadline stamped at completion. */
         boolean publish(Inspection inspection,TowerSnapshot resolved);
     }
     private final SqliteRepository repository;
     private final WorldScheduler scheduler;
+    private final LongSupplier exitClock;
     private final Set<UUID> active=ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
-    public ReconciliationService(SqliteRepository repository,WorldScheduler scheduler){this.repository=Objects.requireNonNull(repository);this.scheduler=Objects.requireNonNull(scheduler);}
+    public ReconciliationService(SqliteRepository repository,WorldScheduler scheduler){
+        this(repository,scheduler,System::currentTimeMillis);
+    }
+    /** The exit clock runs on the SQL worker and must have no server dependencies. */
+    public ReconciliationService(SqliteRepository repository,WorldScheduler scheduler,LongSupplier exitClock){
+        this.repository=Objects.requireNonNull(repository);this.scheduler=Objects.requireNonNull(scheduler);
+        this.exitClock=Objects.requireNonNull(exitClock);
+    }
     public CompletableFuture<Result> reconcile(UUID id,WorldPort port){
         Objects.requireNonNull(id);Objects.requireNonNull(port);
         if(closed||!active.add(id))return done(id,Outcome.UNAVAILABLE,"Coordinator closed or operation already being observed");
@@ -66,19 +75,26 @@ public final class ReconciliationService implements AutoCloseable {
                         CompletableFuture<Operation> phase;
                         if(rollback)phase=op.phase()==Phase.RECONCILING?CompletableFuture.completedFuture(op):repository.advanceOperation(id,op.rowVersion(),op.phase(),Phase.RECONCILING,"Recovery observed exact original representation; no physical replay");
                         else phase=op.phase()==Phase.EFFECTS_APPLIED?CompletableFuture.completedFuture(op):repository.advanceOperation(id,op.rowVersion(),op.phase(),Phase.EFFECTS_APPLIED,"Recovery observed exact named after representation; independent save coverage supplied");
-                        return phase.thenCompose(current->repository.finalizeReconciliation(id,current.rowVersion(),rollback,"Recovered "+inspection.observation().physical()+"; "+inspection.observation().evidence()))
-                                .thenCompose(receipt->repository.tower(op.intent().towerId()))
-                                .thenCompose(row->{
-                                    State expected=rollback?op.before():op.intent().after();
+                        return phase.thenCompose(current->finalizeObserved(current,inspection.observation(),rollback))
+                                .thenCompose(receipt->repository.tower(op.intent().towerId()).thenCompose(row->{
+                                    State expected=rollback?receipt.before():receipt.intent().after();
                                     if(row.isEmpty()||!resolved(op,row.get(),expected))return done(id,Outcome.STALE,"Newer representation prevents publication");
                                     TowerSnapshot committed=row.get();
                                     return scheduler.supply(inspection.context().anchor(),()->!closed&&port.publish(inspection,committed))
                                             .handle((published,failure)->failure==null&&Boolean.TRUE.equals(published))
                                             .thenCompose(published->published?done(id,rollback?Outcome.ROLLED_BACK:Outcome.COMPLETED,"Exact representation reconciled; no replay or replacement"):
                                                 freeze(inspection,committed));
-                                }).exceptionally(failure->new Result(id,unwrap(failure) instanceof RepositoryException.Conflict?Outcome.STALE:Outcome.UNAVAILABLE,"Finalization changed or failed; no publication replayed"));
+                                })).exceptionally(failure->new Result(id,unwrap(failure) instanceof RepositoryException.Conflict?Outcome.STALE:Outcome.UNAVAILABLE,"Finalization changed or failed; no publication replayed"));
                     });
         });
+    }
+    private CompletableFuture<Operation> finalizeObserved(Operation op,Observation observation,boolean rollback){
+        UUID id=op.intent().id();
+        String evidence="Recovered "+observation.physical()+"; "+observation.evidence();
+        if(!rollback&&timedStructureExit(op.intent().kind())){
+            return repository.finalizeTimedExitReconciliation(id,op.rowVersion(),evidence,exitClock);
+        }
+        return repository.finalizeReconciliation(id,op.rowVersion(),rollback,evidence);
     }
     private CompletableFuture<Result> freeze(Inspection inspection,TowerSnapshot committed){
         UUID id=inspection.operation().intent().id();

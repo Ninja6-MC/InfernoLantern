@@ -257,9 +257,9 @@ Missing variants retire using their durable last valid definition. Pause new awa
 light and defence; preserve controller and permit authorized compaction/breaking. Hold initial
 pending awards while retired, without marking them delivered; resuming the same ID may resume
 claims after validation. Reject or defer geometry changes for existing expanded instances; their
-stored manifest is authoritative for cleanup. Proposed HP migration clamps values above a
-reduced maximum and never heals on increasing the maximum; final migration policy requires
-sign-off before a production configuration migration.
+stored manifest is authoritative for cleanup. An approved maximum-HP change preserves absolute
+health up to the new cap and advances affected live tower row versions in the same transaction.
+Pending tower operations fence publication.
 
 ## 8. Repair and Resource Transactions
 
@@ -368,10 +368,10 @@ builds, client versions, model strategy and supported provider versions when tes
 | Supported server/client versions and command/permission names | Public runtime interface; repository and GPL-3.0 license are selected. |
 | Compact/expanded rendering, collision, damage target, real-light implementation and dimensions | Finishing G0; do not build final packs/reward logic first. |
 | World selector syntax, submerged detection, provider-specific blast precedence/exposure | World/fluid/blast implementation. |
-| Repair final-item rounding, cooling defaults, maximum HP migration, compact non-blast damage | Repair/damage modules and production config migration. |
+| Repair final-item rounding, cooling defaults, compact non-blast damage | Repair/damage modules and production config migration. |
 | Controller logout/eligibility loss behaviour, unreachable timeout and target arbitration | Combat lifecycle tests. Controller record persists until compaction; choose operational suspension separately. |
 | Dragon recipients, repeat policy, attribution and provider | Dragon adapter. |
-| Numeric balance, health indicator visibility, pack readiness for externally managed delivery | Playtest configuration and UI release. |
+| Numeric balance, health indicator presentation, pack readiness for externally managed delivery | Playtest configuration and UI release. |
 | Folia, PvP and further integrations | Dedicated later compatibility modules. |
 | Permanent deletion command and refunds | Future feature; never inferred from missing config. |
 

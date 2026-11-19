@@ -14,6 +14,7 @@ import java.util.*;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
 import static com.ninja6.infernolantern.structure.StructureLifecycle.*;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.timedStructureExit;
 
 /** Reusable Paper owner-thread effects; not registered as a native placement/menu handler. */
 public final class PaperStructureEffects implements WorldEffects {
@@ -41,11 +42,16 @@ public final class PaperStructureEffects implements WorldEffects {
         /** Current protection authorization for restoring only the adapter's exact owned changes. */
         default boolean mayRestore(Request request,State before) { return true; }
     }
+    /** System source has distinct protection checks for applying and restoring the owned geometry. */
+    @FunctionalInterface public interface DefeatAccess {
+        boolean allowed(Request request,State before,boolean restoring);
+    }
     private static final NamespacedKey TOWER=key("structure_tower"),REVISION=key("structure_revision"),OPERATION=key("structure_operation"),STAGED=key("item_staged");
     private static NamespacedKey key(String name){return new NamespacedKey("infernolantern",name);}
     private final Player player;
     private final Supplier<UUID> currentSession;
     private final Access access;
+    private final boolean systemDefeat;
     private final Layout layout;
     private final int sourceSlot;
     private final ItemStack appearance;
@@ -74,13 +80,23 @@ public final class PaperStructureEffects implements WorldEffects {
     }
     PaperStructureEffects(Player player,Supplier<UUID> currentSession,Access access,Layout layout,int sourceSlot,
                           ItemStack appearance,GroundPolicy groundPolicy,Consumer<Item> groundAdmission,boolean sourceWaterAllowed){
-        owner();this.player=Objects.requireNonNull(player);this.currentSession=Objects.requireNonNull(currentSession);this.access=Objects.requireNonNull(access);
+        owner();this.systemDefeat=false;this.player=Objects.requireNonNull(player);this.currentSession=Objects.requireNonNull(currentSession);this.access=Objects.requireNonNull(access);
         this.layout=Objects.requireNonNull(layout);this.sourceSlot=sourceSlot;this.appearance=Objects.requireNonNull(appearance).clone();
         this.groundPolicy=Objects.requireNonNull(groundPolicy);this.groundAdmission=Objects.requireNonNull(groundAdmission);this.sourceWaterAllowed=sourceWaterAllowed;
         if(sourceSlot<0||sourceSlot>=player.getInventory().getSize())throw new IllegalArgumentException("Source slot");
     }
+    /** World-only effects for defeat. The supplied authority must check current protection on each call. */
+    public PaperStructureEffects(DefeatAccess authority,Layout compactLayout,boolean sourceWaterAllowed){
+        owner();Objects.requireNonNull(authority);
+        this.systemDefeat=true;this.layout=Objects.requireNonNull(compactLayout);this.sourceWaterAllowed=sourceWaterAllowed;
+        this.access=new Access(){
+            @Override public boolean allowed(Request request,State before){return authority.allowed(request,before,false);}
+            @Override public boolean mayRestore(Request request,State before){return authority.allowed(request,before,true);}
+        };
+        this.player=null;this.currentSession=null;this.sourceSlot=-1;this.appearance=null;this.groundPolicy=null;this.groundAdmission=null;
+    }
     private static void owner(){if(!Bukkit.isPrimaryThread())throw new IllegalStateException("Paper owning thread required");}
-    private boolean session(Request r){return player.isOnline()&&r.actor().equals(player.getUniqueId())&&r.session().equals(currentSession.get())&&player.getWorld().getUID().equals(r.base().world());}
+    private boolean session(Request r){return systemDefeat?r.action()==Action.DEFEAT:r.action()!=Action.DEFEAT&&player.isOnline()&&r.actor().equals(player.getUniqueId())&&r.session().equals(currentSession.get())&&player.getWorld().getUID().equals(r.base().world());}
     private World world(){World w=Bukkit.getWorld(request.base().world());if(w==null)throw new IllegalStateException("World unavailable");return w;}
     private Cell cell(int x,int y,int z){Position b=request.base();return new Cell(b.world(),Math.addExact(b.x(),x),Math.addExact(b.y(),y),Math.addExact(b.z(),z));}
     private void available(Cell c){World w=world();if(c.y()<w.getMinHeight()||c.y()>=w.getMaxHeight()||(c.x()>>4)!=request.anchor().chunkX()||(c.z()>>4)!=request.anchor().chunkZ()
@@ -154,8 +170,10 @@ public final class PaperStructureEffects implements WorldEffects {
                 BlockData terrain=Bukkit.createBlockData(original);
                 if(!air(terrain.getMaterial())&&!(sourceWaterAllowed&&terrain.getMaterial()==Material.WATER&&terrain instanceof Levelled l&&l.getLevel()==0))return null;
                 String expected;
+                if(systemDefeat&&voxel.replacement()==null&&previous!=null&&!previous.originalState().equals(previous.expectedState()))return null;
                 try { expected=voxel.replacement()==null?(previous==null?current:previous.expectedState()):replacement(voxel,original); }
                 catch(IllegalArgumentException|IllegalStateException unsupported){return null;}
+                if(systemDefeat&&Bukkit.createBlockData(expected).getMaterial()==Material.LIGHT)return null;
                 manifest.add(new Component("cell."+i++,ComponentKind.BLOCK,c.world(),c.x(),c.y(),c.z(),original,expected,null,null));
             }
             for(Visual visual:layout.visuals()){
@@ -170,7 +188,7 @@ public final class PaperStructureEffects implements WorldEffects {
         if(physicalEvidence.getBytes(java.nio.charset.StandardCharsets.UTF_8).length+(long)visualItems.size()*256+256>com.ninja6.infernolantern.repository.RepositoryRecords.MAX_PAYLOAD)return null;
         RecoveryEnvelope.Inventory inventory=source==null?null:new RecoveryEnvelope.Inventory(r.actor(),sourceSlot,new ResourceBytes(source),null);
         String anticipated=physicalEvidence+";stagedVisuals="+Collections.nCopies(visualItems.size(),new UUID(0,0))+";stagedGround="+(dropping?new UUID(0,0):"none");
-        try{RecoveryEnvelope.structure("structure-"+r.action().name().toLowerCase(Locale.ROOT),r.anchor(),new Document(1,anticipated),inventory);}catch(IllegalArgumentException oversized){return null;}
+        try{recoveryEvidence(r,anticipated,inventory);}catch(IllegalArgumentException oversized){return null;}
         if(!dropping){
             int i=0;
             for(Visual visual:layout.visuals()){
@@ -199,7 +217,13 @@ public final class PaperStructureEffects implements WorldEffects {
             ground=new Ground(stagedDrop.getUniqueId(),base.world(),base.x()>>4,base.z()>>4,r.operation(),"active");
         }
         String evidence=physicalEvidence+";stagedVisuals="+stagedVisuals.stream().map(Entity::getUniqueId).toList()+";stagedGround="+(ground==null?"none":ground.entity());
-        preparation=new Preparation(manifest,ground,RecoveryEnvelope.structure("structure-"+r.action().name().toLowerCase(Locale.ROOT),r.anchor(),new Document(1,evidence),inventory));return preparation;
+        preparation=new Preparation(manifest,ground,recoveryEvidence(r,evidence,inventory));return preparation;
+    }
+    private static Document recoveryEvidence(Request request,String evidence,RecoveryEnvelope.Inventory inventory){
+        String kind=kind(request);
+        var payload=new Document(1,evidence);
+        return timedStructureExit(kind)?RecoveryEnvelope.timedStructure(kind,request.anchor(),payload,request.policy().cooldownMillis())
+                :RecoveryEnvelope.structure(kind,request.anchor(),payload,inventory);
     }
     @Override public CommitPermit commitPermit(){owner();return access.commitPermit();}
     @Override public boolean validate(Claim claim){owner();return claim.preparation()==preparation&&session(claim.request())&&access.allowed(request,before.state());}

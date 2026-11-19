@@ -53,12 +53,65 @@ class CatalogServiceTest {
         var retired=get(service.reload(config(Map.of()))).snapshot();assertEquals(VariantStatus.RETIRED,retired.entries().get("test").status());assertFalse(CatalogService.effective(retired,before,world(),allowed()).light());
         assertEquals(before,get(repository.tower(before.state().tower().id())).orElseThrow());var active=get(service.reload(config())).snapshot();assertTrue(CatalogService.effective(active,before,world(),allowed()).light());
     }
-    @Test void geometryAndHpMigrationDeferralIsAtomicAndLostHistoryDoesNotBlock()throws Exception{
+    @Test void geometryDeferralAndMaximumHealthMigrationPreserveLostHistory()throws Exception{
         publish();TowerSnapshot before=placed(repository,Form.EXPANDED);var changed=variant();var g=new HashMap<>((Map<String,Object>)changed.get("geometry"));g.put("height",4);changed.put("geometry",g);
-        assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",changed)))));var hp=variant();hp.put("maximum-hp",90);assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",hp)))));assertEquals(before,get(repository.tower(before.state().tower().id())).orElseThrow());
+        assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",changed)))));
+        assertEquals(before,get(repository.tower(before.state().tower().id())).orElseThrow());
         UUID op=UUID.randomUUID();Tower t=before.state().tower();Tower lost=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),Form.LOST,t.generation()+1,t.deploymentRevision()+1,null,null,t.light(),t.defence(),t.expandAfter(),t.repairAfter());
         Operation pending=get(repository.beginCatalogIntent(new Intent(op,t.id(),before.rowVersion(),t.generation(),t.deploymentRevision(),"synthetic-loss",new State(lost,null,List.of()),new Document(1,"synthetic historical terminal fixture")),get(repository.catalog()).revision()));pending=get(repository.advanceOperation(op,pending.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic verified"));get(repository.completeOperation(op,pending.rowVersion(),"synthetic verified"));
         changed.put("maximum-hp",90);get(service.reload(config(Map.of("test",changed))));assertEquals(lost,get(repository.tower(t.id())).orElseThrow().state().tower());
+    }
+    @Test void maximumHpChangesPreserveAbsoluteHealthAndOnlyClampOnReduction()throws Exception{
+        var original=publish();
+        TowerSnapshot deployed=placed(repository,Form.EXPANDED);
+        TowerSnapshot portable=get(repository.createTower(portable(UUID.randomUUID())));
+        var bigger=variant();bigger.put("maximum-hp",150);
+        var increased=get(service.reload(config(Map.of("test",bigger)))).snapshot();
+        assertTrue(increased.revision()>original.revision());
+        assertThrows(ExecutionException.class,()->get(repository.createTower(portable(UUID.randomUUID()))));
+        assertThrows(ExecutionException.class,()->get(repository.compareAndSetTower(deployed.rowVersion()+1,deployed.state().tower())));
+        for(TowerSnapshot row:List.of(deployed,portable)){
+            var updated=get(repository.tower(row.state().tower().id())).orElseThrow();
+            assertMaximumChange(row,updated,75,150);
+        }
+        TowerSnapshot expanded=get(repository.tower(deployed.state().tower().id())).orElseThrow();
+        var smaller=variant();smaller.put("maximum-hp",50);
+        get(service.reload(config(Map.of("test",smaller))));
+        TowerSnapshot clamped=get(repository.tower(deployed.state().tower().id())).orElseThrow();
+        assertMaximumChange(expanded,clamped,50,50);
+        service.close();get(repository.closeAsync());repository=get(SqliteRepository.open(file,512));service=service();
+        assertEquals(clamped,get(repository.tower(deployed.state().tower().id())).orElseThrow());
+    }
+    private static void assertMaximumChange(TowerSnapshot before,TowerSnapshot after,double hp,double maximum){
+        Tower t=before.state().tower();
+        var updated=new Tower(t.id(),t.variantId(),hp,maximum,t.form(),t.generation(),t.deploymentRevision(),t.controller(),t.position(),
+                t.light(),t.defence(),t.expandAfter(),t.repairAfter());
+        assertEquals(new TowerSnapshot(new State(updated,before.state().ground(),before.state().components()),before.rowVersion()+1,null),after);
+    }
+    @Test void pendingMaximumHpChangeAndSqlFaultKeepCatalogAndTowerRowsAtomic()throws Exception{
+        var settings=publish();TowerSnapshot placed=placed(repository,Form.EXPANDED);
+        TowerSnapshot portable=get(repository.createTower(portable(UUID.randomUUID())));
+        Tower t=placed.state().tower();
+        UUID op=UUID.randomUUID();
+        Operation pending=get(repository.beginCatalogIntent(new Intent(op,t.id(),placed.rowVersion(),t.generation(),t.deploymentRevision(),
+                "synthetic-pending",placed.state(),new Document(1,"Fixture")),settings.revision()));
+        var changed=variant();changed.put("maximum-hp",50);
+        var config=config(Map.of("test",changed));
+        var durable=get(repository.catalog());
+        assertThrows(ExecutionException.class,()->get(service.reload(config)));
+        assertEquals(durable,get(repository.catalog()));
+        assertEquals(portable,get(repository.tower(portable.state().tower().id())).orElseThrow());
+        pending=get(repository.advanceOperation(op,pending.rowVersion(),Phase.INTENT,Phase.RECONCILING,"Fixture"));
+        get(repository.resolveRollback(op,pending.rowVersion(),"Fixture"));
+        TowerSnapshot restored=get(repository.tower(t.id())).orElseThrow();
+        try(var client=SqliteTestConnections.open(file);var sql=client.createStatement()){
+            sql.execute("CREATE TRIGGER fixture_fail_hp_publication BEFORE UPDATE ON catalog_state BEGIN SELECT RAISE(ABORT,'fixture publication failure'); END");
+        }
+        assertThrows(ExecutionException.class,()->get(service.reload(config)));
+        assertEquals(durable,get(repository.catalog()));
+        assertEquals(settings,service.current().orElseThrow());
+        assertEquals(restored,get(repository.tower(t.id())).orElseThrow());
+        assertEquals(portable,get(repository.tower(portable.state().tower().id())).orElseThrow());
     }
     @Test void allFourChoicesSurviveReloadRestartAndCannotEnableUnavailableCapabilities()throws Exception{
         var catalog=publish();TowerSnapshot row=placed(repository,Form.EXPANDED);
@@ -133,7 +186,7 @@ class CatalogServiceTest {
     }
     @Test void concurrentCatalogWritersCannotSilentlyPublishAStaleRevision()throws Exception{
         var expected=get(repository.catalog());var candidate=CatalogConfig.parse(config());var docs=Map.of("test",CatalogCodec.definition(candidate.variants().get("test")));
-        var first=repository.publishCatalog(expected,CatalogCodec.candidate(candidate),docs,Set.of(),Set.of());var second=repository.publishCatalog(expected,CatalogCodec.candidate(candidate),docs,Set.of(),Set.of());
+        var first=repository.publishCatalog(expected,CatalogCodec.candidate(candidate),docs,Set.of());var second=repository.publishCatalog(expected,CatalogCodec.candidate(candidate),docs,Set.of());
         int winners=0;for(var future:List.of(first,second)){try{get(future);winners++;}catch(ExecutionException expectedConflict){assertInstanceOf(RepositoryException.Conflict.class,expectedConflict.getCause());}}assertEquals(1,winners);assertEquals(1,get(repository.catalog()).revision());
     }
 }

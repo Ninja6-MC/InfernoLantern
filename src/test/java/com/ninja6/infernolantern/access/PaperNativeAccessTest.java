@@ -183,6 +183,18 @@ final class PaperNativeAccessTest {
         assertNull(reconnect.session());
     }
 
+    @Test void expansionCooldownReportsRemainingTimeOnlyToEligibleRequester() {
+        var requester = new Client(false);
+        var observer = new Client(false);
+        var compact = snapshot(Form.COMPACT, null, 80, 100, 700, 200);
+        assertTrue(structure(requester, compact, EXPAND, 600, SAFE).isEmpty());
+        assertEquals(List.of("Lantern expansion cooldown: 100 ms remaining."), requester.messages);
+        assertTrue(observer.messages.isEmpty());
+        assertTrue(structure(observer, compact, EXPAND, 600, (player, action, before, target, restoring) -> false).isEmpty());
+        assertTrue(observer.messages.isEmpty());
+        assertTrue(structure(requester, compact, EXPAND, 700, SAFE).isPresent());
+    }
+
     @Test void formAndControllerMatrixNeverPermitsOrdinaryExpandedBreaking() {
         var controller = new Client(false);
         var eligible = new Client(false);

@@ -16,6 +16,7 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Logger;
 import static com.ninja6.infernolantern.recovery.ReconciliationService.*;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.STRUCTURE_EXIT_COMPACT;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Actual observation/activation adapter with strict API doubles, not native save/physics evidence. */
@@ -90,6 +91,21 @@ class PaperRecoveryPortTest {
         State before=new State(new Tower(towerId,FixtureDelivery.VARIANT,0,100,Form.PORTABLE,0,0,null,null,false,false,0,0),null,List.of()),after=new State(new Tower(towerId,FixtureDelivery.VARIANT,0,100,Form.PORTABLE,1,0,null,null,false,false,0,0),null,List.of());
         Operation op=new Operation(new Intent(operation,towerId,0,0,0,"fixture-item-delivery",after,RecoveryEnvelope.fixture("fixture-item-delivery",anchor,details,operation)),before,Phase.EFFECTS_APPLIED,1,"staged");
         var port=port();Inspection observed=inspect(port,op);assertEquals(Physical.AFTER,observed.observation().physical());assertTrue(port.publish(observed,new TowerSnapshot(after,2,null)));assertFalse(delivered.values.containsKey(PaperItemIdentity.DELIVERY));assertEquals(1,mutations);assertEquals(0,admitted);
+    }
+    @Test void typedTimedExitStillHasNoBuiltInPaperStructureObservation(){
+        var base=new Position(worldId,4,70,4,"north");
+        var tower=new Tower(towerId,"fixture",25,100,Form.EXPANDED,2,1,actor,base,false,true,300,400);
+        var compact=new Tower(towerId,"fixture",25,100,Form.COMPACT,2,2,null,base,false,true,300,400);
+        var component=new Component("base",ComponentKind.BLOCK,worldId,4,70,4,"minecraft:air","minecraft:barrier",null,null);
+        var before=new State(tower,null,List.of(component));
+        var after=new State(compact,null,List.of(component));
+        var evidence=RecoveryEnvelope.timedStructure(STRUCTURE_EXIT_COMPACT,anchor,new Document(1,"Fixture"),60_000);
+        var op=new Operation(new Intent(operation,towerId,0,2,1,STRUCTURE_EXIT_COMPACT,after,evidence),before,Phase.INTENT,0,"Fixture");
+        var inspection=inspect(port(),op);
+        assertTrue(RecoveryEnvelope.supports(op,inspection.context()));
+        assertEquals(Physical.UNSUPPORTED,inspection.observation().physical());
+        assertEquals(0,mutations);
+        assertEquals(0,admitted);
     }
     static final class Stack extends ItemStack {
         final Map<NamespacedKey,Object> values=new HashMap<>();int amount=1,maximum;boolean fire;

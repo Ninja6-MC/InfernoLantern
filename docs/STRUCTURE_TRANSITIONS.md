@@ -14,13 +14,14 @@ After migration, older candidates reject schema 3 as a future schema. Do not dow
 
 ## Immutable requests and transition rules
 
-Each request binds operation/tower identity, expected row version, item generation, deployment revision, actor, current session capability, base/world/orientation and an immutable effective policy revision. The caller supplies validated expansion percentage, cooldown duration, current action time and explicit session override. No permanent holder/owner or numerical production variant is created. The selected requirements' default expansion threshold is 50%; actual effective settings remain caller supplied.
+Each request binds operation/tower identity, expected row version, item generation, deployment revision, actor, current session capability, base/world/orientation and an immutable effective policy revision. The caller supplies validated expansion percentage, cooldown duration, current action time and explicit session override. No permanent holder/owner or numerical production variant is created. The selected requirements' default expansion threshold is 50%; actual effective settings remain caller supplied. Timed exits retain the prior deadline while pending. The verified completion samples the exit clock after SQLite writer admission and stores the stamped deadline in both the tower and terminal receipt. Trusted matched-save observation may roll back a timed exit or verify its saved after-effects. AFTER recovery starts the full originally admitted duration at the recovery commit. See [Tower Health](TOWER_HEALTH.md).
 
 | Action | Authoritative state effect |
 | :--- | :--- |
 | PLACE | PORTABLE to COMPACT; consume one item generation; null controller; new deployment revision; preserve HP, switches and both eligibility timestamps. |
 | EXPAND | COMPACT to EXPANDED; require HP threshold and expired expansion timestamp unless the timestamp alone is explicitly overridable; actor becomes controller; new deployment revision; no HP debit or generation rotation. |
 | COMPACT | EXPANDED to COMPACT; current controller or explicit session override; clear controller; fresh expansion eligibility time; new deployment revision; preserve HP and repair timestamp. |
+| DEFEAT | System-only EXPANDED zero-HP to COMPACT; clear controller; fresh expansion eligibility time and revision; preserve zero HP, generation, switches and repair lock. See [Tower Health](TOWER_HEALTH.md). |
 | BREAK | COMPACT to GROUND; one actual staged ground UUID; consume generation and invalidate deployment revision; preserve HP and existing timestamps; no inventory delivery. |
 | ADMIN_RECOVER | EXPANDED to GROUND only with explicit override; clear controller; fresh expansion eligibility time and revision; one ground item; preserve HP and repair timestamp. |
 

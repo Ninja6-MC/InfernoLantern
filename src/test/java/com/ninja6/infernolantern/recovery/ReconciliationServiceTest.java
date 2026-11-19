@@ -8,6 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import static com.ninja6.infernolantern.recovery.ReconciliationService.*;
@@ -18,8 +19,10 @@ class ReconciliationServiceTest {
     final UUID world=UUID.randomUUID(),actor=UUID.randomUUID(),session=UUID.randomUUID();
     final WorldScheduler.Anchor anchor=new WorldScheduler.Anchor(world,0,0);
     final Owner owner=new Owner();
+    final AtomicLong exitClock=new AtomicLong(121_000);
+    int nextStructureX=1;
     SqliteRepository repository;ReconciliationService service;Path file;
-    @BeforeEach void setup()throws Exception{file=directory.resolve("recovery.db");repository=get(SqliteRepository.open(file,512));get(repository.createVariant(new Variant("fixture",1,VariantStatus.ACTIVE,new Document(1,"generic fixture"),0)));service=new ReconciliationService(repository,owner);}
+    @BeforeEach void setup()throws Exception{file=directory.resolve("recovery.db");repository=get(SqliteRepository.open(file,512));get(repository.createVariant(new Variant("fixture",1,VariantStatus.ACTIVE,new Document(1,"generic fixture"),0)));service=new ReconciliationService(repository,owner,exitClock::get);}
     @AfterEach void stop()throws Exception{service.close();get(repository.closeAsync());}
     static <T>T get(CompletableFuture<T> f)throws Exception{return f.get(10,TimeUnit.SECONDS);}
     <T>T drain(CompletableFuture<T> f)throws Exception{long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);while(!f.isDone()){owner.run();if(System.nanoTime()>until)fail("No coordinator progress");Thread.yield();}return get(f);}
@@ -112,7 +115,7 @@ class ReconciliationServiceTest {
         assertEquals(Outcome.UNAVAILABLE,drain(service.reconcile(op.intent().id(),p)).outcome());assertEquals(0,p.publications);assertFalse(row(op).mutationReady());
         service.close();get(repository.closeAsync());
         try(var c=SqliteTestConnections.open(file);var s=c.createStatement()){s.execute("DROP TRIGGER fail_finish");}
-        repository=get(SqliteRepository.open(file,512));service=new ReconciliationService(repository,owner);
+        repository=get(SqliteRepository.open(file,512));service=new ReconciliationService(repository,owner,exitClock::get);
         assertEquals(Outcome.COMPLETED,drain(service.reconcile(op.intent().id(),p)).outcome());assertEquals(2,p.inspections);assertEquals(1,p.publications);
     }
     @Test void legacyAndAuditedExternalRemovalEvidenceRemainAdministrative()throws Exception{
@@ -148,8 +151,114 @@ class ReconciliationServiceTest {
         UUID expand=UUID.randomUUID();State expanded=new State(tower(id,Form.EXPANDED,2,2,base),null,List.of(bottom,new Component("upper",ComponentKind.BLOCK,world,4,71,4,"minecraft:air","minecraft:barrier",null,null),new Component("clearance",ComponentKind.BLOCK,world,4,72,4,"minecraft:air","minecraft:air",null,null)));
         Operation pending=get(repository.beginNewIntent(new Intent(expand,id,2,2,1,"structure-expand",expanded,RecoveryEnvelope.structure("structure-expand",anchor,new Document(1,"complete synthetic structure evidence"),null))));
         Port p=new Port();p.coverage=Coverage.INCOMPLETE;assertEquals(Outcome.WAIT,drain(service.reconcile(expand,p)).outcome());assertEquals(3,get(repository.structureCells(id)).size());
-        service.close();get(repository.closeAsync());repository=get(SqliteRepository.open(file,512));service=new ReconciliationService(repository,owner);assertEquals(3,get(repository.structureCells(id)).size());
+        service.close();get(repository.closeAsync());repository=get(SqliteRepository.open(file,512));service=new ReconciliationService(repository,owner,exitClock::get);assertEquals(3,get(repository.structureCells(id)).size());
         p.coverage=Coverage.MATCHED_COMPLETE;p.physical=Physical.BEFORE;assertEquals(Outcome.ROLLED_BACK,drain(service.reconcile(expand,p)).outcome());assertEquals(1,get(repository.structureCells(id)).size());assertEquals(compact,get(repository.tower(id)).orElseThrow().state());
+    }
+    private Operation timedExit(String kind,Phase phase,boolean typed,long duration)throws Exception{
+        UUID id=UUID.randomUUID(),setup=UUID.randomUUID(),exit=UUID.randomUUID();
+        get(repository.createTower(tower(id,Form.PORTABLE,1,0,null)));
+        int x=nextStructureX++;
+        var p=new Position(world,x,70,4,"north");
+        var base=new Component("base",ComponentKind.BLOCK,world,x,70,4,"minecraft:air","minecraft:barrier",null,null);
+        var upper=new Component("upper",ComponentKind.BLOCK,world,x,71,4,"minecraft:air","minecraft:barrier",null,null);
+        State expanded=new State(tower(id,Form.EXPANDED,2,1,p),null,List.of(base,upper));
+        get(repository.beginNewIntent(new Intent(setup,id,0,1,0,"setup-structure",expanded,new Document(1,"Fixture setup"))));
+        get(repository.advanceOperation(setup,0,Phase.INTENT,Phase.EFFECTS_APPLIED,"Fixture setup"));
+        get(repository.completeOperation(setup,1,"Fixture setup"));
+
+        State after=kind.equals(STRUCTURE_EXIT_RECOVER)
+                ?new State(tower(id,Form.GROUND,3,2,null),new Ground(UUID.randomUUID(),world,0,0,exit,"active"),List.of())
+                :new State(tower(id,Form.COMPACT,2,2,p),null,List.of(base));
+        var evidence=new Document(1,"Synthetic exact structure effects");
+        var recipe=typed?RecoveryEnvelope.timedStructure(kind,anchor,evidence,duration)
+                :RecoveryEnvelope.structure(kind,anchor,evidence,null);
+        Operation op=get(repository.beginNewIntent(new Intent(exit,id,2,2,1,kind,after,recipe)));
+        return phase==Phase.INTENT?op:get(repository.advanceOperation(exit,0,Phase.INTENT,phase,"Synthetic interruption"));
+    }
+
+    @Test void trustedTimedCompactionAndRecoveryRestoreExactBefore() throws Exception {
+        for(String kind:List.of(STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER)){
+            Operation op=timedExit(kind,Phase.EFFECTS_APPLIED,true,60_000);
+            var recipe=RecoveryEnvelope.decode(op.intent().effects()).orElseThrow();
+            assertEquals(RecoveryEnvelope.Profile.STRUCTURE,recipe.profile());
+            assertEquals(60_000L,recipe.exitCooldownMillis().longValue());
+            assertTrue(RecoveryEnvelope.supports(op,recipe));
+            Port port=new Port();
+            port.physical=Physical.BEFORE;
+            assertEquals(Outcome.ROLLED_BACK,drain(service.reconcile(op.intent().id(),port)).outcome());
+            assertEquals(op.before(),row(op).state());
+            assertEquals(300,row(op).state().tower().expandAfter());
+            assertEquals(2,get(repository.structureCells(op.intent().towerId())).size());
+            assertEquals(1,port.publications);
+        }
+    }
+
+    @Test void trustedTimedAfterUsesOriginalDurationAndOnlyOneFreshPublication() throws Exception {
+        for(String kind:List.of(STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER)){
+            exitClock.set(121_000);
+            Operation op=timedExit(kind,Phase.RECONCILING,true,60_000);
+            Port port=new Port(){
+                @Override public boolean publish(Inspection i,TowerSnapshot resolved){
+                    assertEquals(300,i.operation().intent().after().tower().expandAfter());
+                    assertEquals(181_000,resolved.state().tower().expandAfter());
+                    assertEquals(75,resolved.state().tower().hp());
+                    assertEquals(400,resolved.state().tower().repairAfter());
+                    assertEquals(op.intent().after().ground(),resolved.state().ground());
+                    assertEquals(op.intent().after().components(),resolved.state().components());
+                    return super.publish(i,resolved);
+                }
+            };
+            assertEquals(Outcome.COMPLETED,drain(service.reconcile(op.intent().id(),port)).outcome());
+            Operation receipt=get(repository.operation(op.intent().id())).orElseThrow();
+            assertEquals(row(op).state(),receipt.intent().after());
+            assertEquals(181_000,receipt.intent().after().tower().expandAfter());
+            assertEquals(STRUCTURE_EXIT_RECOVER.equals(kind)?0:1,get(repository.structureCells(op.intent().towerId())).size());
+            exitClock.set(400_000);
+            assertEquals(Outcome.TERMINAL,drain(service.reconcile(op.intent().id(),port)).outcome());
+            assertEquals(receipt,get(repository.operation(op.intent().id())).orElseThrow());
+            assertEquals(1,port.publications);
+        }
+    }
+
+    @Test void timedAfterFailureReobservesAndKeepsFullCooldownAfterReopen() throws Exception {
+        var op=timedExit(STRUCTURE_EXIT_RECOVER,Phase.INTENT,true,60_000);
+        try(var c=SqliteTestConnections.open(file);var s=c.createStatement()){
+            s.execute("CREATE TRIGGER fail_timed_exit BEFORE UPDATE OF form ON towers BEGIN SELECT RAISE(ABORT,'fixture fault'); END");
+        }
+        var port=new Port();
+        assertEquals(Outcome.UNAVAILABLE,drain(service.reconcile(op.intent().id(),port)).outcome());
+        assertEquals(300,get(repository.operation(op.intent().id())).orElseThrow().intent().after().tower().expandAfter());
+        assertEquals(0,port.publications);
+        assertFalse(row(op).mutationReady());
+        service.close();get(repository.closeAsync());
+        try(var c=SqliteTestConnections.open(file);var s=c.createStatement()){s.execute("DROP TRIGGER fail_timed_exit");}
+        repository=get(SqliteRepository.open(file,512));service=new ReconciliationService(repository,owner,exitClock::get);
+        exitClock.set(240_000);
+        assertEquals(Outcome.COMPLETED,drain(service.reconcile(op.intent().id(),port)).outcome());
+        assertEquals(300_000,row(op).state().tower().expandAfter());
+        assertEquals(2,port.inspections);
+        assertEquals(1,port.publications);
+    }
+
+    @Test void timedUnknownUnmatchedAndInterimEvidenceRemainPending() throws Exception {
+        var timed=timedExit(STRUCTURE_EXIT_COMPACT,Phase.INTENT,true,60_000);
+        var port=new Port();
+        port.physical=Physical.UNKNOWN;
+        assertEquals(Outcome.WAIT,drain(service.reconcile(timed.intent().id(),port)).outcome());
+        port.physical=Physical.AFTER;
+        port.coverage=Coverage.UNMATCHED;
+        assertEquals(Outcome.ADMIN_REQUIRED,drain(service.reconcile(timed.intent().id(),port)).outcome());
+        assertEquals(0,port.publications);
+        assertEquals(timed,get(repository.operation(timed.intent().id())).orElseThrow());
+
+        var interim=timedExit(STRUCTURE_EXIT_RECOVER,Phase.EFFECTS_APPLIED,false,60_000);
+        port.coverage=Coverage.MATCHED_COMPLETE;
+        assertEquals(Outcome.ADMIN_REQUIRED,drain(service.reconcile(interim.intent().id(),port)).outcome());
+        assertEquals(2,port.inspections);
+        assertEquals(0,port.publications);
+        assertFalse(row(interim).mutationReady());
+        assertThrows(ExecutionException.class,()->get(repository.finalizeTimedExitReconciliation(interim.intent().id(),
+                interim.rowVersion(),"Invalid interim evidence",exitClock::get)));
     }
     static final class Owner implements WorldScheduler {
         final Queue<Runnable> work=new ConcurrentLinkedQueue<>();boolean available=true,running;
