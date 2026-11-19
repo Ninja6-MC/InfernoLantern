@@ -337,11 +337,16 @@ public final class ZombieCombat implements AutoCloseable {
     private void damage(AcceptedMelee hit) {
         Lease lease = hit.source();
         Deployment current = lease.deployment;
+        // Keep the dequeued source visible to revocation while protection callbacks run.
+        current.activeMelee = hit;
         if (!acceptedDamageAllowed(lease)) {
-            suspend(current);
+            try {
+                suspend(current);
+            } finally {
+                current.activeMelee = null;
+            }
             return;
         }
-        current.activeMelee = hit;
         var configured = current.catalog.entries().get(current.tower.variantId()).definition().repair();
         long cooling = configured == null ? 0 : configured.coolingMillis();
         submit(current, health.damage(current.catalog, current.row, new TowerHealth.Damage(hit.amount(), cooling),
@@ -445,9 +450,19 @@ public final class ZombieCombat implements AutoCloseable {
     public void zombieGone(UUID zombie) {
         requireOwner.run();
         Lease lease = zombies.get(zombie);
-        if (lease != null) suspend(lease.deployment);
+        if (lease != null && lease.deployment.lease == lease) suspend(lease.deployment);
         Set<Lease> detached = detachedMeleeByZombie.remove(zombie);
-        if (detached != null) detached.forEach(source -> suspend(source.deployment));
+        if (detached != null) detached.forEach(this::detachedZombieGone);
+    }
+
+    private void detachedZombieGone(Lease source) {
+        Deployment deployment = source.deployment;
+        boolean active = deployment.activeMelee != null && deployment.activeMelee.source() == source;
+        boolean queued = deployment.melee.removeIf(hit -> hit.source() == source);
+        revokeMelee(source);
+        if ((active || queued) && deployment.lease == null && source.proxy.equals(deployment.proxy)) {
+            suspend(deployment);
+        }
     }
 
     public void proxyGone(UUID proxy) {

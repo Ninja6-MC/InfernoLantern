@@ -26,6 +26,7 @@ import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -230,6 +231,35 @@ class ZombieCombatTest {
         assertEquals(75, current().state().tower().hp());
         assertEquals(EXTERNAL, world.targets.get(FIRST));
         assertTrue(world.removed.contains(proxy));
+    }
+
+    @Test void deniedDetachedDispatchCannotRevokeTheNextZombiesLease() throws Exception {
+        start(Mode.RETALIATION, 5);
+        settledCooling();
+        UUID firstProxy = world.proxy();
+        target(firstProxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(firstProxy, FIRST), 3.5));
+        combat.targetChanged(FIRST, null);
+        world.targets.put(FIRST, EXTERNAL);
+
+        int[] detachedMeleeChecks = {0};
+        world.protection = (action, zombie) -> action != Action.MELEE || !FIRST.equals(zombie)
+                || ++detachedMeleeChecks[0] == 1;
+        combat.tick(2); // Pass ownership maintenance, then deny the dequeued hit at dispatch.
+        assertEquals(2, detachedMeleeChecks[0]);
+        assertTrue(world.removed.contains(firstProxy));
+        assertEquals(75, current().state().tower().hp());
+
+        world.available = List.of(new Candidate(SECOND, 4));
+        combat.tick(5);
+        owner.next();
+        UUID secondProxy = world.proxy();
+        target(secondProxy, SECOND);
+        combat.zombieGone(FIRST);
+        assertEquals(secondProxy, world.targets.get(SECOND));
+        assertFalse(world.removed.contains(secondProxy));
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertNotNull(combat.captureMelee(secondProxy, SECOND));
     }
 
     @Test void exactZombieRemovalRevokesDetachedMeleeAfterOwnerAuthorization() throws Exception {
@@ -514,6 +544,7 @@ class ZombieCombatTest {
         boolean acceptAttack = true;
         UUID nextProxy;
         Runnable beforeAttack = () -> {};
+        BiPredicate<Action, UUID> protection = (action, zombie) -> true;
         int priorities;
 
         UUID proxy() { return proxies.getLast(); }
@@ -539,7 +570,7 @@ class ZombieCombatTest {
         }
         @Override public boolean allows(Action action, TowerSnapshot tower, UUID proxy, UUID zombie) {
             owner.require();
-            return !denied.contains(action);
+            return !denied.contains(action) && protection.test(action, zombie);
         }
         @Override public boolean hasOwnedTarget(UUID zombie, UUID proxy) { return proxy.equals(targets.get(zombie)); }
         @Override public boolean hasOtherTarget(UUID zombie, UUID proxy) {
