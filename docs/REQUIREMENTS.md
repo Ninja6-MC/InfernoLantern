@@ -303,6 +303,14 @@ default. Restore normal targeting when the tower collapses, is recovered, or sta
 beyond a defined timeout. Specify target arbitration between multiple towers and avoid
 redirecting unrelated mobs globally.
 
+For the initial ordinary-zombie implementation, Defence continues while the controller
+is offline and suspends on known eligibility loss. The tower keeps its controller,
+deployment and saved preferences. The beam uses normal native mob damage, with no
+ignition or player attribution. Retain a reachable target, otherwise choose the nearest
+eligible zombie with a stable tie-break. Release an owned retaliation target after 200
+ticks without a valid melee hit. [Combat implementation and boundaries](ZOMBIE_COMBAT.md)
+records the current service and pending acceptance.
+
 A custom visual block is not automatically a damageable mob target. Prototype a server-side
 target/hitbox representation, associate every component with one tower, and route supported
 incoming damage into its authoritative HP. One attack or explosion must not charge damage

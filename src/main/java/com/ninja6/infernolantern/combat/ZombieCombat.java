@@ -1,0 +1,515 @@
+package com.ninja6.infernolantern.combat;
+
+import com.ninja6.infernolantern.catalog.CatalogConfig.WorldRef;
+import com.ninja6.infernolantern.catalog.CatalogService;
+import com.ninja6.infernolantern.health.TowerHealth;
+import com.ninja6.infernolantern.repository.CommitPermit;
+import com.ninja6.infernolantern.repository.SqliteRepository;
+import com.ninja6.infernolantern.scheduling.WorldScheduler;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
+
+import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
+
+/** Owner-thread combat for independently routed, loaded deployments. */
+public final class ZombieCombat implements AutoCloseable {
+    private static final long MELEE_TIMEOUT = 200;
+    private static final int MAX_QUEUED_HITS = 32;
+
+    public enum Mode { NORMAL, RETALIATION, PRIORITY }
+    public enum Controller { ELIGIBLE, OFFLINE, DENIED, UNKNOWN }
+    public enum Action { BEAM, TARGET, MELEE }
+    public enum TargetReason { RETALIATION, PRIORITY, OTHER }
+
+    public record Settings(Mode mode, double range, double damage, long intervalTicks) {
+        public Settings {
+            Objects.requireNonNull(mode);
+            if (!Double.isFinite(range) || range <= 0 || !Float.isFinite((float) damage)
+                    || (float) damage <= 0 || intervalTicks < 1) {
+                throw new IllegalArgumentException("Combat requires finite positive range, damage and interval");
+            }
+        }
+    }
+
+    public record Conditions(WorldRef world, Controller controller, boolean fluid, boolean integrity) {
+        public Conditions {
+            Objects.requireNonNull(world);
+            Objects.requireNonNull(controller);
+        }
+    }
+
+    public record Candidate(UUID zombie, double distanceSquared) {
+        public Candidate {
+            Objects.requireNonNull(zombie);
+            if (!Double.isFinite(distanceSquared) || distanceSquared < 0) throw new IllegalArgumentException("Distance");
+        }
+    }
+
+    /** Platform handles cannot cross the storage boundary. All port calls run on the owner. */
+    public interface WorldPort {
+        Conditions inspect(TowerSnapshot tower);
+        UUID spawnProxy(TowerSnapshot tower, UUID lease);
+        void removeProxy(UUID proxy, UUID lease);
+        /** Complete bounded loaded candidate set. Return empty if the query exceeds the budget. */
+        List<Candidate> candidates(TowerSnapshot tower, double range, int limit);
+        boolean reachable(TowerSnapshot tower, UUID proxy, UUID zombie, double range);
+        boolean allows(Action action, TowerSnapshot tower, UUID proxy, UUID zombie);
+        boolean hasOwnedTarget(UUID zombie, UUID proxy);
+        boolean hasOtherTarget(UUID zombie, UUID proxy);
+        void prioritize(UUID zombie, UUID proxy);
+        void releaseTarget(UUID zombie, UUID proxy);
+        boolean attack(UUID proxy, UUID zombie, double damage);
+        TowerHealth.DefeatEffects defeatEffects();
+    }
+
+    private final SqliteRepository repository;
+    private final CatalogService catalog;
+    private final WorldScheduler scheduler;
+    private final TowerHealth health;
+    private final WorldPort world;
+    private final Runnable requireOwner;
+    private final LongSupplier clock;
+    private final int perTick, candidates, concurrency;
+    private final LinkedHashMap<UUID, Deployment> deployments = new LinkedHashMap<>();
+    private final Map<UUID, Lease> zombies = new HashMap<>();
+    private final Map<UUID, Deployment> proxies = new HashMap<>();
+    private final Set<UUID> unsettledCooling = new HashSet<>();
+    private boolean closed;
+    private final AtomicInteger inFlight = new AtomicInteger();
+    private long tick;
+
+    private static final class Deployment {
+        final Tower tower;
+        final CatalogService.Snapshot catalog;
+        final Settings settings;
+        final WorldScheduler.Anchor anchor;
+        final UUID proxyToken = UUID.randomUUID();
+        TowerSnapshot row;
+        SqliteRepository.TowerObservation observation;
+        CommitPermit idle = new CommitPermit();
+        UUID proxy, timedOut;
+        Lease lease;
+        long nextAttack;
+        boolean busy;
+        volatile boolean unavailable;
+
+        Deployment(TowerSnapshot row, CatalogService.Snapshot catalog, Settings settings) {
+            tower = row.state().tower();
+            this.row = row;
+            this.catalog = catalog;
+            this.settings = settings;
+            Position p = tower.position();
+            anchor = new WorldScheduler.Anchor(p.world(), p.x() >> 4, p.z() >> 4);
+        }
+
+        boolean sameDeployment(Tower candidate) {
+            return candidate.form() == Form.EXPANDED && tower.id().equals(candidate.id())
+                    && tower.generation() == candidate.generation() && tower.deploymentRevision() == candidate.deploymentRevision()
+                    && tower.position().equals(candidate.position());
+        }
+    }
+
+    private static final class Lease {
+        final Deployment deployment;
+        final UUID zombie;
+        final CommitPermit permit = new CommitPermit();
+        final ArrayDeque<Double> incoming = new ArrayDeque<>();
+        boolean hit, targeted;
+        long meleeSince;
+
+        Lease(Deployment deployment, UUID zombie, long tick) {
+            this.deployment = deployment;
+            this.zombie = zombie;
+            meleeSince = tick;
+        }
+    }
+
+    public ZombieCombat(SqliteRepository repository, CatalogService catalog, WorldScheduler scheduler,
+                        TowerHealth health, WorldPort world, Runnable requireOwner, LongSupplier clock,
+                        int perTick, int candidates, int concurrency) {
+        this.repository = Objects.requireNonNull(repository);
+        this.catalog = Objects.requireNonNull(catalog);
+        this.scheduler = Objects.requireNonNull(scheduler);
+        this.health = Objects.requireNonNull(health);
+        this.world = Objects.requireNonNull(world);
+        this.requireOwner = Objects.requireNonNull(requireOwner);
+        this.clock = Objects.requireNonNull(clock);
+        if (perTick < 1 || candidates < 1 || concurrency < 1) throw new IllegalArgumentException("Positive work budgets required");
+        this.perTick = perTick;
+        this.candidates = candidates;
+        this.concurrency = concurrency;
+    }
+
+    /** The runtime router registers loaded expanded deployments and unregisters them before unload. */
+    public void track(TowerSnapshot row, CatalogService.Snapshot settings, Settings combat) {
+        requireOwner.run();
+        Tower tower = row.state().tower();
+        if (closed || tower.form() != Form.EXPANDED || !catalog.isPublished(settings)) return;
+        Deployment previous = deployments.get(tower.id());
+        if (previous != null && (previous.tower.generation() > tower.generation()
+                || previous.tower.deploymentRevision() > tower.deploymentRevision())) return;
+        if (previous != null && previous.sameDeployment(tower) && previous.catalog.equals(settings)
+                && previous.settings.equals(combat)) return;
+        forgetTower(tower.id());
+        deployments.put(tower.id(), new Deployment(row, settings, combat));
+    }
+
+    public void untrack(TowerSnapshot expected) {
+        requireOwner.run();
+        Tower tower = expected.state().tower();
+        Deployment current = deployments.get(tower.id());
+        if (current != null && current.sameDeployment(tower)) forgetTower(tower.id());
+    }
+
+    private void forgetTower(UUID tower) {
+        Deployment removed = deployments.remove(tower);
+        if (removed == null) return;
+        removed.idle.revoke();
+        suspend(removed);
+        closeObservation(removed);
+    }
+
+    /** Supply to the revision-bound repair access. A null permit denies repair. */
+    public CommitPermit idle(TowerSnapshot row) {
+        requireOwner.run();
+        Tower tower = row.state().tower();
+        Deployment current = deployments.get(tower.id());
+        if (current == null || !current.sameDeployment(tower) || !row.mutationReady()
+                || !catalog.isPublished(current.catalog) || current.unavailable || current.lease != null
+                || current.busy || unsettledCooling.contains(tower.id())) return null;
+        return current.idle;
+    }
+
+    /** Monotonic Paper ticks; bounded round-robin work even with many deployments. */
+    public void tick(long now) {
+        requireOwner.run();
+        if (now < tick) throw new IllegalArgumentException("Combat ticks must be monotonic");
+        tick = now;
+        int visits = Math.min(deployments.size(), perTick);
+        for (int index = 0; index < visits && !deployments.isEmpty(); index++) {
+            UUID id = deployments.keySet().iterator().next();
+            Deployment deployment = deployments.remove(id);
+            deployments.put(id, deployment);
+            tick(deployment);
+        }
+    }
+
+    private void tick(Deployment current) {
+        if (current.unavailable || !catalog.isPublished(current.catalog)) {
+            forgetTower(current.tower.id());
+            return;
+        }
+        if (current.lease != null && !leaseCurrent(current.lease)) {
+            release(current, true);
+            suspend(current);
+        }
+        if (current.lease == null || !effective(current)) suspend(current);
+        if (current.busy || unsettledCooling.contains(current.tower.id()) || inFlight.get() >= concurrency) return;
+        if (current.lease == null && tick < current.nextAttack) return;
+        if (!current(current)) {
+            refresh(current);
+            return;
+        }
+        if (!effective(current)) {
+            suspend(current);
+            closeObservation(current);
+            return;
+        }
+        Lease lease = current.lease;
+        if (lease != null && !reachable(lease)) {
+            suspend(current);
+            lease = null;
+        }
+        if (lease != null && !lease.incoming.isEmpty()) {
+            damage(lease, lease.incoming.removeFirst());
+            return;
+        }
+        if (tick < current.nextAttack) return;
+        current.nextAttack = tick + Math.min(Long.MAX_VALUE - tick, current.settings.intervalTicks());
+        if (lease == null) lease = acquire(current);
+        if (lease != null) attack(lease);
+        if (current.lease == null) {
+            suspend(current);
+            closeObservation(current);
+        }
+    }
+
+    private static void closeObservation(Deployment deployment) {
+        if (deployment.observation == null) return;
+        deployment.observation.close();
+        deployment.observation = null;
+    }
+
+    private void refresh(Deployment deployment) {
+        submit(deployment, repository.tower(deployment.tower.id()).thenCompose(found -> {
+            TowerSnapshot next = found.orElse(null);
+            if (next == null || !deployment.sameDeployment(next.state().tower())) return CompletableFuture.completedFuture(new Observation(next, null));
+            return repository.observeTower(next).thenApply(observation -> new Observation(next, observation.orElse(null)));
+        }), (observation, failure) -> {
+            if (failure != null || !registered(deployment)) {
+                if (observation != null && observation.permit() != null) observation.permit().close();
+                return;
+            }
+            if (observation.row() == null || !deployment.sameDeployment(observation.row().state().tower())) {
+                forgetTower(deployment.tower.id());
+                return;
+            }
+            closeObservation(deployment);
+            deployment.row = observation.row();
+            deployment.observation = observation.permit();
+            if (!effective(deployment)) suspend(deployment);
+        });
+    }
+
+    private record Observation(TowerSnapshot row, SqliteRepository.TowerObservation permit) {}
+
+    private Lease acquire(Deployment current) {
+        var settings = current.settings;
+        List<Candidate> available = world.candidates(current.row, settings.range(), candidates);
+        if (available.isEmpty() || available.size() > candidates || !current(current)) return null;
+        if (current.proxy == null) {
+            current.proxy = world.spawnProxy(current.row, current.proxyToken);
+            if (current.proxy == null) return null;
+            proxies.put(current.proxy, current);
+        }
+        if (current.timedOut != null && !world.reachable(current.row, current.proxy, current.timedOut, settings.range())) {
+            current.timedOut = null;
+        }
+        UUID zombie = available.stream().filter(candidate -> !candidate.zombie().equals(current.timedOut))
+                .filter(candidate -> !zombies.containsKey(candidate.zombie()))
+                .sorted(Comparator.comparingDouble(Candidate::distanceSquared).thenComparing(Candidate::zombie))
+                .map(Candidate::zombie)
+                .filter(id -> world.reachable(current.row, current.proxy, id, settings.range()))
+                .filter(id -> settings.mode() == Mode.NORMAL || !world.hasOtherTarget(id, current.proxy))
+                .filter(id -> world.allows(Action.BEAM, current.row, current.proxy, id))
+                .findFirst().orElse(null);
+        if (zombie == null || !current(current)) return null;
+        current.idle.revoke();
+        Lease lease = new Lease(current, zombie, tick);
+        current.lease = lease;
+        zombies.put(zombie, lease);
+        if (settings.mode() == Mode.PRIORITY && world.allows(Action.TARGET, current.row, current.proxy, zombie)) {
+            world.prioritize(zombie, current.proxy);
+        }
+        return lease;
+    }
+
+    private void attack(Lease lease) {
+        Deployment current = lease.deployment;
+        if (!allows(lease, Action.BEAM) || !world.attack(current.proxy, lease.zombie, current.settings.damage())) {
+            if (current.lease == lease) release(current, false);
+            return;
+        }
+        if (!lease.hit) lease.meleeSince = tick;
+        lease.hit = true;
+        var definition = current.catalog.entries().get(current.tower.variantId()).definition();
+        if (definition.repair() != null) {
+            long attackedAt = clock.getAsLong();
+            UUID tower = current.tower.id();
+            unsettledCooling.add(tower);
+            submit(current, persistCooling(current, attackedAt), (row, failure) -> {
+                if (failure == null) unsettledCooling.remove(tower);
+                else if (registered(current)) {
+                    suspend(current);
+                    closeObservation(current);
+                }
+            });
+        }
+    }
+
+    private CompletableFuture<TowerSnapshot> persistCooling(Deployment current, long attackedAt) {
+        return repository.recordRepairCooling(current.catalog.revision(), current.row, attackedAt, null);
+    }
+
+    private void damage(Lease lease, double amount) {
+        Deployment current = lease.deployment;
+        if (!incomingAllowed(lease)) return;
+        var configured = current.catalog.entries().get(current.tower.variantId()).definition().repair();
+        long cooling = configured == null ? 0 : configured.coolingMillis();
+        submit(current, health.damage(current.catalog, current.row, new TowerHealth.Damage(amount, cooling),
+                row -> incomingAllowed(lease) ? new TowerHealth.Admission(lease.permit) : null,
+                UUID.randomUUID(), world.defeatEffects()), (result, failure) -> {
+                    if (failure == null && current.lease == lease && registered(current)) {
+                        if (result.settled().state().tower().hp() == 0) suspend(current);
+                    } else if (failure != null && registered(current)) suspend(current);
+                });
+    }
+
+    /** Exact lease captured before damage is zeroed. Only the native adapter can request one. */
+    static final class MeleeProof {
+        private final Lease lease;
+        private boolean delivered;
+
+        private MeleeProof(Lease lease) {
+            this.lease = lease;
+        }
+    }
+
+    MeleeProof captureMelee(UUID proxy, UUID zombie) {
+        requireOwner.run();
+        Lease lease = bound(proxy, zombie);
+        return lease != null && incomingAllowed(lease) ? new MeleeProof(lease) : null;
+    }
+
+    boolean melee(MeleeProof proof, double amount) {
+        requireOwner.run();
+        if (proof == null || proof.delivered) return false;
+        proof.delivered = true;
+        if (!Double.isFinite(amount) || amount <= 0) return false;
+        Lease lease = proof.lease;
+        if (!incomingAllowed(lease) || lease.incoming.size() >= MAX_QUEUED_HITS) return false;
+        lease.incoming.addLast(amount);
+        lease.meleeSince = tick;
+        return true;
+    }
+
+    boolean permitsBeam(UUID proxy, UUID zombie) {
+        requireOwner.run();
+        Lease lease = bound(proxy, zombie);
+        return lease != null && allows(lease, Action.BEAM);
+    }
+
+    public boolean permitsTarget(UUID proxy, UUID zombie, TargetReason reason, boolean acceptedBeam) {
+        requireOwner.run();
+        Lease lease = bound(proxy, zombie);
+        if (lease == null || !allows(lease, Action.TARGET) || world.hasOtherTarget(zombie, proxy)) return false;
+        return switch (lease.deployment.settings.mode()) {
+            case NORMAL -> false;
+            case RETALIATION -> (lease.hit || acceptedBeam) && (lease.targeted || reason == TargetReason.RETALIATION);
+            case PRIORITY -> lease.targeted || reason == TargetReason.PRIORITY || reason == TargetReason.RETALIATION && acceptedBeam;
+        };
+    }
+
+    public void targetChanged(UUID zombie, UUID proxy) {
+        requireOwner.run();
+        Lease lease = zombies.get(zombie);
+        if (lease == null) return;
+        if (Objects.equals(lease.deployment.proxy, proxy)) lease.targeted = true;
+        else if (lease.targeted) {
+            // The event has not published its newer target yet; leave it untouched.
+            forget(lease.deployment, false);
+        }
+    }
+
+    public void zombieGone(UUID zombie) {
+        requireOwner.run();
+        Lease lease = zombies.get(zombie);
+        if (lease != null) suspend(lease.deployment);
+    }
+
+    public void proxyGone(UUID proxy) {
+        requireOwner.run();
+        Deployment deployment = proxies.get(proxy);
+        if (deployment != null) forgetTower(deployment.tower.id());
+    }
+
+    private Lease bound(UUID proxy, UUID zombie) {
+        Lease lease = zombies.get(zombie);
+        return lease != null && lease.deployment == proxies.get(proxy) ? lease : null;
+    }
+
+    private boolean incomingAllowed(Lease lease) {
+        return lease.targeted && allows(lease, Action.MELEE)
+                && world.hasOwnedTarget(lease.zombie, lease.deployment.proxy);
+    }
+
+    private boolean allows(Lease lease, Action action) {
+        Deployment deployment = lease.deployment;
+        return leaseCurrent(lease) && current(deployment) && effective(deployment) && reachable(lease)
+                && world.allows(action, deployment.row, deployment.proxy, lease.zombie) && current(deployment);
+    }
+
+    private boolean reachable(Lease lease) {
+        Deployment deployment = lease.deployment;
+        return world.reachable(deployment.row, deployment.proxy, lease.zombie, deployment.settings.range())
+                && (deployment.settings.mode() == Mode.NORMAL || !world.hasOtherTarget(lease.zombie, deployment.proxy));
+    }
+
+    private boolean leaseCurrent(Lease lease) {
+        Deployment deployment = lease.deployment;
+        return registered(deployment) && deployment.lease == lease && zombies.get(lease.zombie) == lease
+                && (deployment.settings.mode() == Mode.NORMAL || tick - lease.meleeSince < MELEE_TIMEOUT);
+    }
+
+    private boolean effective(Deployment deployment) {
+        Conditions conditions = world.inspect(deployment.row);
+        if (conditions == null) return false;
+        boolean eligible = conditions.controller() == Controller.ELIGIBLE || conditions.controller() == Controller.OFFLINE;
+        return CatalogService.effective(deployment.catalog, deployment.row, conditions.world(),
+                new CatalogService.Conditions(eligible, conditions.fluid(), false, true, conditions.integrity())).defence();
+    }
+
+    private boolean registered(Deployment deployment) {
+        return !closed && deployments.get(deployment.tower.id()) == deployment;
+    }
+
+    private boolean current(Deployment deployment) {
+        return registered(deployment) && !deployment.unavailable && catalog.isPublished(deployment.catalog)
+                && deployment.observation != null && deployment.observation.current();
+    }
+
+    private void release(Deployment deployment, boolean timeout) {
+        Lease old = forget(deployment, timeout);
+        if (old != null) world.releaseTarget(old.zombie, deployment.proxy);
+    }
+
+    private Lease forget(Deployment deployment, boolean timeout) {
+        Lease old = deployment.lease;
+        if (old == null) return null;
+        deployment.lease = null;
+        zombies.remove(old.zombie, old);
+        old.permit.revoke();
+        if (timeout) deployment.timedOut = old.zombie;
+        deployment.idle = new CommitPermit();
+        return old;
+    }
+
+    private void suspend(Deployment deployment) {
+        try {
+            release(deployment, false);
+        } finally {
+            UUID proxy = deployment.proxy;
+            if (proxy != null) {
+                deployment.proxy = null;
+                proxies.remove(proxy, deployment);
+                world.removeProxy(proxy, deployment.proxyToken);
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface Completed<T> { void accept(T result, Throwable failure); }
+
+    private <T> void submit(Deployment deployment, CompletableFuture<T> operation, Completed<T> completed) {
+        deployment.busy = true;
+        inFlight.incrementAndGet();
+        operation.whenComplete((result, failure) -> {
+            try {
+                scheduler.supply(deployment.anchor, () -> {
+                    deployment.busy = false;
+                    completed.accept(result, failure);
+                    return null;
+                }).whenComplete((ignored, unavailable) -> {
+                    inFlight.decrementAndGet();
+                    if (unavailable != null) unavailable(deployment, result);
+                });
+            } catch (RuntimeException unavailable) {
+                inFlight.decrementAndGet();
+                unavailable(deployment, result);
+            }
+        });
+    }
+
+    private static void unavailable(Deployment deployment, Object result) {
+        deployment.unavailable = true;
+        if (result instanceof Observation observation && observation.permit() != null) observation.permit().close();
+    }
+
+    @Override public void close() {
+        requireOwner.run();
+        closed = true;
+        List.copyOf(deployments.keySet()).forEach(this::forgetTower);
+    }
+}

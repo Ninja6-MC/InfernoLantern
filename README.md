@@ -53,3 +53,6 @@ remain pending.
 
 [Resource repair](docs/RESOURCE_REPAIR.md) documents revision-bound quotes, durable
 payment and cooling. Native repair menus and acceptance remain pending.
+
+[Ordinary zombie combat](docs/ZOMBIE_COMBAT.md) documents the initial bounded owner loop,
+native beam and melee adapter, and remaining production and client acceptance work.
