@@ -1,6 +1,8 @@
 package com.ninja6.infernolantern.repository;
 
 import com.ninja6.infernolantern.catalog.CatalogCodec;
+import com.ninja6.infernolantern.catalog.CatalogConfig.RepairPolicy;
+import com.ninja6.infernolantern.repair.RepairQuote;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 
 import java.nio.file.*;
@@ -90,12 +92,12 @@ public final class SqliteRepository {
         return transaction(action,null);
     }
     private <T> T transaction(Callable<T> action,CommitPermit permit)throws Exception {
-        if(permit!=null)permit.requireCurrent();
+        if(permit!=null)permit.requireValid();
         connection.setAutoCommit(false);
         try {
             T result=action.call();
             // Revocation may win while the request waits for the SQLite writer or executes SQL.
-            if(permit!=null)permit.requireCurrent();
+            if(permit!=null)permit.requireValid();
             connection.commit();
             return result;
         }
@@ -370,7 +372,12 @@ public final class SqliteRepository {
     public CompletableFuture<Operation> beginCatalogIntent(Intent intent,long catalogRevision){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");return beginIntent(intent,false,catalogRevision,false);}
     /** Managed structure policies bind to the catalog revision; legacy unmanaged definitions stay independent. */
     public CompletableFuture<Operation> beginStructureIntent(Intent intent,long policyRevision){if(policyRevision<0)throw new IllegalArgumentException("Policy revision");return beginIntent(intent,false,policyRevision,true);}
-    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt,long catalogRevision,boolean managedOnly){Objects.requireNonNull(intent);return submit(()->transaction(()->{
+    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt,long catalogRevision,boolean managedOnly){
+        Objects.requireNonNull(intent);
+        if(RepairPayment.KIND.equals(intent.kind()))throw new IllegalArgumentException("Use atomic repair admission");
+        return submit(()->transaction(()->insertIntent(intent,allowReceipt,catalogRevision,managedOnly)));
+    }
+    private Operation insertIntent(Intent intent,boolean allowReceipt,long catalogRevision,boolean managedOnly)throws Exception{
         // For generic intents the guard applies to every variant; structure callers retain legacy policy revisions.
         if(!managedOnly&&catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before intent");
         Operation existing=loadOperation(intent.id());
@@ -393,7 +400,108 @@ public final class SqliteRepository {
         invalidateObservations(intent.towerId());
         require(update("UPDATE towers SET active_operation=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",intent.id(),next(intent.expectedRowVersion()),intent.towerId(),intent.expectedRowVersion())==1,"Intent CAS lost");
         return loadOperation(intent.id());
-    }));}
+    }
+
+    /** Admit one exact, current quote and its reserved escrow in one SQLite transaction. */
+    public CompletableFuture<Operation> beginRepair(UUID id,TowerSnapshot expected,long catalogRevision,
+            RepairPayment payment,long now,CommitPermit permit){
+        Objects.requireNonNull(payment);
+        Objects.requireNonNull(permit);
+        nonnegative(now);
+        return submit(()->transaction(()->{
+            Tower t=expected.state().tower();
+            TowerSnapshot current=ownedTower(t.id(),expected.rowVersion(),null);
+            require(expected.equals(current)&&repairable(t,now),"Repair target or cooling changed");
+            require(loadCatalog().revision()==catalogRevision,"Catalog changed before repair admission");
+            RepairPolicy policy=activeRepairPolicy(t);
+            Double rate=policy.resources().get(payment.resource());
+            require(rate!=null,"Unconfigured repair resource");
+            RepairQuote quote=RepairQuote.calculate(t.hp(),t.maximumHp(),rate,payment.items())
+                    .orElseThrow(()->new RepositoryException.Conflict("Repair would not increase health"));
+            require(quote.items()==payment.items(),"Repair payment is larger than the useful quote");
+            try(var p=statement("SELECT 1 FROM repair_escrows e JOIN operations o ON e.operation_id=o.id "
+                    +"WHERE e.contributor=? AND o.phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING') LIMIT 1",payment.contributor());
+                    var rows=p.executeQuery()){
+                require(!rows.next(),"Contributor already has an unsettled repair");
+            }
+            Tower healed=new Tower(t.id(),t.variantId(),quote.resultingHp(),t.maximumHp(),t.form(),t.generation(),
+                    t.deploymentRevision(),t.controller(),t.position(),t.light(),t.defence(),t.expandAfter(),t.repairAfter());
+            State after=new State(healed,null,expected.state().components());
+            Intent intent=new Intent(id,t.id(),expected.rowVersion(),t.generation(),t.deploymentRevision(),
+                    RepairPayment.KIND,after,new Document(1,"repair-v1:"+catalogRevision));
+            Escrow escrow=payment.escrow(intent);
+            Operation admitted=insertIntent(intent,false,catalogRevision,false);
+            insertEscrow(escrow);
+            return admitted;
+        },permit));
+    }
+
+    /** Finalize exact observed debit and HP together, or mark a proved restoration without healing. */
+    public CompletableFuture<Operation> settleRepair(UUID id,long operationVersion,long catalogRevision,
+            boolean restored,LongSupplier clock,CommitPermit permit){
+        if(!restored){
+            Objects.requireNonNull(clock);
+            Objects.requireNonNull(permit);
+        }
+        return submit(()->transaction(()->{
+            Operation operation=requireOperation(id,operationVersion);
+            require(RepairPayment.KIND.equals(operation.intent().kind()),"Not a repair operation");
+            if(!restored){
+                if(loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
+                require(operation.intent().effects().equals(new Document(1,"repair-v1:"+catalogRevision)),
+                        "Repair catalog does not match admission");
+                long now=clock.getAsLong();
+                nonnegative(now);
+                require(repairable(operation.before().tower(),now),"Repair target or cooling changed");
+                activeRepairPolicy(operation.before().tower());
+            }
+            Escrow old=loadEscrow(id);
+            require(old!=null&&old.payment()==PaymentPhase.RESERVED&&old.hpPhase()==HpPhase.NOT_APPLIED,
+                    "Repair escrow is not reserved");
+            require(update("UPDATE repair_escrows SET payment=?,hp_phase=?,row_version=? WHERE operation_id=? AND row_version=?",
+                    (restored?PaymentPhase.REFUNDED:PaymentPhase.COMMITTED).name(),
+                    (restored?HpPhase.NOT_APPLIED:HpPhase.APPLIED).name(),next(old.rowVersion()),id,old.rowVersion())==1,
+                    "Repair escrow CAS lost");
+            return finishOperation(id,operationVersion,restored?"Exact source restored":"Exact debit and HP settled together",
+                    restored,false,-1,false,null);
+        },permit));
+    }
+
+    /** Call for an owner-authorized valid damaging attack, with the exact ready row. */
+    public CompletableFuture<TowerSnapshot> recordRepairCooling(long catalogRevision,TowerSnapshot expected,
+            long now,CommitPermit permit){
+        nonnegative(now);
+        return submit(()->transaction(()->{
+            Tower t=expected.state().tower();
+            require(loadCatalog().revision()==catalogRevision,"Catalog changed before attack cooling");
+            require(expected.equals(ownedTower(t.id(),expected.rowVersion(),null))&&t.form()==Form.EXPANDED&&t.hp()>0,
+                    "Stale deployed attack");
+            long until=Math.max(t.repairAfter(),Math.addExact(now,activeRepairPolicy(t).coolingMillis()));
+            if(until==t.repairAfter())return expected;
+            Tower changed=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),
+                    t.controller(),t.position(),t.light(),t.defence(),t.expandAfter(),until);
+            State after=new State(changed,null,expected.state().components());
+            long version=next(expected.rowVersion());
+            invalidateObservations(t.id());
+            require(update("UPDATE towers SET repair_after=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",
+                    until,version,t.id(),expected.rowVersion())==1,"Attack cooling CAS lost");
+            return new TowerSnapshot(after,version,null);
+        },permit));
+    }
+
+    private static boolean repairable(Tower tower,long now){
+        return (tower.form()==Form.COMPACT||tower.form()==Form.EXPANDED&&tower.hp()>0)
+                &&tower.hp()<tower.maximumHp()&&now>=tower.repairAfter();
+    }
+
+    private RepairPolicy activeRepairPolicy(Tower tower)throws SQLException{
+        Variant variant=loadVariant(tower.variantId());
+        require(catalogManaged(tower.variantId())&&variant!=null&&variant.status()==VariantStatus.ACTIVE,
+                "Repair requires an active catalog variant");
+        RepairPolicy policy=CatalogCodec.definition(variant.lastValidDefinition()).repair();
+        require(policy!=null,"Repair is not configured");
+        return policy;
+    }
     private static Set<Cell> cells(List<State> states){
         var result=new HashSet<Cell>();
         for(State state:states)for(Component c:state.components())result.add(new Cell(c.world(),c.x(),c.y(),c.z()));
@@ -454,7 +562,12 @@ public final class SqliteRepository {
         return finish(id,expected,evidence,rollback,allowReceipt,catalogRevision,false,null,null);
     }
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
-            boolean managedOnly,CommitPermit permit,LongSupplier exitClock){Objects.requireNonNull(id);return submit(()->transaction(()->{
+            boolean managedOnly,CommitPermit permit,LongSupplier exitClock){
+        Objects.requireNonNull(id);
+        return submit(()->transaction(()->finishOperation(id,expected,evidence,rollback,allowReceipt,catalogRevision,managedOnly,exitClock),permit));
+    }
+    private Operation finishOperation(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
+            boolean managedOnly,LongSupplier exitClock)throws Exception{
         if(!managedOnly&&catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
@@ -475,7 +588,7 @@ public final class SqliteRepository {
                 :update("UPDATE operations SET phase=?,row_version=?,evidence=?,after_state=? WHERE id=? AND row_version=?",
                         terminal.name(),next(expected),evidence,SnapshotCodec.encode(after),id,expected);
         require(saved==1,"Completion CAS lost");return loadOperation(id);
-    },permit));}
+    }
     private State stampExit(Operation op,LongSupplier exitClock,boolean nativeCompletion)throws Exception{
         var recipe=exitRecipe(op.intent());
         if(!nativeCompletion)require(RecoveryEnvelope.supports(op,recipe),"Timed exit recovery requires a typed structure recipe");
@@ -570,16 +683,22 @@ public final class SqliteRepository {
     /** Exact resource bytes must be captured on the owning scheduler before this call. */
     public CompletableFuture<Escrow> saveEscrow(Escrow escrow,long expected,long operationVersion){Objects.requireNonNull(escrow);return submit(()->transaction(()->{
         Operation op=requireOperation(escrow.operation(),operationVersion);
+        require(!RepairPayment.KIND.equals(op.intent().kind()),"Use atomic repair settlement");
         require(op.intent().towerId().equals(escrow.towerId())&&op.intent().expectedDeploymentRevision()==escrow.deploymentRevision(),"Escrow operation mismatch");
         ownedTower(escrow.towerId(),next(op.intent().expectedRowVersion()),escrow.operation());
         Escrow old=loadEscrow(escrow.operation());
-        if(expected==-1){require(old==null&&escrow.rowVersion()==0,"Escrow already exists");update("INSERT INTO repair_escrows VALUES(?,?,?,?,?,?,?,?,?,1)",escrow.operation(),escrow.towerId(),escrow.deploymentRevision(),escrow.contributor(),escrow.resourceFormat(),escrow.resources().copy(),escrow.payment().name(),escrow.hpPhase().name(),0);}
+        if(expected==-1){require(old==null&&escrow.rowVersion()==0,"Escrow already exists");insertEscrow(escrow);}
         else {
             require(old!=null&&old.rowVersion()==expected&&escrow.rowVersion()==next(expected),"Escrow CAS lost");
             require(old.towerId().equals(escrow.towerId())&&old.deploymentRevision()==escrow.deploymentRevision()&&old.contributor().equals(escrow.contributor())&&old.resourceFormat()==escrow.resourceFormat()&&old.resources().equals(escrow.resources()),"Escrow provenance/resources immutable");
             require(update("UPDATE repair_escrows SET payment=?,hp_phase=?,row_version=? WHERE operation_id=? AND row_version=?",escrow.payment().name(),escrow.hpPhase().name(),escrow.rowVersion(),escrow.operation(),expected)==1,"Escrow CAS lost");
         }return escrow;
     }));}
+    private void insertEscrow(Escrow escrow)throws SQLException{
+        update("INSERT INTO repair_escrows VALUES(?,?,?,?,?,?,?,?,?,1)",escrow.operation(),escrow.towerId(),
+                escrow.deploymentRevision(),escrow.contributor(),escrow.resourceFormat(),escrow.resources().copy(),
+                escrow.payment().name(),escrow.hpPhase().name(),0);
+    }
     public CompletableFuture<Optional<Escrow>> escrow(UUID operation){Objects.requireNonNull(operation);return submit(()->snapshot(()->Optional.ofNullable(loadEscrow(operation))));}
     private Escrow loadEscrow(UUID id)throws SQLException{
         try(var p=statement("SELECT * FROM repair_escrows WHERE operation_id=?",id);var r=p.executeQuery()){

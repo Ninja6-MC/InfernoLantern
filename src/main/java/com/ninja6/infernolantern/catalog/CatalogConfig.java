@@ -32,14 +32,32 @@ public final class CatalogConfig {
     public record Geometry(String compactModel,String expandedModel,int width,int height,int depth,int lightX,int lightY,int lightZ) {
         public Geometry {resource(compactModel);resource(expandedModel);if(width<1||height<1||depth<1||width>4095||height>4095||depth>4095||(long)width*height*depth>4095||lightX<0||lightX>=width||lightY<0||lightY>=height||lightZ<0||lightZ>=depth)throw new IllegalArgumentException("Declared geometry/light-cell bounds");}
     }
+    /** Explicit per-variant repair policy. Empty legacy definitions do not enable repairs. */
+    public record RepairPolicy(Map<String,Double> resources, long coolingMillis) {
+        public RepairPolicy {
+            resources=Collections.unmodifiableMap(new TreeMap<>(resources));
+            if(resources.isEmpty()||resources.size()>128||coolingMillis<0)
+                throw new IllegalArgumentException("Repair policy bounds");
+            resources.forEach((key,rate)->{
+                resource(key);
+                if(rate==null||!Double.isFinite(rate)||rate<=0)throw new IllegalArgumentException("Positive repair rate required");
+            });
+        }
+    }
     public record Definition(String id,boolean lightAvailable,boolean defenceAvailable,boolean defaultLight,boolean defaultDefence,
                              int lightLevel,double maximumHp,double expansionPercent,long expansionCooldownMillis,String permission,
-                             Geometry geometry,Map<Action,WorldRule> worlds) {
+                             Geometry geometry,Map<Action,WorldRule> worlds,RepairPolicy repair) {
         public Definition {
             identifier(id);if(id.startsWith("prototype."))throw new IllegalArgumentException("Reserved fixture variant");
             if(lightLevel<0||lightLevel>15||!Double.isFinite(maximumHp)||maximumHp<=0||!Double.isFinite(expansionPercent)||expansionPercent<=0||expansionPercent>100||expansionCooldownMillis<0)throw new IllegalArgumentException("Variant numeric bounds");
             if(permission!=null){text(permission,256);if(!permission.matches("[a-z0-9][a-z0-9_.:-]{0,255}"))throw new IllegalArgumentException("Permission syntax");}
             Objects.requireNonNull(geometry);worlds=Map.copyOf(worlds);if(!worlds.keySet().equals(EnumSet.allOf(Action.class)))throw new IllegalArgumentException("Complete action policies required");
+        }
+        public Definition(String id,boolean lightAvailable,boolean defenceAvailable,boolean defaultLight,boolean defaultDefence,
+                          int lightLevel,double maximumHp,double expansionPercent,long expansionCooldownMillis,String permission,
+                          Geometry geometry,Map<Action,WorldRule> worlds) {
+            this(id,lightAvailable,defenceAvailable,defaultLight,defaultDefence,lightLevel,maximumHp,expansionPercent,
+                    expansionCooldownMillis,permission,geometry,worlds,null);
         }
     }
     public record Candidate(boolean defaultLightAvailable,boolean defaultDefenceAvailable,Map<String,Definition> variants) {
@@ -55,7 +73,7 @@ public final class CatalogConfig {
         Map<String,?> variants=map(required(root,"variants"));var result=new TreeMap<String,Definition>();
         for(var entry:variants.entrySet()){
             String id=entry.getKey();Map<String,?> v=map(entry.getValue());
-            keys(v,"capabilities","player-switches","light-level","maximum-hp","expansion-hp-percent","expansion-cooldown-ms","permission","geometry","world-rules");
+            keys(v,"capabilities","player-switches","light-level","maximum-hp","expansion-hp-percent","expansion-cooldown-ms","permission","geometry","world-rules","repair");
             Map<String,?> c=map(optional(v,"capabilities"));keys(c,"light","defence");
             Map<String,?> switches=map(required(v,"player-switches"));keys(switches,"light","defence");
             boolean defaultLight=booleanValue(required(switches,"light")),defaultDefence=booleanValue(required(switches,"defence"));
@@ -63,9 +81,15 @@ public final class CatalogConfig {
             Geometry geometry=new Geometry(string(required(g,"compact-model")),string(required(g,"expanded-model")),integer(required(g,"width")),integer(required(g,"height")),integer(required(g,"depth")),integer(required(g,"light-x")),integer(required(g,"light-y")),integer(required(g,"light-z")));
             Map<String,?> rules=map(optional(v,"world-rules"));keys(rules,"place","expand","light","defence");var worlds=new EnumMap<Action,WorldRule>(Action.class);
             for(Action action:Action.values())worlds.put(action,rule(map(optional(rules,action.name().toLowerCase(Locale.ROOT)))));
-            result.put(id,new Definition(id,bool(c,"light",light),bool(c,"defence",defence),defaultLight,defaultDefence,integer(required(v,"light-level")),number(required(v,"maximum-hp")),v.containsKey("expansion-hp-percent")?number(v.get("expansion-hp-percent")):50,nonnegativeLong(required(v,"expansion-cooldown-ms")),v.containsKey("permission")?string(v.get("permission")):null,geometry,worlds));
+            result.put(id,new Definition(id,bool(c,"light",light),bool(c,"defence",defence),defaultLight,defaultDefence,integer(required(v,"light-level")),number(required(v,"maximum-hp")),v.containsKey("expansion-hp-percent")?number(v.get("expansion-hp-percent")):50,nonnegativeLong(required(v,"expansion-cooldown-ms")),v.containsKey("permission")?string(v.get("permission")):null,geometry,worlds,v.containsKey("repair")?repair(map(v.get("repair"))):null));
         }
         return new Candidate(light,defence,result);
+    }
+    private static RepairPolicy repair(Map<String,?> input) {
+        keys(input,"resources","cooling-ms");
+        var resources=new TreeMap<String,Double>();
+        map(required(input,"resources")).forEach((key,value)->resources.put(key,number(value)));
+        return new RepairPolicy(resources,nonnegativeLong(required(input,"cooling-ms")));
     }
     private static WorldRule rule(Map<String,?> map){keys(map,"allow-worlds","deny-worlds","allow-dimensions");
         List<Selector> allow=map.containsKey("allow-worlds")?selectors(map.get("allow-worlds")):null;

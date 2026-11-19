@@ -108,6 +108,7 @@ public final class RepositoryRecords {
             if (bytes == null || bytes.length > MAX_PAYLOAD) throw new IllegalArgumentException("Resource snapshot size");
             this.bytes = bytes.clone();
         }
+        public int size() { return bytes.length; }
         public byte[] copy() { return bytes.clone(); }
         @Override public boolean equals(Object other) { return other instanceof ResourceBytes that && Arrays.equals(bytes, that.bytes); }
         @Override public int hashCode() { return Arrays.hashCode(bytes); }

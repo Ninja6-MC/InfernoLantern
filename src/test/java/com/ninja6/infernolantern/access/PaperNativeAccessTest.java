@@ -232,6 +232,33 @@ final class PaperNativeAccessTest {
                 access.repair(admin.session(), settings, expanded, 0, 200, SAFE));
     }
 
+    @Test void repairAuthorizationBindsViewerAndCurrentCombatPermit() {
+        var controller = new Client(false);
+        var outsider = new Client(false);
+        var admin = new Client(true);
+        var expanded = snapshot(Form.EXPANDED, controller.actor, 80, 100, 0, 200);
+        var idle = new CommitPermit();
+        assertTrue(access.repairAccess(outsider.session(), settings, expanded, 200, SAFE, () -> idle).isEmpty());
+        assertTrue(access.repairAccess(controller.session(), settings, expanded, 200, SAFE, () -> null).isEmpty());
+        assertTrue(access.repairAccess(controller.session(), settings, expanded, 199, SAFE, () -> idle).isEmpty());
+
+        admin.enable();
+        var override = access.repairAccess(admin.session(), settings, expanded, 200, SAFE, () -> idle).orElseThrow();
+        var authorization = override.authorize(expanded, 200);
+        assertEquals(admin.actor, authorization.actor());
+        assertEquals(admin.session().id(), authorization.session());
+        authorization.permit().requireValid();
+        sessions.command(admin.player, "infernolantern", new String[]{"override", "off"});
+        assertThrows(RepositoryException.CommitRevoked.class, authorization.permit()::requireValid);
+        assertNull(override.authorize(expanded, 200));
+
+        var normal = access.repairAccess(controller.session(), settings, expanded, 200, SAFE, () -> idle).orElseThrow();
+        var current = normal.authorize(expanded, 200);
+        assertNotNull(current);
+        idle.revoke();
+        assertThrows(RepositoryException.CommitRevoked.class, current.permit()::requireValid);
+    }
+
     @Test void basePermissionVariantPermissionWorldAndRetirementStayIndependent() throws Exception {
         var admin = new Client(true);
         admin.enable();
