@@ -208,6 +208,7 @@ public final class ZombieCombat implements AutoCloseable {
             forgetTower(current.tower.id());
             return;
         }
+        if (current.activeMelee != null && !current.busy) return; // Dispatch can call reentrant protection hooks.
         if (current.lease != null && !leaseCurrent(current.lease)) {
             release(current, true);
             suspend(current);
@@ -339,35 +340,46 @@ public final class ZombieCombat implements AutoCloseable {
         Deployment current = lease.deployment;
         // Keep the dequeued source visible to revocation while protection callbacks run.
         current.activeMelee = hit;
-        if (!acceptedDamageAllowed(lease)) {
-            try {
-                suspend(current);
-            } finally {
-                current.activeMelee = null;
-            }
-            return;
+        boolean handedOff = false;
+        try {
+            if (!currentDamageAllowed(hit)) return;
+            var configured = current.catalog.entries().get(current.tower.variantId()).definition().repair();
+            long cooling = configured == null ? 0 : configured.coolingMillis();
+            var defeatEffects = world.defeatEffects();
+            if (current.activeMelee != hit) return;
+            submit(current, health.damage(current.catalog, current.row, new TowerHealth.Damage(hit.amount(), cooling),
+                    row -> currentDamageAllowed(hit) ? new TowerHealth.Admission(lease.permit) : null,
+                    UUID.randomUUID(), defeatEffects), (result, failure) ->
+                    finishMelee(hit, failure != null || result.settled().state().tower().hp() == 0));
+            handedOff = true;
+        } finally {
+            if (!handedOff) finishMelee(hit, false);
         }
-        var configured = current.catalog.entries().get(current.tower.variantId()).definition().repair();
-        long cooling = configured == null ? 0 : configured.coolingMillis();
-        submit(current, health.damage(current.catalog, current.row, new TowerHealth.Damage(hit.amount(), cooling),
-                row -> acceptedDamageAllowed(lease) ? new TowerHealth.Admission(lease.permit) : null,
-                UUID.randomUUID(), world.defeatEffects()), (result, failure) -> {
-                    current.activeMelee = null;
-                    if (lease.detached && current.melee.isEmpty()) revokeMelee(lease);
-                    if (!registered(current)) return;
-                    if (failure != null || result.settled().state().tower().hp() == 0
-                            || current.lease == null && current.melee.isEmpty()) {
-                        suspend(current);
-                        closeObservation(current);
-                    }
-                });
+    }
+
+    private boolean currentDamageAllowed(AcceptedMelee hit) {
+        Deployment deployment = hit.source().deployment;
+        return deployment.activeMelee == hit && acceptedDamageAllowed(hit.source()) && deployment.activeMelee == hit;
+    }
+
+    private void finishMelee(AcceptedMelee hit, boolean stop) {
+        Lease source = hit.source();
+        Deployment deployment = source.deployment;
+        if (deployment.activeMelee != hit) return;
+        deployment.activeMelee = null;
+        if (source.detached && deployment.melee.isEmpty()) revokeMelee(source);
+        if (registered(deployment) && source.proxy.equals(deployment.proxy)
+                && (stop || deployment.lease == null && deployment.melee.isEmpty())) {
+            suspend(deployment);
+            closeObservation(deployment);
+        }
     }
 
     private boolean acceptedDamageAllowed(Lease source) {
         Deployment deployment = source.deployment;
-        if (!source.detached) return incomingAllowed(source);
-        // A newer unrelated target does not revoke the earlier, already accepted native event.
-        return current(deployment) && effective(deployment) && detachedProtectionAllows(source)
+        if (!source.detached && incomingAllowed(source)) return true;
+        // A protection callback can also publish a newer unrelated target during authorization.
+        return source.detached && current(deployment) && effective(deployment) && detachedProtectionAllows(source)
                 && current(deployment);
     }
 
@@ -553,7 +565,9 @@ public final class ZombieCombat implements AutoCloseable {
     }
 
     private void suspend(Deployment deployment) {
-        if (deployment.activeMelee != null) revokeMelee(deployment.activeMelee.source());
+        AcceptedMelee active = deployment.activeMelee;
+        deployment.activeMelee = null;
+        if (active != null) revokeMelee(active.source());
         deployment.melee.forEach(hit -> revokeMelee(hit.source()));
         deployment.melee.clear();
         try {

@@ -252,7 +252,9 @@ class ZombieCombatTest {
 
         world.available = List.of(new Candidate(SECOND, 4));
         combat.tick(5);
-        owner.next();
+        owner.next(); // Refresh after releasing the denied dispatch's observation.
+        combat.tick(5);
+        owner.next(); // Complete authorized outgoing cooling.
         UUID secondProxy = world.proxy();
         target(secondProxy, SECOND);
         combat.zombieGone(FIRST);
@@ -260,6 +262,119 @@ class ZombieCombatTest {
         assertFalse(world.removed.contains(secondProxy));
         assertEquals(EXTERNAL, world.targets.get(FIRST));
         assertNotNull(combat.captureMelee(secondProxy, SECOND));
+    }
+
+    @Test void throwingAttachedDispatchLeavesNoUnpublishedRepairFence() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        var unavailable = new IllegalStateException("Protection unavailable");
+        world.protection = (action, zombie) -> {
+            if (action == Action.MELEE) throw unavailable;
+            return true;
+        };
+        assertSame(unavailable, assertThrows(IllegalStateException.class, () -> combat.tick(2)));
+
+        world.protection = (action, zombie) -> true;
+        combat.zombieGone(FIRST);
+        combat.tick(3);
+        var saved = current();
+        assertEquals(75, saved.state().tower().hp());
+        assertTrue(world.removed.contains(proxy));
+        assertNotNull(combat.idle(saved));
+    }
+
+    @Test void throwingDetachedDispatchLeavesNoUnpublishedRepairFence() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        combat.targetChanged(FIRST, null);
+        world.targets.put(FIRST, EXTERNAL);
+
+        int[] detachedMeleeChecks = {0};
+        var unavailable = new IllegalStateException("Protection unavailable");
+        world.protection = (action, zombie) -> {
+            if (action == Action.MELEE && FIRST.equals(zombie) && ++detachedMeleeChecks[0] == 2) throw unavailable;
+            return true;
+        };
+        assertSame(unavailable, assertThrows(IllegalStateException.class, () -> combat.tick(2)));
+        assertEquals(2, detachedMeleeChecks[0]);
+        combat.zombieGone(FIRST);
+        var saved = current();
+        assertEquals(75, saved.state().tower().hp());
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertTrue(world.removed.contains(proxy));
+        assertNotNull(combat.idle(saved));
+    }
+
+    @Test void reentrantSourceRemovalCancelsDispatchBeforeItCanHandOff() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        world.protection = (action, zombie) -> {
+            if (action == Action.MELEE) combat.zombieGone(zombie);
+            return true;
+        };
+
+        combat.tick(2);
+        var saved = current();
+        assertEquals(75, saved.state().tower().hp());
+        assertTrue(world.removed.contains(proxy));
+        assertNotNull(combat.idle(saved));
+        assertTrue(owner.work.isEmpty());
+    }
+
+    @Test void reentrantReplacementPreservesAnAlreadyAcceptedMelee() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        world.protection = (action, zombie) -> {
+            if (action == Action.MELEE && proxy.equals(world.targets.get(zombie))) {
+                combat.targetChanged(zombie, null);
+                world.targets.put(zombie, EXTERNAL);
+            }
+            return true;
+        };
+
+        combat.tick(2);
+        owner.next();
+        owner.next();
+        var saved = current();
+        assertEquals(71.5, saved.state().tower().hp());
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertTrue(world.removed.contains(proxy));
+        assertNotNull(combat.idle(saved));
+    }
+
+    @Test void unavailableOwnerCompletionReleasesCapacityAndPreservesCommittedDamage() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        combat.targetChanged(FIRST, null);
+        world.targets.put(FIRST, EXTERNAL);
+        combat.tick(2);
+        owner.waitForWork();
+        owner.rejectNextSubmission = true;
+        owner.next(); // Authorize the write. Reject delivery of its later completion.
+        var saved = current();
+        assertEquals(71.5, saved.state().tower().hp());
+        combat.tick(3);
+        assertTrue(world.removed.contains(proxy));
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        combat.track(saved, settings, new Settings(Mode.RETALIATION, 6, 2, 1_000));
+        assertNotNull(combat.idle(saved));
+        combat.tick(4);
+        owner.next(); // A replacement deployment must be able to obtain a storage work slot.
     }
 
     @Test void exactZombieRemovalRevokesDetachedMeleeAfterOwnerAuthorization() throws Exception {
@@ -501,8 +616,13 @@ class ZombieCombatTest {
         final Thread thread = Thread.currentThread();
         final BlockingQueue<Runnable> work = new LinkedBlockingQueue<>();
         boolean deferCompletion;
+        volatile boolean rejectNextSubmission;
         private Runnable deferred;
         @Override public <T> CompletableFuture<T> supply(Anchor anchor, Supplier<T> action) {
+            if (rejectNextSubmission) {
+                rejectNextSubmission = false;
+                return CompletableFuture.failedFuture(new RejectedExecutionException("Owner delivery unavailable"));
+            }
             var result = new CompletableFuture<T>();
             work.add(() -> {
                 try {
