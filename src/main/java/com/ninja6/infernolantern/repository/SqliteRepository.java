@@ -73,8 +73,18 @@ public final class SqliteRepository {
     public int queuedRequests() {return queue.size();}
     public CompletableFuture<String> sqliteVersion(){return submit(()->{try(var s=connection.createStatement();var r=s.executeQuery("SELECT sqlite_version()")){r.next();return r.getString(1);}});}
     private <T> T transaction(Callable<T> action)throws Exception {
+        return transaction(action,null);
+    }
+    private <T> T transaction(Callable<T> action,CommitPermit permit)throws Exception {
+        if(permit!=null)permit.requireCurrent();
         connection.setAutoCommit(false);
-        try {T result=action.call();connection.commit();return result;}
+        try {
+            T result=action.call();
+            // Revocation may win while the request waits for the SQLite writer or executes SQL.
+            if(permit!=null)permit.requireCurrent();
+            connection.commit();
+            return result;
+        }
         catch(Exception|Error e){try{connection.rollback();}catch(SQLException rollback){e.addSuppressed(rollback);fatal=e;}throw e;}
         finally {try{connection.setAutoCommit(true);}catch(SQLException e){fatal=e;throw e;}}
     }
@@ -185,6 +195,10 @@ public final class SqliteRepository {
     }
     /** Preferences change only, guarded by both the current catalog and tower revision. */
     public CompletableFuture<TowerSnapshot> saveSwitches(long catalogRevision,UUID tower,long expectedVersion,long expectedDeploymentRevision,boolean light,boolean defence){
+        return saveSwitches(catalogRevision,tower,expectedVersion,expectedDeploymentRevision,light,defence,null);
+    }
+    public CompletableFuture<TowerSnapshot> saveSwitches(long catalogRevision,UUID tower,long expectedVersion,long expectedDeploymentRevision,
+            boolean light,boolean defence,CommitPermit permit){
         return submit(()->transaction(()->{
             require(loadCatalog().revision()==catalogRevision,"Catalog changed before switch commit");
             TowerSnapshot old=ownedTower(tower,expectedVersion,null);Tower t=old.state().tower();
@@ -192,7 +206,7 @@ public final class SqliteRepository {
             Tower changed=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),t.controller(),t.position(),light,defence,t.expandAfter(),t.repairAfter());
             State state=new State(changed,old.state().ground(),old.state().components());
             writeTower(state,next(expectedVersion),null,false,expectedVersion,null);return new TowerSnapshot(state,next(expectedVersion),null);
-        }));
+        },permit));
     }
     public CompletableFuture<TowerSnapshot> createTower(Tower tower){Objects.requireNonNull(tower);return submit(()->transaction(()->{
         require(tower.form()==Form.PORTABLE,"Initial storage insertion must be portable");
@@ -322,17 +336,27 @@ public final class SqliteRepository {
     /** Only the winning fresh finalizer may publish/activate a recovery outcome. Receipts grant no effect ownership. */
     public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false,-1);}
     public CompletableFuture<Operation> completeCatalogOperation(UUID id,long expected,long catalogRevision,String evidence){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision);}
-    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){Objects.requireNonNull(id);return submit(()->transaction(()->{
-        if(catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
+    /** Native structure completion repeats its admission guard for managed definitions. */
+    public CompletableFuture<Operation> completeStructureOperation(UUID id,long expected,long catalogRevision,String evidence,CommitPermit permit){
+        if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");
+        text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision,true,permit);
+    }
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){
+        return finish(id,expected,evidence,rollback,allowReceipt,catalogRevision,false,null);
+    }
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
+            boolean managedOnly,CommitPermit permit){Objects.requireNonNull(id);return submit(()->transaction(()->{
+        if(!managedOnly&&catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
         require(op.rowVersion()==expected&&op.phase()==(rollback?Phase.RECONCILING:Phase.EFFECTS_APPLIED),"Operation is not ready for completion");
         ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),id);
+        if(managedOnly&&catalogManaged(op.before().tower().variantId())&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Escrow escrow=loadEscrow(id);
         if(escrow!=null)require(rollback?(escrow.payment()==PaymentPhase.REFUNDED&&escrow.hpPhase()==HpPhase.NOT_APPLIED):(escrow.payment()==PaymentPhase.COMMITTED&&escrow.hpPhase()==HpPhase.APPLIED),"Escrow not settled; retain reconciliation");
         writeTower(rollback?op.before():op.intent().after(),Math.addExact(op.intent().expectedRowVersion(),2),null,false,next(op.intent().expectedRowVersion()),id);
         require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=?",terminal.name(),next(expected),evidence,id,expected)==1,"Completion CAS lost");return loadOperation(id);
-    }));}
+    },permit));}
     private Operation requireOperation(UUID id,long version)throws Exception{Operation op=loadOperation(id);require(op!=null&&op.rowVersion()==version&&op.pending(),"Stale or terminal operation");return op;}
     private Operation loadOperation(UUID id)throws Exception{
         try(var p=statement("SELECT * FROM operations WHERE id=?",id);var r=p.executeQuery()){

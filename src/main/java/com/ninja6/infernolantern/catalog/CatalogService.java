@@ -23,13 +23,21 @@ public final class CatalogService implements AutoCloseable {
     public record Conditions(boolean nativeAccess,boolean fluidAllowed,boolean lifecycleLight,boolean lifecycleDefence,boolean componentIntegrity) {}
     public record Effective(boolean light,boolean defence,int lightLevel) {}
     public record SwitchObservation(WorldRef world,boolean authorized) {public SwitchObservation{Objects.requireNonNull(world);}}
-    @FunctionalInterface public interface SwitchAccess {SwitchObservation inspect(TowerSnapshot row,Action action,boolean value);}
+    @FunctionalInterface public interface SwitchAccess {
+        SwitchObservation inspect(TowerSnapshot row,Action action,boolean value);
+        /** Immutable receipt notification after CAS; may run off the world owner. */
+        default void committed(TowerSnapshot row) {}
+    }
     private final SqliteRepository repository;private final WorldScheduler scheduler;private final DefinitionValidator validator;private final Reconciler reconciler;
     private final AtomicReference<Snapshot> published=new AtomicReference<>();private final AtomicBoolean busy=new AtomicBoolean();
     private volatile boolean closed,effectsReady;
     public CatalogService(SqliteRepository repository,WorldScheduler scheduler,DefinitionValidator validator,Reconciler reconciler){this.repository=Objects.requireNonNull(repository);this.scheduler=Objects.requireNonNull(scheduler);this.validator=Objects.requireNonNull(validator);this.reconciler=Objects.requireNonNull(reconciler);}
     public Optional<Snapshot> current(){return Optional.ofNullable(published.get());}
     public boolean ready(){return !closed&&effectsReady;}
+    public boolean isPublished(Snapshot snapshot){
+        Snapshot observed=published.get();
+        return snapshot.revision()>0&&snapshot.equals(observed)&&ready()&&observed==published.get();
+    }
     /** Startup explicitly publishes current validated configuration, retiring omitted managed definitions. */
     public CompletableFuture<Reload> reload(Map<String,?> values){Candidate candidate;
         try{candidate=CatalogConfig.parse(values);for(Definition d:candidate.variants().values())validator.validate(d);}catch(RuntimeException invalid){return CompletableFuture.failedFuture(invalid);}
@@ -71,7 +79,7 @@ public final class CatalogService implements AutoCloseable {
         return new Snapshot(stored.revision(),entries);
     }
     /** Check at native commit; a cached snapshot is not a cross-instance authority grant. */
-    public CompletableFuture<Boolean> isCurrent(Snapshot snapshot){return repository.catalog().thenApply(current->ready()&&snapshot.equals(published.get())&&decodeStored(current).equals(snapshot));}
+    public CompletableFuture<Boolean> isCurrent(Snapshot snapshot){return repository.catalog().thenApply(current->isPublished(snapshot)&&decodeStored(current).equals(snapshot));}
     public static Effective effective(Snapshot snapshot,TowerSnapshot row,WorldRef world,Conditions conditions){
         Tower tower=row.state().tower();
         Entry entry=snapshot.entries().get(tower.variantId());if(!row.mutationReady()||tower.form()!=Form.EXPANDED||tower.hp()<=0||entry==null||entry.status()!=VariantStatus.ACTIVE||tower.position()==null||!tower.position().world().equals(world.id())||!conditions.nativeAccess()||!conditions.fluidAllowed()||!conditions.componentIntegrity())return new Effective(false,false,0);
@@ -81,20 +89,27 @@ public final class CatalogService implements AutoCloseable {
     }
     /** No ownership or session inference: caller's owner-thread callback must prove both at each boundary. */
     public CompletableFuture<TowerSnapshot> switchPreference(UUID tower,long rowVersion,long deploymentRevision,Snapshot catalog,Action action,boolean value,SwitchAccess access){
-        if(!ready()||!catalog.equals(published.get()))return CompletableFuture.failedFuture(new RepositoryException.Conflict("Catalog is not currently published"));
+        return switchPreference(tower,rowVersion,deploymentRevision,catalog,action,value,access,null);
+    }
+    public CompletableFuture<TowerSnapshot> switchPreference(UUID tower,long rowVersion,long deploymentRevision,Snapshot catalog,Action action,
+            boolean value,SwitchAccess access,CommitPermit permit){
+        if(!isPublished(catalog))return CompletableFuture.failedFuture(new RepositoryException.Conflict("Catalog is not currently published"));
         if(action!=Action.LIGHT&&action!=Action.DEFENCE)return CompletableFuture.failedFuture(new IllegalArgumentException("Player switch action required"));
         return repository.tower(tower).thenCompose(found->{
             TowerSnapshot before=found.orElseThrow(()->new IllegalArgumentException("Unknown tower"));Tower t=before.state().tower();Entry entry=catalog.entries().get(t.variantId());
             if(closed||t.form()!=Form.EXPANDED||!before.mutationReady()||before.rowVersion()!=rowVersion||t.deploymentRevision()!=deploymentRevision||t.position()==null||entry==null||entry.status()!=VariantStatus.ACTIVE)throw new RepositoryException.Conflict("Switch snapshot unavailable");
             Definition definition=entry.definition();if(value&&!(action==Action.LIGHT?definition.lightAvailable():definition.defenceAvailable()))throw new RepositoryException.Conflict("Switch capability unavailable");
             var anchor=new WorldScheduler.Anchor(t.position().world(),t.position().x()>>4,t.position().z()>>4);
-            return scheduler.supply(anchor,()->!closed&&switchAllowed(access,before,definition,action,value)).thenCompose(allowed->{
+            return scheduler.supply(anchor,()->isPublished(catalog)&&switchAllowed(access,before,definition,action,value)).thenCompose(allowed->{
                 if(!allowed)return CompletableFuture.failedFuture(new RepositoryException.Conflict("Switch access changed"));
-                return repository.saveSwitches(catalog.revision(),tower,rowVersion,deploymentRevision,action==Action.LIGHT?value:t.light(),action==Action.DEFENCE?value:t.defence());
-            }).thenCompose(saved->scheduler.supply(anchor,()->{
-                // Persisted preference stays authoritative even if a callback becomes unavailable; effects remain separate.
-                if(closed||!switchAllowed(access,saved,definition,action,value))throw new RepositoryException.Conflict("Switch effect reconciliation required");return saved;
-            }));
+                return repository.saveSwitches(catalog.revision(),tower,rowVersion,deploymentRevision,action==Action.LIGHT?value:t.light(),action==Action.DEFENCE?value:t.defence(),permit);
+            }).thenCompose(saved->{
+                access.committed(saved);
+                return scheduler.supply(anchor,()->{
+                    // Persisted preference stays authoritative even if a callback becomes unavailable; effects remain separate.
+                    if(!isPublished(catalog)||!switchAllowed(access,saved,definition,action,value))throw new RepositoryException.Conflict("Switch effect reconciliation required");return saved;
+                });
+            });
         });
     }
     private static boolean switchAllowed(SwitchAccess access,TowerSnapshot row,Definition definition,Action action,boolean value){

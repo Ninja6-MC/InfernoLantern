@@ -43,3 +43,6 @@ Structure transition foundation: [journaled service, Paper effect port and pendi
 Reconciliation foundation: [evidence contracts, recovery matrix and pending integration](docs/RECONCILIATION.md). The service is unwired and does not authorize repair of existing test saves. Task #11 remains partial.
 
 The partial configuration/catalog and journaled real-light foundation is documented in [Configuration Catalog](docs/CONFIGURATION_CATALOG.md). Native configuration/control integration and acceptance remain pending.
+
+[Native access](docs/NATIVE_ACCESS.md) documents the session override command, permission
+checks and transaction boundaries for future native action routing.

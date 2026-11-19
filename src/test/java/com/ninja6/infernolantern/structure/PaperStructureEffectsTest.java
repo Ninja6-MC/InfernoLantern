@@ -76,6 +76,18 @@ class PaperStructureEffectsTest {
         Request r=request();var effects=effects(layout());var prepared=effects.prepare(r,before());Claim claim=claim(r,prepared);assertTrue(effects.apply(claim));
         Cell changed=new Cell(worldId,4,71,4);blocks.put(changed,"minecraft:stone");assertFalse(effects.verify(claim));assertFalse(effects.rollback(claim));assertEquals("minecraft:stone",blocks.get(changed));
     }
+    @Test void actualAdapterLeavesOwnedBlocksWhenProtectionDeniesRestoration(){
+        var authorize=new PaperStructureEffects.Access(){
+            public boolean allowed(Request request,State before){return true;}
+            public boolean mayRestore(Request request,State before){return false;}
+        };
+        var effects=new PaperStructureEffects(player,liveSession::get,authorize,layout(),0,new Template(),
+                GroundPolicy.DEFAULT,item->fail("No ground drop for expansion"),false);
+        Request request=request();Claim claim=claim(request,effects.prepare(request,before()));
+        assertTrue(effects.apply(claim));
+        assertFalse(effects.rollback(claim));
+        assertEquals("minecraft:barrier",blocks.get(new Cell(worldId,4,71,4)));
+    }
     @Test void actualAdapterRejectsObstructionAndRechecksSessionAndPolicy(){
         blocks.put(new Cell(worldId,4,71,4),"minecraft:stone");assertNull(effects(layout()).prepare(request(),before()));
         blocks.remove(new Cell(worldId,4,71,4));Request r=request();var effects=effects(layout());var prepared=effects.prepare(r,before());Claim claim=claim(r,prepared);
