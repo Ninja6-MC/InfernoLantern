@@ -12,6 +12,7 @@ public final class StructureLifecycle implements AutoCloseable {
     public enum Action { PLACE, EXPAND, COMPACT, BREAK, ADMIN_RECOVER }
     public enum Outcome { COMMITTED, REJECTED, ROLLED_BACK, QUARANTINED }
     public record Result(Outcome outcome,UUID operation) {}
+    /** Managed variants require the current catalog revision; unmanaged legacy policies keep their own revision. */
     public record Policy(long revision,double expansionPercent,long cooldownMillis,long now,boolean explicitOverride) {
         public Policy {
             if(revision<0||!Double.isFinite(expansionPercent)||expansionPercent<=0||expansionPercent>100||cooldownMillis<0||now<0)throw new IllegalArgumentException("Policy bounds");
@@ -71,7 +72,7 @@ public final class StructureLifecycle implements AutoCloseable {
                         Document recovery=context.isPresent()?RecoveryEnvelope.structure(kind(request),request.anchor(),payload,context.get().inventory()):RecoveryEnvelope.administrative(kind(request),request.anchor(),payload);
                         intent=new Intent(request.operation(),request.tower(),before.rowVersion(),request.generation(),request.revision(),kind(request),after,recovery);
                     } catch(RuntimeException invalid){return discard(request,effects,prepared);}
-                    return repository.beginNewIntent(intent).handle((operation,failure)->{
+                    return repository.beginStructureIntent(intent,request.policy().revision()).handle((operation,failure)->{
                         if(failure==null)return run(new Claim(request,operation,prepared),effects);
                         // A known CAS conflict rolled back admission. An unknown I/O outcome may have persisted.
                         Throwable cause=unwrap(failure);

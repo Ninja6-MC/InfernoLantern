@@ -57,7 +57,7 @@ class CatalogServiceTest {
         publish();TowerSnapshot before=placed(repository,Form.EXPANDED);var changed=variant();var g=new HashMap<>((Map<String,Object>)changed.get("geometry"));g.put("height",4);changed.put("geometry",g);
         assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",changed)))));var hp=variant();hp.put("maximum-hp",90);assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",hp)))));assertEquals(before,get(repository.tower(before.state().tower().id())).orElseThrow());
         UUID op=UUID.randomUUID();Tower t=before.state().tower();Tower lost=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),Form.LOST,t.generation()+1,t.deploymentRevision()+1,null,null,t.light(),t.defence(),t.expandAfter(),t.repairAfter());
-        Operation pending=get(repository.beginNewIntent(new Intent(op,t.id(),before.rowVersion(),t.generation(),t.deploymentRevision(),"synthetic-loss",new State(lost,null,List.of()),new Document(1,"synthetic historical terminal fixture"))));pending=get(repository.advanceOperation(op,pending.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic verified"));get(repository.completeOperation(op,pending.rowVersion(),"synthetic verified"));
+        Operation pending=get(repository.beginCatalogIntent(new Intent(op,t.id(),before.rowVersion(),t.generation(),t.deploymentRevision(),"synthetic-loss",new State(lost,null,List.of()),new Document(1,"synthetic historical terminal fixture")),get(repository.catalog()).revision()));pending=get(repository.advanceOperation(op,pending.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic verified"));get(repository.completeOperation(op,pending.rowVersion(),"synthetic verified"));
         changed.put("maximum-hp",90);get(service.reload(config(Map.of("test",changed))));assertEquals(lost,get(repository.tower(t.id())).orElseThrow().state().tower());
     }
     @Test void allFourChoicesSurviveReloadRestartAndCannotEnableUnavailableCapabilities()throws Exception{
@@ -75,7 +75,7 @@ class CatalogServiceTest {
     @Test void compactPendingAndWrongWorldRemainInertWithoutResettingPreferences()throws Exception{
         var catalog=publish();TowerSnapshot row=placed(repository,Form.COMPACT);assertTrue(row.state().tower().light());assertTrue(row.state().tower().defence());assertEquals(new CatalogService.Effective(false,false,0),CatalogService.effective(catalog,row,world(),allowed()));
         Tower t=row.state().tower();var expanded=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),Form.EXPANDED,t.generation(),t.deploymentRevision()+1,ACTOR,t.position(),true,true,t.expandAfter(),t.repairAfter());
-        get(repository.beginNewIntent(new Intent(UUID.randomUUID(),t.id(),row.rowVersion(),t.generation(),t.deploymentRevision(),"synthetic-pending",new State(expanded,null,row.state().components()),new Document(1,"synthetic"))));TowerSnapshot pending=get(repository.tower(t.id())).orElseThrow();assertFalse(CatalogService.effective(catalog,pending,world(),allowed()).light());
+        get(repository.beginCatalogIntent(new Intent(UUID.randomUUID(),t.id(),row.rowVersion(),t.generation(),t.deploymentRevision(),"synthetic-pending",new State(expanded,null,row.state().components()),new Document(1,"synthetic")),catalog.revision()));TowerSnapshot pending=get(repository.tower(t.id())).orElseThrow();assertFalse(CatalogService.effective(catalog,pending,world(),allowed()).light());
         var replacement=new WorldRef(UUID.randomUUID(),world().name(),Dimension.OVERWORLD,false);assertFalse(CatalogService.effective(catalog,row,replacement,allowed()).light());
     }
     @Test void freshOwnerAuthorizationAndCatalogCasPreventStaleSwitchWrites()throws Exception{
@@ -90,6 +90,46 @@ class CatalogServiceTest {
     @Test void postCommitEffectFailureIsReportedWithoutRevertingDurablePolicy()throws Exception{
         publish();service.close();service=new CatalogService(repository,owner,d->{},snapshot->CompletableFuture.failedFuture(new IllegalStateException("owner unavailable")));
         var result=get(service.reload(config(Map.of())));assertTrue(result.published());assertFalse(result.effectsReconciled());assertFalse(service.ready());assertFalse(get(service.isCurrent(result.snapshot())));assertEquals(result.snapshot(),service.current().orElseThrow());assertEquals(VariantStatus.RETIRED,get(repository.variant("test")).orElseThrow().status());
+    }
+    @Test void pendingOldGeometryFencesEveryJournalPhaseBeforeAndAfterPublication()throws Exception{
+        var snapshot=publish();var changed=variant();var geometry=new HashMap<>((Map<String,Object>)changed.get("geometry"));geometry.put("compact-model","fixture:compact-new");changed.put("geometry",geometry);
+        for(Phase phase:List.of(Phase.INTENT,Phase.EFFECTS_APPLIED,Phase.RECONCILING)){
+            UUID id=UUID.randomUUID(),operation=UUID.randomUUID();get(repository.createTower(portable(id)));
+            Tower compact=new Tower(id,"test",75,100,Form.COMPACT,2,1,null,new Position(WORLD,4,70,4,"north"),true,true,170,230);
+            State after=new State(compact,null,List.of(new Component("base",ComponentKind.BLOCK,WORLD,4,70,4,"minecraft:air","minecraft:barrier[waterlogged=false]",null,null)));
+            Operation op=get(repository.beginCatalogIntent(new Intent(operation,id,0,1,0,"structure-place",after,new Document(1,"synthetic staged old geometry")),snapshot.revision()));
+            if(phase!=Phase.INTENT)op=get(repository.advanceOperation(operation,op.rowVersion(),Phase.INTENT,phase,"synthetic pending phase"));
+            var durable=get(repository.catalog());assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",changed)))));assertEquals(durable,get(repository.catalog()));assertEquals(phase,get(repository.operation(operation)).orElseThrow().phase());
+            if(op.phase()!=Phase.RECONCILING)op=get(repository.advanceOperation(operation,op.rowVersion(),op.phase(),Phase.RECONCILING,"synthetic preserved source"));
+            get(repository.resolveRollback(operation,op.rowVersion(),"synthetic owner proved unchanged portable source"));
+        }
+        assertTrue(get(repository.pendingOperations(null,10)).isEmpty());get(service.reload(config(Map.of("test",changed))));
+    }
+    @Test void actualStructureAdmissionRejectsOldPolicyWhenGeometryPublishedFirst()throws Exception{
+        var snapshot=publish();UUID id=UUID.randomUUID(),operation=UUID.randomUUID();get(repository.createTower(portable(id)));
+        var structure=new com.ninja6.infernolantern.structure.StructureLifecycle(repository,owner);
+        var request=new com.ninja6.infernolantern.structure.StructureLifecycle.Request(operation,id,0,1,0,ACTOR,UUID.randomUUID(),com.ninja6.infernolantern.structure.StructureLifecycle.Action.PLACE,new Position(WORLD,4,70,4,"north"),new com.ninja6.infernolantern.structure.StructureLifecycle.Policy(snapshot.revision(),50,60000,1000,false));
+        var applied=new AtomicInteger();var discarded=new AtomicInteger();
+        var effects=new com.ninja6.infernolantern.structure.StructureLifecycle.WorldEffects(){
+            public com.ninja6.infernolantern.structure.StructureLifecycle.Preparation prepare(com.ninja6.infernolantern.structure.StructureLifecycle.Request r,TowerSnapshot row){owner.assertOwner();return new com.ninja6.infernolantern.structure.StructureLifecycle.Preparation(List.of(new Component("base",ComponentKind.BLOCK,WORLD,4,70,4,"minecraft:air","minecraft:barrier[waterlogged=false]",null,null)),null,new Document(1,"synthetic old-model staging"));}
+            public boolean validate(com.ninja6.infernolantern.structure.StructureLifecycle.Claim c){return true;}
+            public boolean apply(com.ninja6.infernolantern.structure.StructureLifecycle.Claim c){applied.incrementAndGet();return true;}
+            public boolean verify(com.ninja6.infernolantern.structure.StructureLifecycle.Claim c){return true;}
+            public boolean rollback(com.ninja6.infernolantern.structure.StructureLifecycle.Claim c){return true;}
+            public void discard(com.ninja6.infernolantern.structure.StructureLifecycle.Request r,com.ninja6.infernolantern.structure.StructureLifecycle.Preparation p){owner.assertOwner();discarded.incrementAndGet();}
+            public boolean activate(com.ninja6.infernolantern.structure.StructureLifecycle.Claim c,TowerSnapshot row){return true;}
+        };
+        try{var result=structure.execute(request,effects);owner.await();var changed=variant();var geometry=new HashMap<>((Map<String,Object>)changed.get("geometry"));geometry.put("compact-model","fixture:compact-new");changed.put("geometry",geometry);get(service.reload(config(Map.of("test",changed))));
+            assertEquals(com.ninja6.infernolantern.structure.StructureLifecycle.Outcome.REJECTED,owner.drain(result).outcome());assertEquals(0,applied.get());assertEquals(1,discarded.get());assertEquals(portable(id),get(repository.tower(id)).orElseThrow().state().tower());assertTrue(get(repository.operation(operation)).isEmpty());
+        }finally{structure.close();}
+    }
+    @Test void managedRowsRejectLegacyCasWithoutPoisoningFutureValidReload()throws Exception{
+        var snapshot=publish();Variant before=get(repository.variant("test")).orElseThrow();
+        var bad=new Variant("test",before.definitionRevision()+1,VariantStatus.ACTIVE,new Document(1,"legacy-direct-write"),before.rowVersion()+1);
+        assertThrows(ExecutionException.class,()->get(repository.compareAndSetVariant(before.rowVersion(),bad)));
+        var retired=new Variant("test",before.definitionRevision(),VariantStatus.RETIRED,before.lastValidDefinition(),before.rowVersion()+1);assertThrows(ExecutionException.class,()->get(repository.compareAndSetVariant(before.rowVersion(),retired)));
+        assertEquals(before,get(repository.variant("test")).orElseThrow());assertEquals(snapshot,service.current().orElseThrow());var changed=variant();changed.put("light-level",7);get(service.reload(config(Map.of("test",changed))));assertEquals(7,service.current().orElseThrow().entries().get("test").definition().lightLevel());
+        Variant legacy=get(repository.createVariant(new Variant("legacy-cas",0,VariantStatus.ACTIVE,new Document(1,"legacy"),0)));get(repository.compareAndSetVariant(0,new Variant(legacy.id(),1,VariantStatus.ACTIVE,new Document(1,"changed unmanaged"),1)));assertEquals("changed unmanaged",get(repository.variant(legacy.id())).orElseThrow().lastValidDefinition().content());
     }
     @Test void concurrentCatalogWritersCannotSilentlyPublishAStaleRevision()throws Exception{
         var expected=get(repository.catalog());var candidate=CatalogConfig.parse(config());var docs=Map.of("test",CatalogCodec.definition(candidate.variants().get("test")));

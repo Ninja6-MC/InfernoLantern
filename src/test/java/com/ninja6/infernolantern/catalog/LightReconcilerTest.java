@@ -31,7 +31,7 @@ class LightReconcilerTest {
     }
     @Test void sourceWaterAndCanonicalShorthandRestoreExactly()throws Exception{
         Component old=row.state().components().stream().filter(c->c.id().equals("light")).findFirst().orElseThrow();var components=new ArrayList<>(row.state().components());components.replaceAll(c->c.id().equals("light")?new Component(c.id(),c.kind(),c.world(),c.x(),c.y(),c.z(),"minecraft:water","minecraft:water",null,null):c);
-        UUID operation=UUID.randomUUID();Operation pending=get(repository.beginNewIntent(new Intent(operation,row.state().tower().id(),row.rowVersion(),2,1,"synthetic-water",new State(row.state().tower(),null,components),new Document(1,"synthetic source-water ownership"))));pending=get(repository.advanceOperation(operation,0,Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic verified"));get(repository.completeOperation(operation,pending.rowVersion(),"synthetic verified"));row=get(repository.tower(row.state().tower().id())).orElseThrow();world.actual=FakeWorld.data("minecraft:water[level=0]");
+        UUID operation=UUID.randomUUID();Operation pending=get(repository.beginCatalogIntent(new Intent(operation,row.state().tower().id(),row.rowVersion(),2,1,"synthetic-water",new State(row.state().tower(),null,components),new Document(1,"synthetic source-water ownership")),snapshot.revision()));pending=get(repository.advanceOperation(operation,0,Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic verified"));get(repository.completeOperation(operation,pending.rowVersion(),"synthetic verified"));row=get(repository.tower(row.state().tower().id())).orElseThrow();world.actual=FakeWorld.data("minecraft:water[level=0]");
         level(7);assertEquals(LightReconciler.Outcome.COMMITTED,run());assertEquals("minecraft:light[level=7,waterlogged=true]",world.actual.getAsString());snapshot=get(catalog.reload(config(Map.of()))).snapshot();assertEquals(LightReconciler.Outcome.COMMITTED,run());assertEquals("minecraft:water[level=0]",world.actual.getAsString());assertTrue(row.state().tower().light());
     }
     @Test void capabilityDisableTurnsOffOwnedLightWithoutChangingPlayerChoice()throws Exception{
@@ -78,6 +78,39 @@ class LightReconcilerTest {
         assertEquals(LightReconciler.Outcome.REJECTED,owner.drain(lights.reconcile(request(),port.get())));assertEquals(0,world.writes);assertTrue(get(repository.pendingOperations(null,10)).isEmpty());
         authorized.set(true);var future=lights.reconcile(request(),port.get());owner.await();owner.run();owner.await();owner.run();authorized.set(false);
         assertEquals(LightReconciler.Outcome.QUARANTINED,owner.drain(future));assertEquals(1,world.writes);assertEquals(15,FakeWorld.level(world.actual));assertFalse(get(repository.tower(row.state().tower().id())).orElseThrow().mutationReady());
+    }
+    void disableLight(){try{var v=variant();v.put("capabilities",Map.of("light",false));snapshot=get(catalog.reload(config(Map.of("test",v)))).snapshot();}catch(Exception failed){throw new CompletionException(failed);}}
+    LightReconciler.Effects afterVerify(PaperLightEffects delegate,Runnable callback){
+        var once=new java.util.concurrent.atomic.AtomicBoolean();return new LightReconciler.Effects(){
+            public LightReconciler.View view(TowerSnapshot row){return delegate.view(row);}
+            public LightReconciler.Prepared prepare(TowerSnapshot row,Component cell,int level){return delegate.prepare(row,cell,level);}
+            public boolean apply(LightReconciler.Claim claim){return delegate.apply(claim);}
+            public boolean verify(LightReconciler.Claim claim){boolean verified=delegate.verify(claim);if(verified&&once.compareAndSet(false,true))callback.run();return verified;}
+            public boolean rollback(LightReconciler.Claim claim){return delegate.rollback(claim);}
+        };
+    }
+    @Test void catalogSupersessionAtVerifiedCompletionCompensatesAndAllowsFreshReconciliation()throws Exception{
+        var future=lights.reconcile(request(),afterVerify(effects(),this::disableLight));assertEquals(LightReconciler.Outcome.ROLLED_BACK,owner.drain(future));
+        row=get(repository.tower(row.state().tower().id())).orElseThrow();assertTrue(row.mutationReady());assertEquals("minecraft:air",world.actual.getAsString());assertTrue(get(repository.pendingOperations(null,10)).isEmpty());assertEquals(LightReconciler.Outcome.NO_CHANGE,run());
+    }
+    @Test void supersededPreviouslyLitStateCanBeReconciledOffWithoutBlockedJournal()throws Exception{
+        level(7);assertEquals(LightReconciler.Outcome.COMMITTED,run());level(15);
+        assertEquals(LightReconciler.Outcome.ROLLED_BACK,owner.drain(lights.reconcile(request(),afterVerify(effects(),this::disableLight))));
+        row=get(repository.tower(row.state().tower().id())).orElseThrow();assertTrue(row.mutationReady());assertEquals(7,FakeWorld.level(world.actual));assertEquals(LightReconciler.Outcome.COMMITTED,run());assertEquals(0,FakeWorld.level(world.actual));assertTrue(get(repository.pendingOperations(null,10)).isEmpty());
+    }
+    @Test void supersessionNeverCompensatesAnExternalEditOrRevokedWriteCapability()throws Exception{
+        assertEquals(LightReconciler.Outcome.QUARANTINED,owner.drain(lights.reconcile(request(),afterVerify(effects(),()->{disableLight();world.actual=FakeWorld.data("minecraft:stone");}))));
+        assertEquals("minecraft:stone",world.actual.getAsString());assertFalse(get(repository.tower(row.state().tower().id())).orElseThrow().mutationReady());
+    }
+    @Test void supersessionWithWriteAuthorizationRevokedRetainsExactQuarantine()throws Exception{
+        var write=new java.util.concurrent.atomic.AtomicBoolean(true);var port=new PaperLightEffects(world.proxy,FakeWorld::data,()->owner.inside,r->new LightReconciler.View(catalog.current().orElseThrow().revision(),CatalogTestSupport.world(),allowed(),write.get()));
+        assertEquals(LightReconciler.Outcome.QUARANTINED,owner.drain(lights.reconcile(request(),afterVerify(port,()->{disableLight();write.set(false);})))) ;
+        assertEquals(15,FakeWorld.level(world.actual));assertEquals(1,world.writes);assertFalse(get(repository.tower(row.state().tower().id())).orElseThrow().mutationReady());
+    }
+    @Test void policySupersessionAfterSuccessfulCommitDoesNotFreezeMatchingManifest()throws Exception{
+        var future=lights.reconcile(request(),effects());long limit=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
+        while(get(repository.tower(row.state().tower().id())).orElseThrow().rowVersion()<row.rowVersion()+2){owner.run();if(System.nanoTime()>limit)fail("No durable completion");Thread.yield();}
+        owner.await();disableLight();assertEquals(LightReconciler.Outcome.COMMITTED,owner.drain(future));row=get(repository.tower(row.state().tower().id())).orElseThrow();assertTrue(row.mutationReady());assertEquals(15,FakeWorld.level(world.actual));assertTrue(get(repository.pendingOperations(null,10)).isEmpty());assertEquals(LightReconciler.Outcome.COMMITTED,run());assertEquals(0,FakeWorld.level(world.actual));
     }
     static final class FakeWorld {
         BlockData actual=data("minecraft:air");boolean loaded=true,failNext;int writes;

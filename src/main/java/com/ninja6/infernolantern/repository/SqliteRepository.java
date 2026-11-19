@@ -104,12 +104,24 @@ public final class SqliteRepository {
         return variant;
     }));}
     public CompletableFuture<Variant> compareAndSetVariant(long expected,Variant replacement){Objects.requireNonNull(replacement);return submit(()->transaction(()->{
+        require(!catalogManaged(replacement.id()),"Managed variant requires catalog publication");
         Variant old=loadVariant(replacement.id());require(old!=null&&old.rowVersion()==expected,"Stale variant");
         require(replacement.rowVersion()==next(expected),"Next variant version required");
         require(replacement.definitionRevision()>=old.definitionRevision(),"Definition revision regressed");
         if(replacement.definitionRevision()==old.definitionRevision())require(replacement.lastValidDefinition().equals(old.lastValidDefinition()),"Definition changed without revision");
         require(update("UPDATE variants SET definition_revision=?,status=?,payload_version=?,definition=?,row_version=? WHERE id=? AND row_version=?",replacement.definitionRevision(),replacement.status().name(),replacement.lastValidDefinition().version(),replacement.lastValidDefinition().content(),replacement.rowVersion(),replacement.id(),expected)==1,"Variant CAS lost");return replacement;
     }));}
+    private boolean catalogManaged(String id)throws SQLException{
+        try(var p=statement("SELECT 1 FROM catalog_managed_variants WHERE variant_id=?",id);var rows=p.executeQuery()){return rows.next();}
+    }
+    private boolean pendingRepresentation(String variant,boolean geometry)throws Exception{
+        try(var p=statement("SELECT o.before_state,o.after_state FROM operations o JOIN towers t ON t.id=o.tower_id WHERE t.variant_id=? AND o.phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING')",variant);var rows=p.executeQuery()){
+            while(rows.next())for(int column=1;column<=2;column++){
+                State state=SnapshotCodec.decode(rows.getBytes(column));
+                if(geometry?!state.components().isEmpty():state.tower().form()!=Form.LOST)return true;
+            }
+        }return false;
+    }
     private Variant loadVariant(String id)throws SQLException{
         try(var p=statement("SELECT * FROM variants WHERE id=?",id);var r=p.executeQuery()){
             return r.next()?new Variant(r.getString("id"),r.getLong("definition_revision"),VariantStatus.valueOf(r.getString("status")),new Document(r.getInt("payload_version"),r.getString("definition")),r.getLong("row_version")):null;
@@ -140,6 +152,8 @@ public final class SqliteRepository {
             CatalogSnapshot current=loadCatalog();require(current.equals(expected),"Catalog publication changed");
             var existing=new HashMap<String,Variant>();for(Variant v:current.variants())existing.put(v.id(),v);
             var all=new TreeSet<String>(existing.keySet());all.addAll(wanted.keySet());
+            for(String id:geometry)require(!pendingRepresentation(id,true),"Pending geometry change needs resolution");
+            for(String id:hp)require(!pendingRepresentation(id,false),"Pending maximum HP change needs resolution");
             for(String id:geometry)try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form IN ('COMPACT','EXPANDED') LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Placed geometry change needs migration");}
             for(String id:hp)try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form<>'LOST' LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Live maximum HP change needs migration");}
             for(String id:all){
@@ -244,15 +258,23 @@ public final class SqliteRepository {
         for(Component c:state.components())update("INSERT INTO manifest_components VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)",t.id(),t.deploymentRevision(),c.id(),c.kind().name(),c.world(),c.x(),c.y(),c.z(),c.originalState(),c.expectedState(),c.entity(),c.entityType());
     }
 
-    public CompletableFuture<Operation> beginIntent(Intent intent){return beginIntent(intent,true,-1);}
+    public CompletableFuture<Operation> beginIntent(Intent intent){return beginIntent(intent,true,-1,false);}
     /** Fresh-only physical effect admission. Existing receipts must never grant a second effect owner. */
-    public CompletableFuture<Operation> beginNewIntent(Intent intent){return beginIntent(intent,false,-1);}
-    public CompletableFuture<Operation> beginCatalogIntent(Intent intent,long catalogRevision){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");return beginIntent(intent,false,catalogRevision);}
-    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt,long catalogRevision){Objects.requireNonNull(intent);return submit(()->transaction(()->{
-        if(catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before intent");
+    public CompletableFuture<Operation> beginNewIntent(Intent intent){return beginIntent(intent,false,-1,false);}
+    public CompletableFuture<Operation> beginCatalogIntent(Intent intent,long catalogRevision){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");return beginIntent(intent,false,catalogRevision,false);}
+    /** Managed structure policies bind to the catalog revision; legacy unmanaged definitions stay independent. */
+    public CompletableFuture<Operation> beginStructureIntent(Intent intent,long policyRevision){if(policyRevision<0)throw new IllegalArgumentException("Policy revision");return beginIntent(intent,false,policyRevision,true);}
+    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt,long catalogRevision,boolean managedOnly){Objects.requireNonNull(intent);return submit(()->transaction(()->{
+        // For generic intents the guard applies to every variant; structure callers retain legacy policy revisions.
+        if(!managedOnly&&catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before intent");
         Operation existing=loadOperation(intent.id());
         if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
+        boolean managed=catalogManaged(before.variantId());
+        if(managedOnly&&managed)require(loadCatalog().revision()==catalogRevision,"Managed structure policy changed before intent");
+        boolean structureTransition=(!tower.state().components().isEmpty()||!intent.after().components().isEmpty())
+                &&(before.form()!=after.form()||before.deploymentRevision()!=after.deploymentRevision()||!Objects.equals(before.position(),after.position()));
+        if(managed&&(structureTransition||!tower.state().components().equals(intent.after().components())))require(catalogRevision>=0,"Managed structure changes require catalog-bound admission");
         require(before.generation()==intent.expectedGeneration()&&before.deploymentRevision()==intent.expectedDeploymentRevision(),"Stale representation generation/revision");
         require(before.variantId().equals(after.variantId())&&after.generation()>=before.generation()&&after.deploymentRevision()>=before.deploymentRevision(),"Intent identity/revision regression");
         byte[] beforeBytes=SnapshotCodec.encode(tower.state()),afterBytes=SnapshotCodec.encode(intent.after());
@@ -301,7 +323,7 @@ public final class SqliteRepository {
     public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false,-1);}
     public CompletableFuture<Operation> completeCatalogOperation(UUID id,long expected,long catalogRevision,String evidence){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision);}
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){Objects.requireNonNull(id);return submit(()->transaction(()->{
-        if(catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before completion");
+        if(catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
         require(op.rowVersion()==expected&&op.phase()==(rollback?Phase.RECONCILING:Phase.EFFECTS_APPLIED),"Operation is not ready for completion");

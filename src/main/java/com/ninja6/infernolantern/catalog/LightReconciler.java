@@ -58,10 +58,15 @@ public final class LightReconciler implements AutoCloseable {
                             .handle((ok,failure)->failure==null&&Boolean.TRUE.equals(ok)).thenCompose(verified->{
                                 if(!verified)return compensate(claim,effects,anchor);
                                 return repository.advanceOperation(claim.request().operation(),claim.operation().rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"Owner verified exact owned light adjustment")
-                                        .thenCompose(op->repository.completeCatalogOperation(op.intent().id(),op.rowVersion(),claim.request().catalog().revision(),"Light manifest/effect verified against catalog revision"))
-                                        .thenCompose(done->repository.tower(claim.request().tower()))
-                                        .thenCompose(found->scheduler.supply(anchor,()->!closed&&found.isPresent()&&found.get().mutationReady()&&found.get().rowVersion()==claim.request().rowVersion()+2&&found.get().state().equals(claim.operation().intent().after())&&matchesDesired(claim,effects)&&effects.verify(claim)))
-                                        .thenCompose(ok->ok?CompletableFuture.completedFuture(Outcome.COMMITTED):freeze(claim));
+                                        .thenCompose(op->repository.completeCatalogOperation(op.intent().id(),op.rowVersion(),claim.request().catalog().revision(),"Light manifest/effect verified against catalog revision")
+                                                .handle((done,failure)->{
+                                                    if(failure!=null)return unwrap(failure) instanceof RepositoryException.CatalogSuperseded?compensate(claim,effects,anchor):freeze(claim);
+                                                    // A newer policy does not make this matching committed effect uncertain.
+                                                    // Leave the row ready for a fresh request under that policy.
+                                                    return repository.tower(claim.request().tower())
+                                                            .thenCompose(found->scheduler.supply(anchor,()->!closed&&found.isPresent()&&found.get().mutationReady()&&found.get().rowVersion()==claim.request().rowVersion()+2&&found.get().state().equals(claim.operation().intent().after())&&effects.verify(claim)))
+                                                            .thenCompose(ok->ok?CompletableFuture.completedFuture(Outcome.COMMITTED):freeze(claim));
+                                                }).thenCompose(result->result));
                             });
                 }).exceptionallyCompose(failure->freeze(claim));
     }
@@ -69,12 +74,25 @@ public final class LightReconciler implements AutoCloseable {
     private boolean matchesDesired(Claim claim,Effects effects){View view=effects.view(claim.before());int level=CatalogService.effective(claim.request().catalog(),claim.before(),view.world(),view.conditions()).lightLevel();
         return view.writeAuthorized()&&view.catalogRevision()==claim.request().catalog().revision()&&level==claim.prepared().level();
     }
-    private CompletableFuture<Outcome> compensate(Claim claim,Effects effects,WorldScheduler.Anchor anchor){
-        return scheduler.supply(anchor,()->!closed&&effects.rollback(claim)).handle((ok,failure)->failure==null&&Boolean.TRUE.equals(ok)).thenCompose(restored->
-            repository.operation(claim.request().operation()).thenCompose(found->{Operation op=found.orElseThrow();if(op.phase()!=Phase.RECONCILING)return repository.advanceOperation(op.intent().id(),op.rowVersion(),op.phase(),Phase.RECONCILING,"Light outcome needs proof");return CompletableFuture.completedFuture(op);})
-            .thenCompose(op->restored?repository.resolveRollback(op.intent().id(),op.rowVersion(),"Owner proved original light state restored").thenApply(done->Outcome.ROLLED_BACK):CompletableFuture.completedFuture(Outcome.QUARANTINED)))
-            .exceptionallyCompose(failure->freeze(claim));
+    /** An old callback may compensate only while its exact intent still owns the before row. */
+    private CompletableFuture<Optional<Operation>> pendingOwned(Claim claim){
+        return repository.operation(claim.request().operation()).thenCompose(found->{
+            if(found.isEmpty()||!found.get().pending()||!found.get().intent().equals(claim.operation().intent())||!found.get().before().equals(claim.before().state()))return CompletableFuture.completedFuture(Optional.empty());
+            Operation operation=found.get();return repository.tower(claim.request().tower()).thenApply(row->row.isPresent()&&operation.intent().id().equals(row.get().activeOperation())&&row.get().rowVersion()==claim.request().rowVersion()+1&&row.get().state().equals(claim.before().state())?Optional.of(operation):Optional.empty());
+        });
     }
+    private CompletableFuture<Outcome> compensate(Claim claim,Effects effects,WorldScheduler.Anchor anchor){
+        return pendingOwned(claim).thenCompose(owned->{
+            if(owned.isEmpty())return freeze(claim);Operation initial=owned.get();
+            CompletableFuture<Operation> claimed=initial.phase()==Phase.RECONCILING?CompletableFuture.completedFuture(initial):repository.advanceOperation(initial.intent().id(),initial.rowVersion(),initial.phase(),Phase.RECONCILING,"Owner claiming exact light compensation; no generic replay");
+            return claimed.thenCompose(operation->pendingOwned(claim).thenCompose(fresh->{
+                if(fresh.isEmpty()||!fresh.get().equals(operation))return freeze(claim);
+                return scheduler.supply(anchor,()->!closed&&effects.rollback(claim)).handle((ok,failure)->failure==null&&Boolean.TRUE.equals(ok))
+                        .thenCompose(restored->restored?repository.resolveRollback(operation.intent().id(),operation.rowVersion(),"Owner proved original light state restored with exact pending ownership").thenApply(done->Outcome.ROLLED_BACK):CompletableFuture.completedFuture(Outcome.QUARANTINED));
+            }));
+        }).exceptionallyCompose(failure->freeze(claim));
+    }
+    private static Throwable unwrap(Throwable failure){while(failure instanceof CompletionException&&failure.getCause()!=null)failure=failure.getCause();return failure;}
     private CompletableFuture<Outcome> freeze(Claim claim){return repository.operation(claim.request().operation()).thenCompose(found->{
         if(found.isEmpty())return CompletableFuture.completedFuture(Outcome.QUARANTINED);Operation op=found.get();
         if(op.phase()==Phase.COMPLETE)return repository.tower(claim.request().tower()).thenCompose(row->{

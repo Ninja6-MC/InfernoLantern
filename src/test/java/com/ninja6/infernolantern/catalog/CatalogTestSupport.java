@@ -29,7 +29,7 @@ final class CatalogTestSupport {
         var components=new ArrayList<Component>();components.add(new Component("base",ComponentKind.BLOCK,WORLD,4,70,4,"minecraft:air","minecraft:barrier[waterlogged=false]",null,null));
         if(form==Form.EXPANDED){components.add(new Component("shaft",ComponentKind.BLOCK,WORLD,4,71,4,"minecraft:air","minecraft:barrier[waterlogged=false]",null,null));components.add(new Component("light",ComponentKind.BLOCK,WORLD,4,72,4,"minecraft:air","minecraft:air",null,null));}
         Tower tower=new Tower(id,"test",75,100,form,2,1,form==Form.EXPANDED?ACTOR:null,new Position(WORLD,4,70,4,"north"),true,true,170,230);
-        Operation op=get(repository.beginNewIntent(new Intent(operation,id,0,1,0,"synthetic-placement",new State(tower,null,components),new Document(1,"synthetic source/manifest proof"))));
+        Operation op=get(repository.beginCatalogIntent(new Intent(operation,id,0,1,0,"synthetic-placement",new State(tower,null,components),new Document(1,"synthetic source/manifest proof")),get(repository.catalog()).revision()));
         op=get(repository.advanceOperation(operation,op.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic owned effects"));get(repository.completeOperation(operation,op.rowVersion(),"synthetic verified result"));return get(repository.tower(id)).orElseThrow();
     }
 }
