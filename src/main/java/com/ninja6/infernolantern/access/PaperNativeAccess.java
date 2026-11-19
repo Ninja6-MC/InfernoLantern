@@ -165,6 +165,11 @@ public final class PaperNativeAccess {
 
         public StructureLifecycle.Request request() { return request; }
         public UUID currentSession() { return sessions.currentSession(actor.player()); }
+        @Override public CatalogConfig.FluidPolicy fluidPolicy() {
+            sessions.requireOwner();
+            return settings.entries().get(state.tower().variantId()).definition().fluids();
+        }
+
         @Override public CommitPermit commitPermit() {
             sessions.requireOwner();
             return actor.commitPermit(decision.bypassed());

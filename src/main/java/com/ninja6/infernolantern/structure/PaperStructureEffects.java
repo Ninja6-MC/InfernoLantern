@@ -1,5 +1,6 @@
 package com.ninja6.infernolantern.structure;
 
+import com.ninja6.infernolantern.catalog.CatalogConfig.FluidPolicy;
 import com.ninja6.infernolantern.item.*;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.repository.CommitPermit;
@@ -39,6 +40,8 @@ public final class PaperStructureEffects implements WorldEffects {
     @FunctionalInterface public interface Access {
         boolean allowed(Request request,State before);
         default CommitPermit commitPermit() { return null; }
+        /** The current revision-bound catalog policy, when the caller supplies one. */
+        default FluidPolicy fluidPolicy() { return null; }
         /** Current protection authorization for restoring only the adapter's exact owned changes. */
         default boolean mayRestore(Request request,State before) { return true; }
     }
@@ -142,18 +145,59 @@ public final class PaperStructureEffects implements WorldEffects {
     }
     private boolean oldExact(){
         for(Component c:before.state().components()){
-            if(c.kind()==ComponentKind.BLOCK){if(!state(cell(c)).equals(c.expectedState()))return false;}
+            if(c.kind()==ComponentKind.BLOCK){if(ownsBlock(c)&&!state(cell(c)).equals(c.expectedState()))return false;}
             else {Entity e=world().getEntity(c.entity());if(!(e instanceof ArmorStand stand)||!owned(e,request.revision()))return false;
                 Location at=e.getLocation();if(at.getX()!=c.x()+.5||at.getY()!=c.y()||at.getZ()!=c.z()+.5)return false;
                 if(oldSnapshots.containsKey(c.entity())&&!oldVisualExact(stand,quiesced.contains(c.entity())))return false;}
         }return true;
     }
-    private String replacement(Voxel voxel,String original){
-        if(voxel.replacement()==null)return original;
-        BlockData result=Bukkit.createBlockData(voxel.replacement()),terrain=Bukkit.createBlockData(original);
-        if(air(terrain.getMaterial()))return result.getAsString();
-        if(terrain.getMaterial()==Material.WATER&&sourceWaterAllowed&&terrain instanceof Levelled level&&level.getLevel()==0&&result instanceof Waterlogged waterlogged){waterlogged.setWaterlogged(true);return result.getAsString();}
-        throw new IllegalStateException("Solid or unsupported fluid replacement");
+    private static boolean ownsBlock(Component block) {
+        return !block.originalState().equals(block.expectedState());
+    }
+    private enum Terrain { AIR, WATER_SOURCE, WATER_FLOW, LAVA, SOLID }
+    private static Terrain terrain(BlockData block) {
+        Material material=block.getMaterial();
+        if(air(material))return Terrain.AIR;
+        if((material==Material.WATER||material==Material.LAVA)&&block instanceof Levelled level){
+            if(material==Material.LAVA)return Terrain.LAVA;
+            return level.getLevel()==0?Terrain.WATER_SOURCE:Terrain.WATER_FLOW;
+        }
+        // A waterlogged solid is still an obstruction.
+        return Terrain.SOLID;
+    }
+    private boolean permits(Terrain terrain,FluidPolicy fluids) {
+        if(terrain==Terrain.AIR)return true;
+        if(terrain==Terrain.SOLID)return false;
+        Action action=request.action();
+        if(action==Action.COMPACT||action==Action.DEFEAT)return true;
+        if(fluids==null)return terrain==Terrain.WATER_SOURCE&&sourceWaterAllowed;
+        var rule=terrain==Terrain.LAVA?fluids.lava():fluids.water();
+        return action==Action.PLACE?rule.place():rule.expand();
+    }
+    private String replacement(Voxel voxel,Terrain terrain,Component previous) {
+        BlockData result=Bukkit.createBlockData(voxel.replacement());
+        if(PaperPistonGuard.pistonPart(result.getMaterial()))throw new IllegalArgumentException("Unsupported piston replacement");
+        if(result.getMaterial()==Material.WATER||result.getMaterial()==Material.LAVA
+                ||result instanceof Waterlogged configured&&configured.isWaterlogged())
+            throw new IllegalArgumentException("Replacement must not introduce fluid");
+        if(terrain==Terrain.AIR)return result.getAsString();
+        if(terrain==Terrain.WATER_SOURCE&&result instanceof Waterlogged waterlogged){
+            waterlogged.setWaterlogged(true);
+            if((request.action()==Action.COMPACT||request.action()==Action.DEFEAT)
+                    &&!ownsWaterloggedSource(previous))
+                throw new IllegalArgumentException("Cleanup cannot create a new fluid displacement");
+            return result.getAsString();
+        }
+        throw new IllegalArgumentException("Unsupported fluid replacement");
+    }
+    private static boolean ownsWaterloggedSource(Component previous) {
+        return previous!=null&&ownsBlock(previous)
+                &&Bukkit.createBlockData(previous.expectedState()) instanceof Waterlogged wet&&wet.isWaterlogged();
+    }
+    private boolean pistonFree(Collection<Cell> cells) {
+        if(cells.isEmpty())return true;
+        World world=world();
+        return cells.stream().allMatch(cell->PaperPistonGuard.canReserve(world,cell));
     }
     private boolean spaceFree(Collection<Cell> cells){
         Set<UUID> own=new HashSet<>();stagedVisuals.forEach(e->own.add(e.getUniqueId()));if(stagedDrop!=null)own.add(stagedDrop.getUniqueId());before.state().components().stream().filter(c->c.entity()!=null).forEach(c->own.add(c.entity()));
@@ -171,7 +215,7 @@ public final class PaperStructureEffects implements WorldEffects {
             source=item.serializeAsBytes();
         }
         for(Component c:before.state().components()){
-            if(c.kind()==ComponentKind.BLOCK)captured.put(cell(c),state(cell(c)));
+            if(c.kind()==ComponentKind.BLOCK){if(ownsBlock(c))captured.put(cell(c),state(cell(c)));}
             else {ArmorStand stand=(ArmorStand)world().getEntity(c.entity());oldVisuals.add(stand);ItemStack helmet=stand.getEquipment().getHelmet();oldHelmets.put(stand.getUniqueId(),helmet==null?null:helmet.clone());
                 oldSnapshots.put(stand.getUniqueId(),new OldVisual(stand.getLocation().clone(),stand.isMarker(),stand.isInvisible(),stand.isInvulnerable(),stand.hasGravity(),stand.getPersistentDataContainer().get(OPERATION,PersistentDataType.STRING)));}
         }
@@ -179,17 +223,19 @@ public final class PaperStructureEffects implements WorldEffects {
         if(!dropping){
             var oldBlocks=new HashMap<Cell,Component>();before.state().components().stream().filter(c->c.kind()==ComponentKind.BLOCK).forEach(c->oldBlocks.put(cell(c),c));
             List<Cell> target=layout.voxels().stream().map(v->cell(v.x(),v.y(),v.z())).toList();
-            if(!spaceFree(target))return null;
+            if(!spaceFree(target)||!pistonFree(target))return null;
+            FluidPolicy fluids=access.fluidPolicy();
             int i=0;
             for(Voxel voxel:layout.voxels()){
                 Cell c=cell(voxel.x(),voxel.y(),voxel.z());String current=state(c);captured.put(c,current);
-                Component previous=oldBlocks.get(c);String original=previous==null?current:previous.originalState();
-                // Unchanged clearance may contain air or explicitly supported source water, never solids/lava.
-                BlockData terrain=Bukkit.createBlockData(original);
-                if(!air(terrain.getMaterial())&&!(sourceWaterAllowed&&terrain.getMaterial()==Material.WATER&&terrain instanceof Levelled l&&l.getLevel()==0))return null;
+                Component previous=oldBlocks.get(c);
+                boolean owned=previous!=null&&ownsBlock(previous);
+                String original=owned?previous.originalState():current;
+                Terrain terrain=terrain(Bukkit.createBlockData(original));
+                if(!permits(terrain,fluids))return null;
                 String expected;
-                if(systemAction==Action.DEFEAT&&voxel.replacement()==null&&previous!=null&&!previous.originalState().equals(previous.expectedState()))return null;
-                try { expected=voxel.replacement()==null?(previous==null?current:previous.expectedState()):replacement(voxel,original); }
+                if(systemAction==Action.DEFEAT&&voxel.replacement()==null&&owned)return null;
+                try { expected=voxel.replacement()==null?current:replacement(voxel,terrain,previous); }
                 catch(IllegalArgumentException|IllegalStateException unsupported){return null;}
                 if(systemAction==Action.DEFEAT&&Bukkit.createBlockData(expected).getMaterial()==Material.LIGHT)return null;
                 manifest.add(new Component("cell."+i++,ComponentKind.BLOCK,c.world(),c.x(),c.y(),c.z(),original,expected,null,null));
@@ -255,9 +301,10 @@ public final class PaperStructureEffects implements WorldEffects {
     @Override public boolean apply(Claim claim){
         owner();if(applied||!validate(claim)||!oldExact()||!stagedVisuals.stream().allMatch(this::visualStage)||!stageExact()||(request.action()==Action.PLACE&&!exactSource()))return false;
         for(var c:captured.entrySet())if(!state(c.getKey()).equals(c.getValue()))return false;
-        if(!spaceFree(preparation.manifest().stream().filter(c->c.kind()==ComponentKind.BLOCK).map(PaperStructureEffects::cell).toList()))return false;
+        var targetCells=preparation.manifest().stream().filter(c->c.kind()==ComponentKind.BLOCK).map(PaperStructureEffects::cell).toList();
+        if(!spaceFree(targetCells)||!pistonFree(targetCells))return false;
         var target=new LinkedHashMap<Cell,String>();
-        for(Component c:before.state().components())if(c.kind()==ComponentKind.BLOCK)target.put(cell(c),c.originalState());
+        for(Component c:before.state().components())if(c.kind()==ComponentKind.BLOCK&&ownsBlock(c))target.put(cell(c),c.originalState());
         for(Component c:preparation.manifest())if(c.kind()==ComponentKind.BLOCK)target.put(cell(c),c.expectedState());
         for(var entry:target.entrySet())if(!state(entry.getKey()).equals(entry.getValue())){mutated.put(entry.getKey(),entry.getValue());write(entry.getKey(),entry.getValue());}
         for(ArmorStand stand:oldVisuals){if(!oldVisualExact(stand,false))return false;quiesced.add(stand.getUniqueId());stand.getEquipment().setHelmet(null);}

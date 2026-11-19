@@ -232,6 +232,17 @@ class TowerHealthTest {
         assertEquals(1, denied.applied);
     }
 
+    @Test void ordinaryDamageLeavesCompactHealthAndRepairDeadlineUntouched() throws Exception {
+        var before = placed(repository, Form.COMPACT);
+        Tower tower = before.state().tower();
+        assertThrows(ExecutionException.class, () -> get(health.damage(settings, before,
+                new TowerHealth.Damage(10, 200), row -> fail("Compact damage cannot reach owner authorization"),
+                UUID.randomUUID(), row -> fail("Compact damage cannot route defeat"))));
+        assertThrows(ExecutionException.class, () -> get(repository.damageTower(settings.revision(), tower.id(),
+                before.rowVersion(), tower.generation(), tower.deploymentRevision(), 10, 1200, null)));
+        assertEquals(before, read(tower.id()));
+    }
+
     @Test void deniedStaleAndRevokedDamageCannotDebitHealthOrAlterRepairLock() throws Exception {
         var before = placed(repository, Form.EXPANDED);
         UUID id = before.state().tower().id();

@@ -54,6 +54,19 @@ class CatalogServiceTest {
         var changed=variant();changed.put("light-level",7);assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",changed,"bad",variant())))));
         assertEquals(durable,get(repository.catalog()));assertEquals(prior,service.current().orElseThrow());assertEquals(1,reconciles.get());
     }
+    @Test void fluidPolicyPublicationReopensWithoutChangingThePlacedManifest()throws Exception{
+        var prior=publish();
+        TowerSnapshot placed=placed(repository,Form.EXPANDED);
+        var changed=variant();
+        changed.put("fluids",Map.of("water",Map.of("expand",false),"lava",Map.of("place",true)));
+        var active=get(service.reload(config(Map.of("test",changed)))).snapshot();
+        assertTrue(active.revision()>prior.revision());
+        assertEquals(3,get(repository.variant("test")).orElseThrow().lastValidDefinition().version());
+        assertEquals(placed,get(repository.tower(placed.state().tower().id())).orElseThrow());
+        service.close();get(repository.closeAsync());repository=get(SqliteRepository.open(file,512));service=service();
+        assertEquals(active,get(service.load()));
+        assertEquals(placed,get(repository.tower(placed.state().tower().id())).orElseThrow());
+    }
     @Test void missingRenameRetiresManagedOnlyAndRetainsGeometryControllerAndTimers()throws Exception{
         publish();TowerSnapshot before=placed(repository,Form.EXPANDED);
         get(repository.createVariant(new Variant("prototype.item-fixture",1,VariantStatus.ACTIVE,new Document(1,"fixture data"),0)));

@@ -59,3 +59,6 @@ native beam and melee adapter, and remaining production and client acceptance wo
 
 [Lantern blast transactions](docs/BLAST_TRANSACTIONS.md) documents whole-lantern protection,
 journaled damage and drop, and the pending native exposure and provider routing.
+
+[Fluid placement and cleanup](docs/FLUID_POLICIES.md) documents per-variant water and lava settings,
+supported terrain changes, and pending native acceptance.

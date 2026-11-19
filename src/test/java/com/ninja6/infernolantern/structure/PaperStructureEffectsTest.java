@@ -1,11 +1,17 @@
 package com.ninja6.infernolantern.structure;
 
+import com.ninja6.infernolantern.catalog.CatalogConfig.FluidPolicy;
+import com.ninja6.infernolantern.catalog.CatalogConfig.FluidRule;
 import com.ninja6.infernolantern.item.GroundPolicy;
 import com.ninja6.infernolantern.item.PaperItemIdentity;
 import io.papermc.paper.persistence.PersistentDataContainerView;
 import org.bukkit.*;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Levelled;
+import org.bukkit.block.data.Waterlogged;
+import org.bukkit.block.data.type.Piston;
 import org.bukkit.entity.*;
 import org.bukkit.inventory.*;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -28,22 +34,60 @@ class PaperStructureEffectsTest {
     final AtomicReference<UUID> liveSession=new AtomicReference<>(session);
     final Map<NamespacedKey,Object> tags=new HashMap<>();
     boolean permission=true;Object previousServer;
-    World world;Player player;Dropped dropped;
+    World world;Player player;Dropped dropped;ItemStack selected;
+    final Set<Cell> writes=new HashSet<>();
+    boolean adjacentChunksLoaded=true;
     interface Answer {Object get(Method method,Object[] args);}
     static <T>T proxy(Class<T> type,Answer answer){return type.cast(Proxy.newProxyInstance(type.getClassLoader(),new Class<?>[]{type},(p,m,args)->{
         if(m.getName().equals("equals"))return p==args[0];if(m.getName().equals("hashCode"))return System.identityHashCode(p);if(m.getName().equals("toString"))return type.getSimpleName()+"Stub";
         return answer.get(m,args);
     }));}
     static RuntimeException unsupported(Method m){return new UnsupportedOperationException(m.toString());}
-    BlockData data(String value){return proxy(BlockData.class,(m,a)->switch(m.getName()){
-        case "getAsString"->value;
-        case "getMaterial"->value.startsWith("minecraft:air")?Material.AIR:value.startsWith("minecraft:stone")?Material.STONE:value.startsWith("minecraft:light")?Material.LIGHT:Material.BARRIER;
-        default->throw unsupported(m);
-    });}
+    BlockData data(String value){
+        if(value.startsWith("minecraft:water[")||value.startsWith("minecraft:lava[")){
+            Material material=value.startsWith("minecraft:water[")?Material.WATER:Material.LAVA;
+            int level=Integer.parseInt(value.substring(value.indexOf('=')+1,value.length()-1));
+            return proxy(Levelled.class,(m,a)->switch(m.getName()){
+                case "getAsString"->value;case "getMaterial"->material;case "getLevel"->level;
+                default->throw unsupported(m);
+            });
+        }
+        if(value.startsWith("minecraft:sticky_piston[")){
+            return proxy(Piston.class,(m,a)->switch(m.getName()){
+                case "getAsString"->value;case "getMaterial"->Material.STICKY_PISTON;
+                case "isExtended"->value.contains("extended=true");
+                case "getFacing"->value.contains("facing=east")?BlockFace.EAST:BlockFace.WEST;
+                default->throw unsupported(m);
+            });
+        }
+        if(value.equals("minecraft:piston_head")||value.equals("minecraft:moving_piston")){
+            return proxy(BlockData.class,(m,a)->switch(m.getName()){
+                case "getAsString"->value;
+                case "getMaterial"->value.endsWith("head")?Material.PISTON_HEAD:Material.MOVING_PISTON;
+                default->throw unsupported(m);
+            });
+        }
+        if(value.contains("waterlogged=")){
+            boolean[] wet={value.contains("waterlogged=true")};
+            Material material=value.startsWith("minecraft:light")?Material.LIGHT
+                    :value.startsWith("minecraft:oak_slab")?Material.OAK_SLAB:Material.BARRIER;
+            return proxy(Waterlogged.class,(m,a)->switch(m.getName()){
+                case "getAsString"->value.replaceAll("waterlogged=(false|true)","waterlogged="+wet[0]);
+                case "getMaterial"->material;case "isWaterlogged"->wet[0];
+                case "setWaterlogged"->{wet[0]=(boolean)a[0];yield null;}
+                default->throw unsupported(m);
+            });
+        }
+        return proxy(BlockData.class,(m,a)->switch(m.getName()){
+            case "getAsString"->value;
+            case "getMaterial"->value.startsWith("minecraft:air")?Material.AIR:value.startsWith("minecraft:stone")?Material.STONE:Material.BARRIER;
+            default->throw unsupported(m);
+        });
+    }
     @BeforeEach void setup()throws Exception{
         var field=Bukkit.class.getDeclaredField("server");field.setAccessible(true);previousServer=field.get(null);
         world=proxy(World.class,(m,a)->switch(m.getName()){
-            case "getUID"->worldId;case "getMinHeight"->-64;case "getMaxHeight"->320;case "isChunkLoaded"->true;
+            case "getUID"->worldId;case "getMinHeight"->-64;case "getMaxHeight"->320;case "isChunkLoaded"->adjacentChunksLoaded||((int)a[0]==0&&(int)a[1]==0);
             case "getWorldBorder"->proxy(WorldBorder.class,(method,args)->{if(method.getName().equals("isInside"))return true;throw unsupported(method);});
             case "getNearbyEntities"->List.of();case "getEntity"->entities.get(a[0]);
             case "dropItem"->{
@@ -52,14 +96,16 @@ class PaperStructureEffectsTest {
                 initialize.accept(dropped.item);
                 yield dropped.item;
             }
-            case "getBlockAt"->{Cell c=new Cell(worldId,(int)a[0],(int)a[1],(int)a[2]);yield proxy(Block.class,(method,args)->switch(method.getName()){
+            case "getBlockAt"->{Cell c=new Cell(worldId,(int)a[0],(int)a[1],(int)a[2]);
+                assertTrue(adjacentChunksLoaded||(c.x()>>4)==0&&(c.z()>>4)==0,"Do not read an unloaded neighbor");
+                yield proxy(Block.class,(method,args)->switch(method.getName()){
                 case "getBlockData"->data(blocks.getOrDefault(c,"minecraft:air"));
-                case "setBlockData"->{blocks.put(c,((BlockData)args[0]).getAsString());yield null;}
+                case "setBlockData"->{assertEquals(false,args[1]);writes.add(c);blocks.put(c,((BlockData)args[0]).getAsString());yield null;}
                 default->throw unsupported(method);
             });}
             default->throw unsupported(m);
         });
-        PlayerInventory inventory=proxy(PlayerInventory.class,(m,a)->switch(m.getName()){case "getSize"->41;default->throw unsupported(m);});
+        PlayerInventory inventory=proxy(PlayerInventory.class,(m,a)->switch(m.getName()){case "getSize"->41;case "getItem"->selected;default->throw unsupported(m);});
         player=proxy(Player.class,(m,a)->switch(m.getName()){case "isOnline"->true;case "getUniqueId"->actor;case "getWorld"->world;case "getInventory"->inventory;default->throw unsupported(m);});
         Server server=proxy(Server.class,(m,a)->switch(m.getName()){
             case "isPrimaryThread"->true;case "getWorld"->world;case "createBlockData"->data((String)a[0]);case "getLogger"->Logger.getLogger("fixture");default->throw unsupported(m);
@@ -118,6 +164,7 @@ class PaperStructureEffectsTest {
         int amount=1;
         @Override public Material getType(){return Material.PAPER;}
         @Override public int getAmount(){return amount;}
+        @Override public byte[] serializeAsBytes(){return new byte[]{1};}
         @Override public void setAmount(int amount){this.amount=amount;}
         @Override public PersistentDataContainerView getPersistentDataContainer(){return pdc;}
         @Override public ItemMeta getItemMeta(){return meta;}
@@ -225,6 +272,160 @@ class PaperStructureEffectsTest {
         blocks.put(new Cell(worldId,4,71,4),"minecraft:stone");assertNull(effects(layout()).prepare(request(),before()));
         blocks.remove(new Cell(worldId,4,71,4));Request r=request();var effects=effects(layout());var prepared=effects.prepare(r,before());Claim claim=claim(r,prepared);
         permission=false;assertFalse(effects.apply(claim));permission=true;liveSession.set(UUID.randomUUID());assertFalse(effects.apply(claim));assertEquals("minecraft:air",blocks.getOrDefault(new Cell(worldId,4,71,4),"minecraft:air"));
+    }
+    private static final String SOURCE_WATER="minecraft:water[level=0]", FLOW_WATER="minecraft:water[level=6]",
+            FLOW_LAVA="minecraft:lava[level=3]", DRY_BARRIER="minecraft:barrier[waterlogged=false]",
+            WET_BARRIER="minecraft:barrier[waterlogged=true]";
+    private PaperStructureEffects effects(PaperStructureEffects.Layout layout,FluidPolicy fluids){
+        var access=new PaperStructureEffects.Access(){
+            @Override public boolean allowed(Request request,State before){return permission;}
+            @Override public FluidPolicy fluidPolicy(){return fluids;}
+        };
+        return new PaperStructureEffects(player,liveSession::get,access,layout,0,new Template(),GroundPolicy.DEFAULT,
+                item->fail("No ground drop for placement or expansion"),false);
+    }
+    private PaperStructureEffects.Layout waterLayout(){
+        return new PaperStructureEffects.Layout(List.of(new PaperStructureEffects.Voxel(0,0,0,"minecraft:barrier"),
+                new PaperStructureEffects.Voxel(0,1,0,DRY_BARRIER),new PaperStructureEffects.Voxel(0,2,0,null)),List.of());
+    }
+    @Test void sourceWaterIsWaterloggedAndFlowingClearanceStaysUntouchedThroughRollback(){
+        Cell source=new Cell(worldId,4,71,4), flow=new Cell(worldId,4,72,4);
+        blocks.put(source,SOURCE_WATER);blocks.put(flow,FLOW_WATER);
+        var effects=effects(waterLayout(),FluidPolicy.DEFAULT);Request request=request();
+        var prepared=effects.prepare(request,before());assertNotNull(prepared);
+        assertEquals(SOURCE_WATER,prepared.manifest().get(1).originalState());
+        assertEquals(WET_BARRIER,prepared.manifest().get(1).expectedState());
+        assertEquals(FLOW_WATER,prepared.manifest().get(2).expectedState());
+        Claim claim=claim(request,prepared);
+        assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));
+        assertEquals(WET_BARRIER,blocks.get(source));assertEquals(FLOW_WATER,blocks.get(flow));
+        assertEquals(Set.of(source),writes);
+        assertTrue(effects.rollback(claim));assertEquals(SOURCE_WATER,blocks.get(source));assertEquals(FLOW_WATER,blocks.get(flow));
+        assertEquals(Set.of(source),writes);
+    }
+    @Test void permittedClearanceRechecksFlowBeforeWritingAnyBlock(){
+        Cell flow=new Cell(worldId,4,72,4);blocks.put(flow,FLOW_WATER);
+        var effects=effects(waterLayout(),FluidPolicy.DEFAULT);Request request=request();
+        var prepared=effects.prepare(request,before());assertNotNull(prepared);
+        blocks.put(flow,SOURCE_WATER);
+        assertFalse(effects.apply(claim(request,prepared)));assertTrue(writes.isEmpty());
+        assertEquals(SOURCE_WATER,blocks.get(flow));
+    }
+    @Test void mixedFlowRequiresBothPermissionsAndUnsupportedReplacementDoesNotWrite(){
+        Cell replacement=new Cell(worldId,4,71,4), clearance=new Cell(worldId,4,72,4);
+        blocks.put(replacement,SOURCE_WATER);blocks.put(clearance,FLOW_LAVA);
+        var both=new FluidPolicy(FluidPolicy.DEFAULT.water(),new FluidRule(false,true,false));
+        assertNull(effects(waterLayout(),FluidPolicy.DEFAULT).prepare(request(),before()));
+        var allowed=effects(waterLayout(),both);Request request=request();
+        var prepared=allowed.prepare(request,before());assertNotNull(prepared);
+        assertEquals(FLOW_LAVA,prepared.manifest().get(2).expectedState());
+        Claim claim=claim(request,prepared);
+        assertTrue(allowed.apply(claim));assertTrue(allowed.verify(claim));
+        assertEquals(Set.of(replacement),writes);assertEquals(FLOW_LAVA,blocks.get(clearance));
+        assertTrue(allowed.rollback(claim));writes.clear();
+        for(String unsupported:List.of(FLOW_WATER,FLOW_LAVA,"minecraft:oak_slab[type=bottom,waterlogged=true]")){
+            blocks.put(replacement,unsupported);
+            assertNull(effects(waterLayout(),both).prepare(request(),before()));
+            assertEquals(unsupported,blocks.get(replacement));assertTrue(writes.isEmpty());
+        }
+    }
+    @Test void placementAndExpansionUseDifferentFlags(){
+        var tower=new Tower(towerId,"fixture",75,100,Form.PORTABLE,2,1,null,null,true,false,0,44);
+        var portable=new TowerSnapshot(new State(tower,null,List.of()),2,null);
+        selected=new PaperItemIdentity().create(new BlastTemplate(),com.ninja6.infernolantern.item.ItemLifecycle.token(tower),GroundPolicy.DEFAULT);
+        var compact=new PaperStructureEffects.Layout(List.of(new PaperStructureEffects.Voxel(0,0,0,DRY_BARRIER)),List.of());
+        Cell baseCell=new Cell(worldId,4,70,4);blocks.put(baseCell,SOURCE_WATER);
+        var placeOnly=new FluidPolicy(new FluidRule(true,false,false),FluidPolicy.DEFAULT.lava());
+        var expandOnly=new FluidPolicy(new FluidRule(false,true,false),FluidPolicy.DEFAULT.lava());
+        var request=new Request(UUID.randomUUID(),towerId,2,2,1,actor,session,Action.PLACE,base,new Policy(1,50,200,1000,false));
+        assertNotNull(effects(compact,placeOnly).prepare(request,portable));
+        assertNull(effects(compact,expandOnly).prepare(request,portable));
+        blocks.put(baseCell,"minecraft:barrier");
+        blocks.put(new Cell(worldId,4,71,4),SOURCE_WATER);
+        assertNull(effects(waterLayout(),placeOnly).prepare(request(),before()));
+        assertNotNull(effects(waterLayout(),expandOnly).prepare(request(),before()));
+        assertTrue(writes.isEmpty());
+    }
+    @Test void blastRestoresOwnedSourceWaterWithoutOverwritingChangedClearance(){
+        var effects=new PaperStructureEffects(blastPhysical,new BlastTemplate(),new GroundPolicy(false,false),item->{});
+        Cell baseCell=new Cell(worldId,4,70,4), clearance=new Cell(worldId,4,71,4);
+        blocks.put(baseCell,WET_BARRIER);blocks.put(clearance,FLOW_LAVA);
+        var tower=new Tower(towerId,"fixture",75,100,Form.COMPACT,2,1,null,base,true,false,0,44);
+        var source=new TowerSnapshot(new State(tower,null,List.of(
+                new Component("base",ComponentKind.BLOCK,worldId,4,70,4,SOURCE_WATER,WET_BARRIER,null,null),
+                new Component("clearance",ComponentKind.BLOCK,worldId,4,71,4,"minecraft:air","minecraft:air",null,null))),2,null);
+        var impact=BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of("base"),25,1,false,1000,0);
+        var request=new Request(impact.operation(towerId),towerId,2,2,1,null,null,Action.BLAST,base,new Policy(1,50,200,1000,false),impact);
+        var prepared=effects.prepare(request,source);assertNotNull(prepared);
+        var after=new State(new Tower(towerId,"fixture",50,100,Form.GROUND,3,2,null,null,true,false,0,44),prepared.stagedGround(),List.of());
+        var intent=new Intent(request.operation(),towerId,2,2,1,STRUCTURE_BLAST,after,prepared.evidence());
+        var claim=new Claim(request,new Operation(intent,source.state(),Phase.INTENT,0,"fixture"),prepared);
+        assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));
+        assertEquals(SOURCE_WATER,blocks.get(baseCell));assertEquals(FLOW_LAVA,blocks.get(clearance));
+        assertEquals(Set.of(baseCell),writes);
+        assertTrue(effects.activate(claim,completed(claim)));assertTrue(dropped.unlimited);
+    }
+    @Test void manualAndSystemCompactionCanChangeAnOwnedWaterloggedLightToABarrier(){
+        Cell baseCell=new Cell(worldId,4,70,4),released=new Cell(worldId,4,71,4);
+        String light="minecraft:light[level=15,waterlogged=true]";
+        String piston="minecraft:sticky_piston[extended=false,facing=west]";
+        blocks.put(baseCell,light);blocks.put(released,piston);
+        var components=List.of(new Component("base",ComponentKind.BLOCK,worldId,4,70,4,SOURCE_WATER,light,null,null),
+                new Component("clearance",ComponentKind.BLOCK,worldId,4,71,4,"minecraft:air","minecraft:air",null,null));
+        var compact=new PaperStructureEffects.Layout(List.of(new PaperStructureEffects.Voxel(0,0,0,DRY_BARRIER)),List.of());
+        for(Action action:List.of(Action.COMPACT,Action.DEFEAT)){
+            double hp=action==Action.DEFEAT?0:75;
+            var before=new TowerSnapshot(new State(new Tower(towerId,"fixture",hp,100,Form.EXPANDED,2,1,actor,base,
+                    true,false,0,44),null,components),2,null);
+            var request=new Request(UUID.randomUUID(),towerId,2,2,1,action==Action.DEFEAT?null:actor,
+                    action==Action.DEFEAT?null:session,action,base,new Policy(1,50,200,1000,false));
+            var effects=action==Action.DEFEAT?new PaperStructureEffects((r,state,restoring)->true,compact,false)
+                    :effects(compact,new FluidPolicy(new FluidRule(false,false,false),FluidPolicy.DEFAULT.lava()));
+            var prepared=effects.prepare(request,before);assertNotNull(prepared);
+            assertEquals(SOURCE_WATER,prepared.manifest().getFirst().originalState());
+            assertEquals(WET_BARRIER,prepared.manifest().getFirst().expectedState());
+            var after=new State(new Tower(towerId,"fixture",hp,100,Form.COMPACT,2,2,null,base,true,false,0,44),
+                    null,prepared.manifest());
+            var intent=new Intent(request.operation(),towerId,2,2,1,kind(request),after,prepared.evidence());
+            var claim=new Claim(request,new Operation(intent,before.state(),Phase.INTENT,0,"fixture"),prepared);
+            assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));
+            assertEquals(WET_BARRIER,blocks.get(baseCell));
+            assertTrue(effects.rollback(claim));
+            assertEquals(light,blocks.get(baseCell));assertEquals(piston,blocks.get(released));
+            assertEquals(Set.of(baseCell),writes);
+        }
+    }
+    @Test void alreadyActivePistonReachAndAnUnloadedNeighborRejectBeforeFootprintAdmission(){
+        Cell neighbor=new Cell(worldId,3,71,4), target=new Cell(worldId,4,71,4);
+        blocks.put(neighbor,"minecraft:sticky_piston[extended=true,facing=east]");
+        assertNull(effects(layout()).prepare(request(),before()));
+        blocks.put(neighbor,"minecraft:sticky_piston[extended=true,facing=west]");
+        assertNotNull(effects(layout()).prepare(request(),before()));
+        blocks.put(target,"minecraft:piston_head");
+        assertNull(effects(layout()).prepare(request(),before()));
+        blocks.put(target,"minecraft:moving_piston");
+        assertNull(effects(layout()).prepare(request(),before()));
+        blocks.remove(neighbor);blocks.remove(target);
+
+        adjacentChunksLoaded=false;
+        var edge=new PaperStructureEffects.Layout(java.util.stream.IntStream.rangeClosed(0,11)
+                .mapToObj(x->new PaperStructureEffects.Voxel(x,0,0,null)).toList(),List.of());
+        assertNull(effects(edge).prepare(request(),before()));
+        assertTrue(writes.isEmpty());
+    }
+    @Test void writerRechecksPistonReachAndRejectsPistonReplacement(){
+        Cell neighbor=new Cell(worldId,3,71,4);
+        var effects=effects(layout());Request request=request();
+        var prepared=effects.prepare(request,before());assertNotNull(prepared);
+        blocks.put(neighbor,"minecraft:sticky_piston[extended=true,facing=east]");
+        assertFalse(effects.apply(claim(request,prepared)));assertTrue(writes.isEmpty());
+        assertTrue(effects.rollback(claim(request,prepared)));assertTrue(writes.isEmpty());
+        assertEquals("minecraft:sticky_piston[extended=true,facing=east]",blocks.remove(neighbor));
+
+        var pistonLayout=new PaperStructureEffects.Layout(List.of(new PaperStructureEffects.Voxel(0,0,0,"minecraft:barrier"),
+                new PaperStructureEffects.Voxel(0,1,0,"minecraft:sticky_piston[extended=false,facing=east]")),List.of());
+        assertNull(effects(pistonLayout).prepare(request(),before()));
+        assertTrue(writes.isEmpty());
     }
     @Test void actualAdapterRejectsCrossChunkBeforeBlockAccess(){
         var outside=new PaperStructureEffects.Layout(java.util.stream.IntStream.rangeClosed(0,12).mapToObj(x->new PaperStructureEffects.Voxel(x,0,0,null)).toList(),List.of());

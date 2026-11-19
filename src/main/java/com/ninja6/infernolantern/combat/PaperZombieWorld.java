@@ -1,8 +1,12 @@
 package com.ninja6.infernolantern.combat;
 
+import com.ninja6.infernolantern.catalog.CatalogConfig.HeadFluid;
+import com.ninja6.infernolantern.catalog.CatalogConfig.WorldRef;
 import com.ninja6.infernolantern.health.TowerHealth;
 import io.papermc.paper.event.entity.EntityKnockbackEvent;
 import org.bukkit.*;
+import org.bukkit.block.data.Levelled;
+import org.bukkit.block.data.Waterlogged;
 import org.bukkit.damage.DamageSource;
 import org.bukkit.damage.DamageType;
 import org.bukkit.entity.*;
@@ -17,7 +21,7 @@ import org.bukkit.scheduler.BukkitTask;
 import java.util.*;
 
 import static com.ninja6.infernolantern.combat.ZombieCombat.*;
-import static com.ninja6.infernolantern.repository.RepositoryRecords.TowerSnapshot;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 /** Paper owner-thread effects and native event observation for ordinary zombie combat. */
 public final class PaperZombieWorld implements ZombieCombat.WorldPort, Listener, AutoCloseable {
@@ -25,9 +29,18 @@ public final class PaperZombieWorld implements ZombieCombat.WorldPort, Listener,
     private static final int PARTICLES = 12;
     private static final long MAX_LOS_CHUNKS = 256;
 
+    /** The runtime resolves this site against the exact current model and deployment. */
+    public record AttackHead(UUID tower, long generation, long deploymentRevision, Component voxel) {}
+    public record Inspection(WorldRef world, Controller controller, boolean integrity, AttackHead head) {
+        public Inspection {
+            Objects.requireNonNull(world);
+            Objects.requireNonNull(controller);
+        }
+    }
+
     /** Runtime bindings establish current protection, loaded candidates and the admitted physical layout. */
     public interface Access {
-        Conditions inspect(TowerSnapshot tower);
+        Inspection inspect(TowerSnapshot tower);
         boolean allows(Action action, TowerSnapshot tower, Villager proxy, Zombie target);
         boolean proxyFits(TowerSnapshot tower, Location origin);
         List<UUID> candidates(TowerSnapshot tower, Location origin, double range, int limit);
@@ -100,9 +113,38 @@ public final class PaperZombieWorld implements ZombieCombat.WorldPort, Listener,
 
     @Override public Conditions inspect(TowerSnapshot tower) {
         requireOwner();
-        var position = tower.state().tower().position();
+        Tower deployed = tower.state().tower();
+        Position position = deployed.position();
+        if (deployed.form() != Form.EXPANDED || position == null) return null;
         World world = Bukkit.getWorld(position.world());
-        return world == null || !world.isChunkLoaded(position.x() >> 4, position.z() >> 4) ? null : access.inspect(tower);
+        if (world == null || !world.isChunkLoaded(position.x() >> 4, position.z() >> 4)) return null;
+
+        Inspection inspection = access.inspect(tower);
+        if (inspection == null || !inspection.world().id().equals(position.world())) return null;
+        HeadFluid fluid = headFluid(world, tower, inspection.head());
+        return new Conditions(inspection.world(), inspection.controller(), fluid, inspection.integrity());
+    }
+
+    private static HeadFluid headFluid(World world, TowerSnapshot row, AttackHead head) {
+        Tower deployed = row.state().tower();
+        if (head == null || !deployed.id().equals(head.tower()) || deployed.generation() != head.generation()
+                || deployed.deploymentRevision() != head.deploymentRevision()) return HeadFluid.UNKNOWN;
+        Component voxel = head.voxel();
+        Position base = deployed.position();
+        if (voxel == null || voxel.kind() != ComponentKind.BLOCK || !voxel.world().equals(base.world())
+                || (voxel.x() >> 4) != (base.x() >> 4) || (voxel.z() >> 4) != (base.z() >> 4)
+                || voxel.y() < world.getMinHeight() || voxel.y() >= world.getMaxHeight()
+                || !row.state().components().contains(voxel) || !world.isChunkLoaded(voxel.x() >> 4, voxel.z() >> 4)) {
+            return HeadFluid.UNKNOWN;
+        }
+        var block = world.getBlockAt(voxel.x(), voxel.y(), voxel.z()).getBlockData();
+        return switch (block.getMaterial()) {
+            case WATER -> block instanceof Levelled ? HeadFluid.WATER : HeadFluid.UNKNOWN;
+            case LAVA -> block instanceof Levelled ? HeadFluid.LAVA : HeadFluid.UNKNOWN;
+            case BUBBLE_COLUMN, KELP, KELP_PLANT, SEAGRASS, TALL_SEAGRASS, WATER_CAULDRON, LAVA_CAULDRON ->
+                    HeadFluid.UNKNOWN;
+            default -> block instanceof Waterlogged wet && wet.isWaterlogged() ? HeadFluid.WATER : HeadFluid.DRY;
+        };
     }
 
     @Override public UUID spawnProxy(TowerSnapshot tower, UUID token) {
