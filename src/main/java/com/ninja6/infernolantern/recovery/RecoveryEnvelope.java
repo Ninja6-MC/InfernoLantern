@@ -29,7 +29,7 @@ public final class RecoveryEnvelope {
         }
     }
     private static final Set<String> KINDS=Set.of("item-drop","item-pickup","item-loss","item-place","fixture-item-delivery","fixture-activation-review",
-            "structure-place","structure-expand","structure-compact","structure-break","structure-admin_recover","structure-activation-review");
+            "structure-place","structure-expand","structure-compact","structure-defeat","structure-break","structure-admin_recover","structure-activation-review");
     public static Document item(String kind,Anchor anchor,Document original) {
         Inventory source=inventory(original,false,null);
         Profile profile=(kind.equals("item-drop")||kind.equals("item-pickup"))&&source!=null&&original.content().startsWith("action="+kind.substring(5)+";")?Profile.INVENTORY:Profile.ADMIN;
@@ -68,6 +68,7 @@ public final class RecoveryEnvelope {
             case "structure-place"->a.form()==Form.PORTABLE&&b.form()==Form.COMPACT&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter();
             case "structure-expand"->a.form()==Form.COMPACT&&b.form()==Form.EXPANDED&&a.generation()==b.generation()&&nextRevision&&a.expandAfter()==b.expandAfter();
             case "structure-compact"->a.form()==Form.EXPANDED&&b.form()==Form.COMPACT&&a.generation()==b.generation()&&nextRevision;
+            case "structure-defeat"->a.form()==Form.EXPANDED&&b.form()==Form.COMPACT&&a.hp()==0&&b.hp()==0&&a.generation()==b.generation()&&nextRevision;
             case "structure-break"->a.form()==Form.COMPACT&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter()&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             case "structure-admin_recover"->a.form()==Form.EXPANDED&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             default->false;

@@ -21,6 +21,7 @@ Each request binds operation/tower identity, expected row version, item generati
 | PLACE | PORTABLE to COMPACT; consume one item generation; null controller; new deployment revision; preserve HP, switches and both eligibility timestamps. |
 | EXPAND | COMPACT to EXPANDED; require HP threshold and expired expansion timestamp unless the timestamp alone is explicitly overridable; actor becomes controller; new deployment revision; no HP debit or generation rotation. |
 | COMPACT | EXPANDED to COMPACT; current controller or explicit session override; clear controller; fresh expansion eligibility time; new deployment revision; preserve HP and repair timestamp. |
+| DEFEAT | System-only EXPANDED zero-HP to COMPACT; clear controller; fresh expansion eligibility time and revision; preserve zero HP, generation, switches and repair lock. See [Tower Health](TOWER_HEALTH.md). |
 | BREAK | COMPACT to GROUND; one actual staged ground UUID; consume generation and invalidate deployment revision; preserve HP and existing timestamps; no inventory delivery. |
 | ADMIN_RECOVER | EXPANDED to GROUND only with explicit override; clear controller; fresh expansion eligibility time and revision; one ground item; preserve HP and repair timestamp. |
 

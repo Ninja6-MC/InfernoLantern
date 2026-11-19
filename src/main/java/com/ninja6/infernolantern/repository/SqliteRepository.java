@@ -1,5 +1,7 @@
 package com.ninja6.infernolantern.repository;
 
+import com.ninja6.infernolantern.catalog.CatalogCodec;
+
 import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
@@ -153,21 +155,28 @@ public final class SqliteRepository {
     }
     /** Only explicitly managed IDs participate. A caller cannot adopt an existing unmanaged row. */
     public CompletableFuture<CatalogSnapshot> publishCatalog(CatalogSnapshot expected,Document configuration,
-            Map<String,Document> definitions,Set<String> geometryChanges,Set<String> maximumHpChanges){
+            Map<String,Document> definitions,Set<String> geometryChanges){
         Objects.requireNonNull(expected);Objects.requireNonNull(configuration);
-        Map<String,Document> wanted=Map.copyOf(definitions);Set<String> geometry=Set.copyOf(geometryChanges),hp=Set.copyOf(maximumHpChanges);
-        if(wanted.size()>1024)throw new IllegalArgumentException("Catalog size");
-        for(var pair:wanted.entrySet()){identifier(pair.getKey());if(pair.getKey().startsWith("prototype."))throw new IllegalArgumentException("Reserved fixture ID");Objects.requireNonNull(pair.getValue());}
+        Map<String,Document> wanted=Map.copyOf(definitions);Set<String> geometry=Set.copyOf(geometryChanges);
+        var candidate=CatalogCodec.candidate(configuration);
+        if(!candidate.variants().keySet().equals(wanted.keySet()))throw new IllegalArgumentException("Catalog definitions differ from configuration");
+        for(var pair:candidate.variants().entrySet()){
+            if(!CatalogCodec.definition(pair.getValue()).equals(wanted.get(pair.getKey())))throw new IllegalArgumentException("Catalog definition differs from configuration");
+        }
         return submit(()->transaction(()->{
             CatalogSnapshot current=loadCatalog();require(current.equals(expected),"Catalog publication changed");
             var existing=new HashMap<String,Variant>();for(Variant v:current.variants())existing.put(v.id(),v);
             var all=new TreeSet<String>(existing.keySet());all.addAll(wanted.keySet());
             for(String id:geometry)require(!pendingRepresentation(id,true),"Pending geometry change needs resolution");
-            for(String id:hp)require(!pendingRepresentation(id,false),"Pending maximum HP change needs resolution");
             for(String id:geometry)try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form IN ('COMPACT','EXPANDED') LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Placed geometry change needs migration");}
-            for(String id:hp)try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form<>'LOST' LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Live maximum HP change needs migration");}
             for(String id:all){
                 Variant old=existing.get(id);Document definition=wanted.get(id);
+                if(definition!=null){
+                    double maximum=candidate.variants().get(id).maximumHp();
+                    if(old!=null&&CatalogCodec.definition(old.lastValidDefinition()).maximumHp()!=maximum){
+                        migrateMaximumHp(id,maximum);
+                    }
+                }
                 if(old==null){require(loadVariant(id)==null,"Unmanaged variant ID collision");
                     update("INSERT INTO variants VALUES(?,?,?,?,?,0)",id,0,VariantStatus.ACTIVE.name(),definition.version(),definition.content());
                     update("INSERT INTO catalog_managed_variants VALUES(?)",id);
@@ -193,6 +202,14 @@ public final class SqliteRepository {
             return loadCatalog();
         }));
     }
+    /** Clamp live rows only. The caller already owns the catalog publication transaction. */
+    private void migrateMaximumHp(String id,double maximum)throws Exception{
+        require(!pendingRepresentation(id,false),"Pending maximum HP change needs resolution");
+        try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form<>'LOST' AND (active_operation IS NOT NULL OR (maximum_hp<>? AND row_version=9223372036854775807)) LIMIT 1",id,maximum);var rows=p.executeQuery()){
+            require(!rows.next(),"Maximum HP migration blocked by tower ownership or exhausted revision");
+        }
+        update("UPDATE towers SET hp=MIN(hp,?),maximum_hp=?,row_version=row_version+1 WHERE variant_id=? AND form<>'LOST' AND maximum_hp<>?",maximum,maximum,id,maximum);
+    }
     /** Preferences change only, guarded by both the current catalog and tower revision. */
     public CompletableFuture<TowerSnapshot> saveSwitches(long catalogRevision,UUID tower,long expectedVersion,long expectedDeploymentRevision,boolean light,boolean defence){
         return saveSwitches(catalogRevision,tower,expectedVersion,expectedDeploymentRevision,light,defence,null);
@@ -208,9 +225,30 @@ public final class SqliteRepository {
             writeTower(state,next(expectedVersion),null,false,expectedVersion,null);return new TowerSnapshot(state,next(expectedVersion),null);
         },permit));
     }
+    /** Non-blast damage changes only the ready deployed row. A zero result remains authoritative even if compaction fails. */
+    public CompletableFuture<TowerSnapshot> damageTower(long catalogRevision,UUID tower,long expectedVersion,
+            long expectedGeneration,long expectedDeploymentRevision,double damage,long repairAfter,CommitPermit permit){
+        if(!Double.isFinite(damage)||damage<=0||repairAfter<0)throw new IllegalArgumentException("Damage bounds");
+        return submit(()->transaction(()->{
+            try(var p=statement("SELECT 1 FROM catalog_state WHERE singleton=1 AND revision=?",catalogRevision);var rows=p.executeQuery()){
+                require(rows.next(),"Catalog changed before damage commit");
+            }
+            TowerSnapshot old=ownedTower(tower,expectedVersion,null);Tower t=old.state().tower();
+            require(t.form()==Form.EXPANDED&&t.hp()>0&&t.generation()==expectedGeneration&&t.deploymentRevision()==expectedDeploymentRevision,
+                    "Stale deployed damage target");
+            require(catalogManaged(t.variantId())&&loadVariant(t.variantId()).status()==VariantStatus.ACTIVE,"Damage requires an active catalog variant");
+            Tower changed=new Tower(t.id(),t.variantId(),Math.max(0,t.hp()-damage),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),
+                    t.controller(),t.position(),t.light(),t.defence(),t.expandAfter(),Math.max(t.repairAfter(),repairAfter));
+            State state=new State(changed,null,old.state().components());long version=next(expectedVersion);
+            require(update("UPDATE towers SET hp=?,repair_after=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",
+                    changed.hp(),changed.repairAfter(),version,t.id(),expectedVersion)==1,"Damage CAS lost");
+            return new TowerSnapshot(state,version,null);
+        },permit));
+    }
     public CompletableFuture<TowerSnapshot> createTower(Tower tower){Objects.requireNonNull(tower);return submit(()->transaction(()->{
         require(tower.form()==Form.PORTABLE,"Initial storage insertion must be portable");
         Variant definition=loadVariant(tower.variantId());require(definition!=null&&definition.status()==VariantStatus.ACTIVE,"Issuance requires an active variant");
+        if(catalogManaged(tower.variantId()))require(tower.maximumHp()==CatalogCodec.definition(definition.lastValidDefinition()).maximumHp(),"Issuance requires the current maximum HP");
         var state=new State(tower,null,List.of());SnapshotCodec.encode(state);
         writeTower(state,0,null,true,0,null);return new TowerSnapshot(state,0,null);
     }));}
@@ -226,6 +264,7 @@ public final class SqliteRepository {
         TowerSnapshot old=ownedTower(replacement.id(),expected,null);
         Tower before=old.state().tower();
         require(sameRepresentation(before,replacement),"Representation changes require durable intent");
+        if(catalogManaged(before.variantId()))require(before.maximumHp()==replacement.maximumHp(),"Managed maximum HP changes require catalog publication");
         State state=new State(replacement,old.state().ground(),old.state().components());
         writeTower(state,next(expected),null,false,expected,null);return new TowerSnapshot(state,next(expected),null);
     }));}
@@ -285,6 +324,7 @@ public final class SqliteRepository {
         if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
         boolean managed=catalogManaged(before.variantId());
+        if(managed)require(before.maximumHp()==after.maximumHp(),"Managed maximum HP changes require catalog publication");
         if(managedOnly&&managed)require(loadCatalog().revision()==catalogRevision,"Managed structure policy changed before intent");
         boolean structureTransition=(!tower.state().components().isEmpty()||!intent.after().components().isEmpty())
                 &&(before.form()!=after.form()||before.deploymentRevision()!=after.deploymentRevision()||!Objects.equals(before.position(),after.position()));

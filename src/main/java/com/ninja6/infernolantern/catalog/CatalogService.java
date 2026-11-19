@@ -52,13 +52,13 @@ public final class CatalogService implements AutoCloseable {
         if(closed||!busy.compareAndSet(false,true))return CompletableFuture.failedFuture(new IllegalStateException("Catalog closed or publication pending"));
         return repository.catalog().thenCompose(before->{
             // Validate durable last-good definitions before any publication; never adopt opaque legacy IDs.
-            Snapshot previous=decodeStored(before);var geometry=new HashSet<String>();var hp=new HashSet<String>();
+            Snapshot previous=decodeStored(before);var geometry=new HashSet<String>();
             var definitions=new TreeMap<String,Document>();for(Definition d:candidate.variants().values()){
-                Entry old=previous.entries().get(d.id());if(old!=null){if(!old.definition().geometry().equals(d.geometry()))geometry.add(d.id());if(old.definition().maximumHp()!=d.maximumHp())hp.add(d.id());}
+                Entry old=previous.entries().get(d.id());if(old!=null&&!old.definition().geometry().equals(d.geometry()))geometry.add(d.id());
                 definitions.put(d.id(),CatalogCodec.definition(d));
             }
             if(closed)return CompletableFuture.failedFuture(new IllegalStateException("Catalog closed"));
-            return repository.publishCatalog(before,CatalogCodec.candidate(candidate),definitions,geometry,hp);
+            return repository.publishCatalog(before,CatalogCodec.candidate(candidate),definitions,geometry);
         }).thenCompose(committed->{
             Snapshot snapshot=decodeStored(committed);
             if(closed)return CompletableFuture.completedFuture(new Reload(true,false,snapshot));

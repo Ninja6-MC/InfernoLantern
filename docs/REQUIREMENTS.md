@@ -382,9 +382,9 @@ alternate inventory gestures, disconnects, or restarts from duplicating resource
 tower items. Persist health independently of editable names or cosmetic models, with one
 authoritative record per tower identity.
 
-The health indicator may be displayed above the deployed tower. Exact presentation and
-visibility (always visible, damaged only, or targeted only), eligible damage sources, repair
-cooling duration, and repair conversion rates remain review decisions. No passive health
+The health indicator appears only to the player targeting the deployed tower. Exact
+presentation, eligible damage sources, repair cooling duration and repair conversion
+rates remain review decisions. No passive health
 regeneration is part of the agreed repair flow.
 
 ### Expansion Cooldown
@@ -467,8 +467,9 @@ HP, next-expansion timestamp, repair-unlock timestamp, and any combat state that
 restart. Persist these through item recovery and replacement as well as chunk reloads. Associate
 every deployed component with one authoritative base so interacting with or breaking a component
 cannot create extra rewards. Use a reliable item-to-world identity mapping; item metadata is not
-automatically preserved merely by placing a block. Define how maximum-HP configuration changes
-affect existing health without granting free healing or exceeding the new maximum.
+automatically preserved merely by placing a block. Maximum-HP configuration changes preserve
+existing absolute HP and clamp it only when it exceeds a reduced maximum. The changed maximum
+applies to future expansion eligibility.
 
 ### Duplicate and Restored Items
 
@@ -772,7 +773,7 @@ verified before being advertised.
 - Defence damage, range, attack interval, eligible incoming damage sources, and maximum HP
   default.
 - Repair resources/rates, cooling duration, final-item rounding/payment behaviour, health
-  indicator presentation, and maximum-HP configuration migration.
+  indicator presentation.
 - Expansion cooldown duration per variant.
 - Whether both editions remain functionally identical.
 - Timing and scope of Folia, Bedrock, optional PvP, and other compatibility validation.

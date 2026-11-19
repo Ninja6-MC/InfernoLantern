@@ -107,6 +107,17 @@ class StructureLifecycleTest {
         assertEquals(33,row().state().tower().expandAfter());assertEquals(44,row().state().tower().repairAfter());assertEquals(3,row().state().tower().generation());assertFalse(sources.contains(id));
         int calls=physical;assertEquals(Outcome.COMMITTED,drain(service.execute(breaking,new Effects())).outcome());assertEquals(calls,physical);assertEquals(1,usableDrops.size());
     }
+    @Test void zeroDurationExitClearsDeadlineAndAClockChangeCannotReenableIt()throws Exception{
+        execute(Action.PLACE);execute(Action.EXPAND);
+        TowerSnapshot expanded=row();Tower t=expanded.state().tower();
+        Request compact=new Request(UUID.randomUUID(),id,expanded.rowVersion(),t.generation(),t.deploymentRevision(),
+                actor,session,Action.COMPACT,base,new Policy(1,50,0,1000,false));
+        assertEquals(Outcome.COMMITTED,drain(service.execute(compact,new Effects())).outcome());
+        assertEquals(Form.COMPACT,row().state().tower().form());
+        assertEquals(0,row().state().tower().expandAfter());
+        assertEquals(44,row().state().tower().repairAfter());
+        assertEquals(Outcome.COMMITTED,drain(service.execute(request(Action.EXPAND,row(),actor,false,500),new Effects())).outcome());
+    }
     @Test void controllerAndExplicitOverrideAreNotPermanentOwnership()throws Exception{
         execute(Action.PLACE);execute(Action.EXPAND);UUID other=UUID.randomUUID();
         assertEquals(Outcome.REJECTED,drain(service.execute(request(Action.COMPACT,row(),other,false,1000),new Effects())).outcome());

@@ -46,3 +46,7 @@ The partial configuration/catalog and journaled real-light foundation is documen
 
 [Native access](docs/NATIVE_ACCESS.md) documents the session override command, permission
 checks and transaction boundaries for future native action routing.
+
+[Tower health](docs/TOWER_HEALTH.md) documents durable damage, system defeat compaction,
+maximum-HP changes, and the private target view. Native health routing and acceptance
+remain pending.

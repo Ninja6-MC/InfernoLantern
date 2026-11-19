@@ -34,7 +34,7 @@ class PaperStructureEffectsTest {
     static RuntimeException unsupported(Method m){return new UnsupportedOperationException(m.toString());}
     BlockData data(String value){return proxy(BlockData.class,(m,a)->switch(m.getName()){
         case "getAsString"->value;
-        case "getMaterial"->value.startsWith("minecraft:air")?Material.AIR:value.startsWith("minecraft:stone")?Material.STONE:Material.BARRIER;
+        case "getMaterial"->value.startsWith("minecraft:air")?Material.AIR:value.startsWith("minecraft:stone")?Material.STONE:value.startsWith("minecraft:light")?Material.LIGHT:Material.BARRIER;
         default->throw unsupported(m);
     });}
     @BeforeEach void setup()throws Exception{
@@ -65,6 +65,28 @@ class PaperStructureEffectsTest {
     Claim claim(Request request,Preparation prepared,TowerSnapshot source){
         State after=new State(new Tower(towerId,"fixture",75,100,Form.EXPANDED,2,2,actor,base,true,false,0,44),null,prepared.manifest());
         Intent intent=new Intent(request.operation(),towerId,2,2,1,"structure-expand",after,prepared.evidence());return new Claim(request,new Operation(intent,source.state(),Phase.INTENT,0,"intent"),prepared);
+    }
+    @Test void systemDefeatUsesWorldProtectionWithoutAPlayerAndRestoresOwnedLight(){
+        Cell light=new Cell(worldId,4,71,4);
+        String lit="minecraft:light[level=15,waterlogged=false]";
+        blocks.put(light,lit);
+        var components=new ArrayList<>(before().state().components());
+        components.add(new Component("light",ComponentKind.BLOCK,worldId,4,71,4,"minecraft:air",lit,null,null));
+        var zero=new State(new Tower(towerId,"fixture",0,100,Form.EXPANDED,2,1,actor,base,true,false,0,44),null,components);
+        var source=new TowerSnapshot(zero,2,null);
+        var request=new Request(UUID.randomUUID(),towerId,2,2,1,null,null,Action.DEFEAT,base,new Policy(1,50,200,1000,false));
+        var compact=new PaperStructureEffects.Layout(List.of(new PaperStructureEffects.Voxel(0,0,0,"minecraft:barrier")),List.of());
+        var restoration=new java.util.concurrent.atomic.AtomicBoolean();
+        var effects=new PaperStructureEffects((r,state,restoring)->!restoring||restoration.get(),compact,false);
+        var prepared=effects.prepare(request,source);assertNotNull(prepared);
+        var after=new State(new Tower(towerId,"fixture",0,100,Form.COMPACT,2,2,null,base,true,false,1200,44),null,prepared.manifest());
+        var intent=new Intent(request.operation(),towerId,2,2,1,"structure-defeat",after,prepared.evidence());
+        var claim=new Claim(request,new Operation(intent,zero,Phase.INTENT,0,"Fixture"),prepared);
+        assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));assertEquals("minecraft:air",blocks.get(light));
+        assertFalse(effects.rollback(claim));assertEquals("minecraft:air",blocks.get(light));
+        restoration.set(true);assertTrue(effects.rollback(claim));assertEquals(lit,blocks.get(light));
+        var denied=new PaperStructureEffects((r,state,restoring)->false,compact,false);
+        assertNull(denied.prepare(request,source));assertEquals(lit,blocks.get(light));
     }
     @Test void actualAdapterReservesUnchangedVoxelAndRestoresOwnedEffects(){
         Request request=request();var effects=effects(layout());var prepared=effects.prepare(request,before());assertNotNull(prepared);assertEquals(3,prepared.manifest().size());

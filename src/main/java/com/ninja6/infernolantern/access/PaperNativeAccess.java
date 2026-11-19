@@ -25,9 +25,9 @@ import java.util.logging.Logger;
 public final class PaperNativeAccess {
     public enum Action { PLACE, EXPAND, COMPACT, BREAK, ADMIN_RECOVER, LIGHT, DEFENCE, REPAIR }
     public enum Decision {
-        DENIED, OVERRIDE_REQUIRED, ALLOWED, COOLDOWN, CONTROLLER, EXPANDED_RECOVERY;
+        DENIED, OVERRIDE_REQUIRED, COOLDOWN_ACTIVE, ALLOWED, COOLDOWN, CONTROLLER, EXPANDED_RECOVERY;
 
-        public boolean allowed() { return this != DENIED && this != OVERRIDE_REQUIRED; }
+        public boolean allowed() { return this != DENIED && this != OVERRIDE_REQUIRED && this != COOLDOWN_ACTIVE; }
         public boolean bypassed() { return allowed() && this != ALLOWED; }
     }
 
@@ -77,7 +77,7 @@ public final class PaperNativeAccess {
         Decision required = switch (action) {
             case PLACE -> tower.form() == Form.PORTABLE ? Decision.ALLOWED : Decision.DENIED;
             case EXPAND -> {
-                if (tower.form() != Form.COMPACT || tower.hp() < tower.maximumHp() * definition.expansionPercent() / 100) {
+                if (tower.form() != Form.COMPACT || !StructureLifecycle.hasExpansionHealth(tower, definition.expansionPercent())) {
                     yield Decision.DENIED;
                 }
                 yield now >= tower.expandAfter() ? Decision.ALLOWED : Decision.COOLDOWN;
@@ -92,7 +92,8 @@ public final class PaperNativeAccess {
                 yield tower.form() == Form.COMPACT ? Decision.ALLOWED : controller(actor, tower);
             }
         };
-        return required.bypassed() && !sessions.enabled(actor) ? Decision.OVERRIDE_REQUIRED : required;
+        if (!required.bypassed() || sessions.enabled(actor)) return required;
+        return required == Decision.COOLDOWN ? Decision.COOLDOWN_ACTIVE : Decision.OVERRIDE_REQUIRED;
     }
 
     private static Decision controller(OverrideSessions.Session actor, Tower tower) {
@@ -115,11 +116,17 @@ public final class PaperNativeAccess {
                                                UUID operation, TowerSnapshot before, StructureLifecycle.Action action,
                                                Position target, long now, PhysicalAccess physical) {
         sessions.requireOwner();
-        if (!before.mutationReady()) return Optional.empty();
+        if (!before.mutationReady() || action == StructureLifecycle.Action.DEFEAT) return Optional.empty();
         Action nativeAction = Action.valueOf(action.name());
         Decision decision = decide(actor, settings, nativeAction, before.state(), target, now, physical);
         if (!decision.allowed()) {
-            hint(actor, decision);
+            if (decision == Decision.COOLDOWN_ACTIVE) {
+                long remaining = before.state().tower().expandAfter() - now;
+                actor.player().sendMessage("Lantern expansion cooldown: " + remaining + " ms remaining.");
+                hint(actor, Decision.OVERRIDE_REQUIRED);
+            } else {
+                hint(actor, decision);
+            }
             return Optional.empty();
         }
 
