@@ -354,6 +354,32 @@ class ZombieCombatTest {
         assertNotNull(combat.idle(saved));
     }
 
+    @Test void reentrantReplacementCannotRetryAnExplicitMeleeDenial() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        int[] meleeChecks = {0};
+        world.protection = (action, zombie) -> {
+            if (action == Action.MELEE && ++meleeChecks[0] == 1) {
+                combat.targetChanged(zombie, null);
+                world.targets.put(zombie, EXTERNAL);
+                return false;
+            }
+            return true;
+        };
+
+        combat.tick(2);
+        assertEquals(1, meleeChecks[0]);
+        var saved = current();
+        assertEquals(75, saved.state().tower().hp());
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertTrue(world.removed.contains(proxy));
+        assertNotNull(combat.idle(saved));
+        assertTrue(owner.work.isEmpty());
+    }
+
     @Test void unavailableOwnerCompletionReleasesCapacityAndPreservesCommittedDamage() throws Exception {
         start(Mode.RETALIATION, 1_000);
         settledCooling();

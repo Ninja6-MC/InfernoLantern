@@ -377,10 +377,19 @@ public final class ZombieCombat implements AutoCloseable {
 
     private boolean acceptedDamageAllowed(Lease source) {
         Deployment deployment = source.deployment;
-        if (!source.detached && incomingAllowed(source)) return true;
-        // A protection callback can also publish a newer unrelated target during authorization.
-        return source.detached && current(deployment) && effective(deployment) && detachedProtectionAllows(source)
-                && current(deployment);
+        // Protection can publish a replacement target. Recheck source ownership without retrying a denial.
+        return current(deployment) && effective(deployment) && acceptedSourceCurrent(source)
+                && world.allows(Action.MELEE, deployment.row, source.proxy, source.zombie)
+                && acceptedSourceCurrent(source)
+                && world.allows(Action.TARGET, deployment.row, source.proxy, source.zombie)
+                && acceptedSourceCurrent(source);
+    }
+
+    private boolean acceptedSourceCurrent(Lease source) {
+        Deployment deployment = source.deployment;
+        return current(deployment) && source.proxy.equals(deployment.proxy)
+                && (source.detached || source.targeted && leaseCurrent(source) && reachable(source)
+                        && world.hasOwnedTarget(source.zombie, source.proxy));
     }
 
     private boolean detachedMeleeAllowed(Deployment deployment) {
