@@ -41,3 +41,5 @@ Item identity and ground lifecycle foundation: [service contract and pending liv
 Structure transition foundation: [journaled service, Paper effect port and pending integration](docs/STRUCTURE_TRANSITIONS.md). Native structure handlers remain unwired; schema 3 migration is active on repository open. Task #10 is partial.
 
 Reconciliation foundation: [evidence contracts, recovery matrix and pending integration](docs/RECONCILIATION.md). The service is unwired and does not authorize repair of existing test saves. Task #11 remains partial.
+
+The partial configuration/catalog and journaled real-light foundation is documented in [Configuration Catalog](docs/CONFIGURATION_CATALOG.md). Native configuration/control integration and acceptance remain pending.

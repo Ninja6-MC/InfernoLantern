@@ -126,3 +126,9 @@ permission node, production award arguments or acquisition contract is introduce
 Help/tab completion expose it only under the same operator/creation gates. Existing item
 protection remains active after creation flags are disabled. Runtime readiness and pending
 journal evidence are reported through the already approved administrative `status` action.
+
+## Selected catalog and compact lifecycle policies
+
+The maintainer approved inert compact bases: compact placed lanterns emit no light and do not attack. Lighting/defence operate only while EXPANDED and all current policies permit. Saved player preferences survive compaction, transfer and restart; enforcing inactivity never resets them.
+
+The maintainer approved per-action (`place`, `expand`, `light`, `defence`) `allow-worlds`, `deny-worlds` and `allow-dimensions`. World selectors are `uuid:<id>` or `name:<exact-name>`; dimension categories are `overworld`, `nether`, `end`, `custom`, with custom fail-closed unless reliably supported. Omitted allowlists are unrestricted, empty allowlists permit none, deny wins and all supplied allowlists must match. Defaults impose no world restrictions. Existing placed records retain their actual world UUID through rename/replacement; invalid reload retains the previous valid effective configuration. This records selected policy only; native configuration/light integration and compatibility remain pending.

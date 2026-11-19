@@ -115,8 +115,74 @@ public final class SqliteRepository {
             return r.next()?new Variant(r.getString("id"),r.getLong("definition_revision"),VariantStatus.valueOf(r.getString("status")),new Document(r.getInt("payload_version"),r.getString("definition")),r.getLong("row_version")):null;
         }
     }
+    /** Atomic catalog metadata only; no world effects or item delivery occur here. */
+    public CompletableFuture<CatalogSnapshot> catalog(){return submit(()->snapshot(this::loadCatalog));}
+    private CatalogSnapshot loadCatalog()throws Exception{
+        long revision=0;Document configuration=new Document(1,"catalog-unpublished");
+        try(var s=connection.createStatement();var r=s.executeQuery("SELECT revision,payload_version,configuration FROM catalog_state WHERE singleton=1")){
+            if(r.next()){revision=r.getLong(1);configuration=new Document(r.getInt(2),r.getString(3));}
+        }
+        var variants=new ArrayList<Variant>();
+        try(var s=connection.createStatement();var r=s.executeQuery("SELECT variant_id FROM catalog_managed_variants ORDER BY variant_id LIMIT 1025")){
+            while(r.next())variants.add(Objects.requireNonNull(loadVariant(r.getString(1))));
+        }
+        require(variants.size()<=1024&&(revision>0||variants.isEmpty()),"Catalog metadata bounds");
+        return new CatalogSnapshot(revision,configuration,variants);
+    }
+    /** Only explicitly managed IDs participate. A caller cannot adopt an existing unmanaged row. */
+    public CompletableFuture<CatalogSnapshot> publishCatalog(CatalogSnapshot expected,Document configuration,
+            Map<String,Document> definitions,Set<String> geometryChanges,Set<String> maximumHpChanges){
+        Objects.requireNonNull(expected);Objects.requireNonNull(configuration);
+        Map<String,Document> wanted=Map.copyOf(definitions);Set<String> geometry=Set.copyOf(geometryChanges),hp=Set.copyOf(maximumHpChanges);
+        if(wanted.size()>1024)throw new IllegalArgumentException("Catalog size");
+        for(var pair:wanted.entrySet()){identifier(pair.getKey());if(pair.getKey().startsWith("prototype."))throw new IllegalArgumentException("Reserved fixture ID");Objects.requireNonNull(pair.getValue());}
+        return submit(()->transaction(()->{
+            CatalogSnapshot current=loadCatalog();require(current.equals(expected),"Catalog publication changed");
+            var existing=new HashMap<String,Variant>();for(Variant v:current.variants())existing.put(v.id(),v);
+            var all=new TreeSet<String>(existing.keySet());all.addAll(wanted.keySet());
+            for(String id:geometry)try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form IN ('COMPACT','EXPANDED') LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Placed geometry change needs migration");}
+            for(String id:hp)try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form<>'LOST' LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Live maximum HP change needs migration");}
+            for(String id:all){
+                Variant old=existing.get(id);Document definition=wanted.get(id);
+                if(old==null){require(loadVariant(id)==null,"Unmanaged variant ID collision");
+                    update("INSERT INTO variants VALUES(?,?,?,?,?,0)",id,0,VariantStatus.ACTIVE.name(),definition.version(),definition.content());
+                    update("INSERT INTO catalog_managed_variants VALUES(?)",id);
+                }else{
+                    VariantStatus status=definition==null?VariantStatus.RETIRED:VariantStatus.ACTIVE;
+                    Document kept=definition==null?old.lastValidDefinition():definition;
+                    long revision=old.lastValidDefinition().equals(kept)?old.definitionRevision():next(old.definitionRevision());
+                    if(status!=old.status()||!kept.equals(old.lastValidDefinition()))
+                        require(update("UPDATE variants SET definition_revision=?,status=?,payload_version=?,definition=?,row_version=? WHERE id=? AND row_version=?",revision,status.name(),kept.version(),kept.content(),next(old.rowVersion()),id,old.rowVersion())==1,"Variant publication changed");
+                }
+                if(definition==null){
+                    try(var p=statement("SELECT 1 FROM awards WHERE variant_id=? AND status='PENDING' AND row_version=9223372036854775807 LIMIT 1",id);var rows=p.executeQuery()){require(!rows.next(),"Award row version exhausted");}
+                    update("INSERT OR IGNORE INTO catalog_award_holds SELECT id FROM awards WHERE variant_id=? AND status='PENDING'",id);
+                    update("UPDATE awards SET status='PAUSED',row_version=row_version+1 WHERE variant_id=? AND status='PENDING'",id);
+                }else{
+                    update("UPDATE awards SET status='PENDING',row_version=row_version+1 WHERE variant_id=? AND status='PAUSED' AND id IN (SELECT award_id FROM catalog_award_holds)",id);
+                    update("DELETE FROM catalog_award_holds WHERE award_id IN (SELECT id FROM awards WHERE variant_id=?)",id);
+                }
+            }
+            long revision=next(expected.revision());
+            if(expected.revision()==0)update("INSERT INTO catalog_state VALUES(1,?,?,?)",revision,configuration.version(),configuration.content());
+            else require(update("UPDATE catalog_state SET revision=?,payload_version=?,configuration=? WHERE singleton=1 AND revision=?",revision,configuration.version(),configuration.content(),expected.revision())==1,"Catalog CAS lost");
+            return loadCatalog();
+        }));
+    }
+    /** Preferences change only, guarded by both the current catalog and tower revision. */
+    public CompletableFuture<TowerSnapshot> saveSwitches(long catalogRevision,UUID tower,long expectedVersion,long expectedDeploymentRevision,boolean light,boolean defence){
+        return submit(()->transaction(()->{
+            require(loadCatalog().revision()==catalogRevision,"Catalog changed before switch commit");
+            TowerSnapshot old=ownedTower(tower,expectedVersion,null);Tower t=old.state().tower();
+            require(t.deploymentRevision()==expectedDeploymentRevision,"Stale switch deployment");
+            Tower changed=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),t.controller(),t.position(),light,defence,t.expandAfter(),t.repairAfter());
+            State state=new State(changed,old.state().ground(),old.state().components());
+            writeTower(state,next(expectedVersion),null,false,expectedVersion,null);return new TowerSnapshot(state,next(expectedVersion),null);
+        }));
+    }
     public CompletableFuture<TowerSnapshot> createTower(Tower tower){Objects.requireNonNull(tower);return submit(()->transaction(()->{
         require(tower.form()==Form.PORTABLE,"Initial storage insertion must be portable");
+        Variant definition=loadVariant(tower.variantId());require(definition!=null&&definition.status()==VariantStatus.ACTIVE,"Issuance requires an active variant");
         var state=new State(tower,null,List.of());SnapshotCodec.encode(state);
         writeTower(state,0,null,true,0,null);return new TowerSnapshot(state,0,null);
     }));}
@@ -178,10 +244,12 @@ public final class SqliteRepository {
         for(Component c:state.components())update("INSERT INTO manifest_components VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)",t.id(),t.deploymentRevision(),c.id(),c.kind().name(),c.world(),c.x(),c.y(),c.z(),c.originalState(),c.expectedState(),c.entity(),c.entityType());
     }
 
-    public CompletableFuture<Operation> beginIntent(Intent intent){return beginIntent(intent,true);}
+    public CompletableFuture<Operation> beginIntent(Intent intent){return beginIntent(intent,true,-1);}
     /** Fresh-only physical effect admission. Existing receipts must never grant a second effect owner. */
-    public CompletableFuture<Operation> beginNewIntent(Intent intent){return beginIntent(intent,false);}
-    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt){Objects.requireNonNull(intent);return submit(()->transaction(()->{
+    public CompletableFuture<Operation> beginNewIntent(Intent intent){return beginIntent(intent,false,-1);}
+    public CompletableFuture<Operation> beginCatalogIntent(Intent intent,long catalogRevision){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");return beginIntent(intent,false,catalogRevision);}
+    private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt,long catalogRevision){Objects.requireNonNull(intent);return submit(()->transaction(()->{
+        if(catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before intent");
         Operation existing=loadOperation(intent.id());
         if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
@@ -226,12 +294,14 @@ public final class SqliteRepository {
         require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=? AND phase=?",to.name(),next(expected),evidence,id,expected,from.name())==1,"Operation CAS lost");return loadOperation(id);
     }));}
     /** Caller must have verified physical effects on the owning scheduler. This method only commits database state. */
-    public CompletableFuture<Operation> completeOperation(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,true);}
+    public CompletableFuture<Operation> completeOperation(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,true,-1);}
     /** Caller-supplied reconciliation evidence is not database proof of restored world/player saves. */
-    public CompletableFuture<Operation> resolveRollback(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,true,true);}
+    public CompletableFuture<Operation> resolveRollback(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,true,true,-1);}
     /** Only the winning fresh finalizer may publish/activate a recovery outcome. Receipts grant no effect ownership. */
-    public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false);}
-    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt){Objects.requireNonNull(id);return submit(()->transaction(()->{
+    public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false,-1);}
+    public CompletableFuture<Operation> completeCatalogOperation(UUID id,long expected,long catalogRevision,String evidence){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision);}
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){Objects.requireNonNull(id);return submit(()->transaction(()->{
+        if(catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before completion");
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
         require(op.rowVersion()==expected&&op.phase()==(rollback?Phase.RECONCILING:Phase.EFFECTS_APPLIED),"Operation is not ready for completion");
@@ -255,21 +325,31 @@ public final class SqliteRepository {
     /** Award metadata never creates/delivers an item; quantity is not bounded by a gameplay tower count. */
     public CompletableFuture<Award> saveAward(Award award,long expected){Objects.requireNonNull(award);return submit(()->transaction(()->{
         Award old=loadAward(award.id());
+        Variant variant=loadVariant(award.variantId());require(variant!=null,"Missing award variant");
+        boolean managed;try(var p=statement("SELECT 1 FROM catalog_managed_variants WHERE variant_id=?",award.variantId());var rows=p.executeQuery()){managed=rows.next();}
+        boolean held=managed&&variant.status()==VariantStatus.RETIRED&&award.status()==AwardStatus.PENDING;
+        require(managed||variant.status()!=VariantStatus.RETIRED||award.status()!=AwardStatus.PENDING,"Retired unmanaged award requires explicit hold");
+        require(variant.status()!=VariantStatus.RETIRED||award.status()!=AwardStatus.DELIVERED,"Retired award cannot deliver");
+        Award effective=held?new Award(award.id(),award.sourceKey(),award.recipient(),award.variantId(),award.quantity(),AwardStatus.PAUSED,award.rowVersion()):award;
         if(expected==-1){
             require(old==null&&award.rowVersion()==0&&award.status()!=AwardStatus.DELIVERED,"New award must be pending or paused");
-            update("INSERT INTO awards VALUES(?,?,?,?,?,?,?,1)",award.id(),award.sourceKey(),award.recipient(),award.variantId(),award.quantity(),award.status().name(),0);
+            update("INSERT INTO awards VALUES(?,?,?,?,?,?,?,1)",award.id(),award.sourceKey(),award.recipient(),award.variantId(),award.quantity(),effective.status().name(),0);
         }else{
             require(old!=null&&old.rowVersion()==expected&&award.rowVersion()==next(expected),"Award CAS lost");
             require(old.sourceKey().equals(award.sourceKey())&&old.recipient().equals(award.recipient())&&old.variantId().equals(award.variantId())&&old.quantity()==award.quantity(),"Award provenance is immutable");
             if(award.status()==AwardStatus.DELIVERED)require(awardCount(award.id())==award.quantity(),"Award identities incomplete");
-            require(update("UPDATE awards SET status=?,row_version=? WHERE id=? AND row_version=?",award.status().name(),award.rowVersion(),award.id(),expected)==1,"Award CAS lost");
-        }return award;
+            require(update("UPDATE awards SET status=?,row_version=? WHERE id=? AND row_version=?",effective.status().name(),award.rowVersion(),award.id(),expected)==1,"Award CAS lost");
+        }
+        if(held)update("INSERT OR IGNORE INTO catalog_award_holds VALUES(?)",award.id());
+        else update("DELETE FROM catalog_award_holds WHERE award_id=?",award.id());
+        return effective;
     }));}
     /** Append a bounded batch of existing, unclaimed identities, atomically with award CAS. */
     public CompletableFuture<Award> associateAwardTowers(UUID awardId,long expected,Map<UUID,Long> towerVersions){
         Map<UUID,Long> versions=Map.copyOf(towerVersions);page(versions.size());
         return submit(()->transaction(()->{
-            Award award=loadAward(awardId);require(award!=null&&award.rowVersion()==expected&&award.status()!=AwardStatus.DELIVERED,"Stale or delivered award");
+            Award award=loadAward(awardId);require(award!=null&&award.rowVersion()==expected&&award.status()==AwardStatus.PENDING,"Stale or paused/delivered award");
+            require(loadVariant(award.variantId()).status()==VariantStatus.ACTIVE,"Retired award cannot allocate identities");
             require(awardCount(awardId)<=award.quantity()-versions.size(),"Award quantity exceeded");
             for(var pair:versions.entrySet()){
                 TowerSnapshot tower=ownedTower(pair.getKey(),pair.getValue(),null);
@@ -325,6 +405,7 @@ public final class SqliteRepository {
                 &&new HashSet<>(actual.stream().map(Reservation::cell).toList()).equals(cells(states)),"Structure clearance reservation mismatch");
     }
     private void validateStoredRows()throws Exception{
+        loadCatalog();
         try(var s=connection.createStatement();var r=s.executeQuery("PRAGMA foreign_key_check")){if(r.next())throw new SQLException("Database reference integrity failed");}
         for(String table:List.of("variants","towers","operations","awards","repair_escrows")){
             String column=table.equals("repair_escrows")?"operation_id":"id";String cursor="";
