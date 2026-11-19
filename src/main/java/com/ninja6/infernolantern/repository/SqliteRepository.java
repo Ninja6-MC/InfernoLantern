@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.repository;
 
 import com.ninja6.infernolantern.catalog.CatalogCodec;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 
 import java.nio.file.*;
 import java.sql.*;
@@ -376,7 +377,10 @@ public final class SqliteRepository {
         if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
         boolean managed=catalogManaged(before.variantId());
-        if(managed)require(before.maximumHp()==after.maximumHp(),"Managed maximum HP changes require catalog publication");
+        if(managed){
+            require(before.maximumHp()==after.maximumHp(),"Managed maximum HP changes require catalog publication");
+            if(timedStructureExit(intent.kind()))requireCatalogExitDuration(before.variantId(),exitRecipe(intent).exitCooldownMillis());
+        }
         if(managedOnly&&managed)require(loadCatalog().revision()==catalogRevision,"Managed structure policy changed before intent");
         boolean structureTransition=(!tower.state().components().isEmpty()||!intent.after().components().isEmpty())
                 &&(before.form()!=after.form()||before.deploymentRevision()!=after.deploymentRevision()||!Objects.equals(before.position(),after.position()));
@@ -428,6 +432,11 @@ public final class SqliteRepository {
     public CompletableFuture<Operation> resolveRollback(UUID id,long expected,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,true,true,-1);}
     /** Only the winning fresh finalizer may publish/activate a recovery outcome. Receipts grant no effect ownership. */
     public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false,-1);}
+    /** Fresh-only AFTER finalization after a trusted recovery port revalidated the exact saved effects. */
+    public CompletableFuture<Operation> finalizeTimedExitReconciliation(UUID id,long expected,String evidence,LongSupplier clock){
+        text(evidence,MAX_PAYLOAD);
+        return finish(id,expected,evidence,false,false,-1,false,null,Objects.requireNonNull(clock));
+    }
     public CompletableFuture<Operation> completeCatalogOperation(UUID id,long expected,long catalogRevision,String evidence){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision);}
     /** Native structure completion repeats its admission guard for managed definitions. */
     public CompletableFuture<Operation> completeStructureOperation(UUID id,long expected,long catalogRevision,String evidence,CommitPermit permit){
@@ -436,17 +445,16 @@ public final class SqliteRepository {
     }
     /** Stamp one verified deployed exit after SQLite writer admission. The clock is thread-safe and server independent. */
     public CompletableFuture<Operation> completeStructureExit(UUID id,long expected,long catalogRevision,String evidence,
-            CommitPermit permit,long cooldownMillis,LongSupplier clock){
-        if(catalogRevision<0||cooldownMillis<0)throw new IllegalArgumentException("Exit policy bounds");
+            CommitPermit permit,LongSupplier clock){
+        if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");
         text(evidence,MAX_PAYLOAD);
-        return finish(id,expected,evidence,false,false,catalogRevision,true,permit,new ExitTiming(cooldownMillis,Objects.requireNonNull(clock)));
+        return finish(id,expected,evidence,false,false,catalogRevision,true,permit,Objects.requireNonNull(clock));
     }
-    private record ExitTiming(long duration,LongSupplier clock) {}
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){
         return finish(id,expected,evidence,rollback,allowReceipt,catalogRevision,false,null,null);
     }
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
-            boolean managedOnly,CommitPermit permit,ExitTiming timing){Objects.requireNonNull(id);return submit(()->transaction(()->{
+            boolean managedOnly,CommitPermit permit,LongSupplier exitClock){Objects.requireNonNull(id);return submit(()->transaction(()->{
         if(!managedOnly&&catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
@@ -457,33 +465,42 @@ public final class SqliteRepository {
         if(escrow!=null)require(rollback?(escrow.payment()==PaymentPhase.REFUNDED&&escrow.hpPhase()==HpPhase.NOT_APPLIED):(escrow.payment()==PaymentPhase.COMMITTED&&escrow.hpPhase()==HpPhase.APPLIED),"Escrow not settled; retain reconciliation");
         State after=op.intent().after();
         if(!rollback){
-            require(timedStructureExit(op.intent().kind())==(timing!=null),"Timed exit completion requires a verified exit clock");
-            if(timing!=null)after=stampExit(op,timing);
+            require(timedStructureExit(op.intent().kind())==(exitClock!=null),"Timed exit completion requires a verified exit clock");
+            if(exitClock!=null)after=stampExit(op,exitClock,managedOnly);
         }
         writeTower(rollback?op.before():after,Math.addExact(op.intent().expectedRowVersion(),2),null,false,next(op.intent().expectedRowVersion()),id);
-        int saved=timing==null
+        int saved=exitClock==null
                 ?update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=?",
                         terminal.name(),next(expected),evidence,id,expected)
                 :update("UPDATE operations SET phase=?,row_version=?,evidence=?,after_state=? WHERE id=? AND row_version=?",
                         terminal.name(),next(expected),evidence,SnapshotCodec.encode(after),id,expected);
         require(saved==1,"Completion CAS lost");return loadOperation(id);
     },permit));}
-    private State stampExit(Operation op,ExitTiming timing)throws Exception{
+    private State stampExit(Operation op,LongSupplier exitClock,boolean nativeCompletion)throws Exception{
+        var recipe=exitRecipe(op.intent());
+        if(!nativeCompletion)require(RecoveryEnvelope.supports(op,recipe),"Timed exit recovery requires a typed structure recipe");
+        long duration=recipe.exitCooldownMillis();
         Tower before=op.before().tower();State after=op.intent().after();Tower tower=after.tower();
         Form expectedForm=STRUCTURE_EXIT_RECOVER.equals(op.intent().kind())?Form.GROUND:Form.COMPACT;
         require(before.form()==Form.EXPANDED&&tower.form()==expectedForm&&tower.expandAfter()==before.expandAfter()
                         &&(!STRUCTURE_DEFEAT.equals(op.intent().kind())||before.hp()==0&&tower.hp()==0),
                 "Invalid timed structure exit");
-        if(catalogManaged(tower.variantId())){
-            Variant variant=loadVariant(tower.variantId());
-            require(CatalogCodec.definition(variant.lastValidDefinition()).expansionCooldownMillis()==timing.duration(),
-                    "Timed exit duration does not match the current catalog");
-        }
-        long now=timing.clock().getAsLong();nonnegative(now);
-        long deadline=timing.duration()==0?0:Math.addExact(now,timing.duration());
+        if(nativeCompletion&&catalogManaged(tower.variantId()))requireCatalogExitDuration(tower.variantId(),duration);
+        long now=exitClock.getAsLong();nonnegative(now);
+        long deadline=duration==0?0:Math.addExact(now,duration);
         Tower timed=new Tower(tower.id(),tower.variantId(),tower.hp(),tower.maximumHp(),tower.form(),tower.generation(),tower.deploymentRevision(),
                 tower.controller(),tower.position(),tower.light(),tower.defence(),deadline,tower.repairAfter());
         return new State(timed,after.ground(),after.components());
+    }
+    private static RecoveryEnvelope.Context exitRecipe(Intent intent){
+        var recipe=RecoveryEnvelope.decode(intent.effects()).orElse(null);
+        require(recipe!=null&&recipe.kind().equals(intent.kind())&&recipe.exitCooldownMillis()!=null,"Missing timed exit evidence");
+        return recipe;
+    }
+    private void requireCatalogExitDuration(String variantId,long duration)throws SQLException{
+        Variant variant=loadVariant(variantId);
+        require(CatalogCodec.definition(variant.lastValidDefinition()).expansionCooldownMillis()==duration,
+                "Timed exit duration does not match the current catalog");
     }
     private Operation requireOperation(UUID id,long version)throws Exception{Operation op=loadOperation(id);require(op!=null&&op.rowVersion()==version&&op.pending(),"Stale or terminal operation");return op;}
     private Operation loadOperation(UUID id)throws Exception{

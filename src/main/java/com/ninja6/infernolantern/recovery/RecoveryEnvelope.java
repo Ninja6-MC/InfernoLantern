@@ -14,13 +14,20 @@ public final class RecoveryEnvelope {
     public record Inventory(UUID actor,int slot,ResourceBytes bytes,UUID deliveryOperation) {
         public Inventory { Objects.requireNonNull(actor);Objects.requireNonNull(bytes);if(slot<0||slot>255||bytes.copy().length==0)throw new IllegalArgumentException("Inventory evidence"); }
     }
-    public record Context(String kind,Anchor anchor,Profile profile,Inventory inventory,Document original) {
+    public record Context(String kind,Anchor anchor,Profile profile,Inventory inventory,Document original,Long exitCooldownMillis) {
+        public Context(String kind,Anchor anchor,Profile profile,Inventory inventory,Document original){
+            this(kind,anchor,profile,inventory,original,null);
+        }
         public Context {
             Objects.requireNonNull(kind);Objects.requireNonNull(anchor);Objects.requireNonNull(profile);Objects.requireNonNull(original);
             if(!KINDS.contains(kind)||original.version()!=1)throw new IllegalArgumentException("Recovery recipe");
+            boolean timed=timedStructureExit(kind);
+            if(exitCooldownMillis!=null&&(!timed||exitCooldownMillis<0||inventory!=null
+                    ||profile!=Profile.STRUCTURE&&profile!=Profile.ADMIN))throw new IllegalArgumentException("Invalid exit cooldown evidence");
+            if(timed&&profile==Profile.STRUCTURE&&exitCooldownMillis==null)throw new IllegalArgumentException("Missing exit cooldown evidence");
             if(profile==Profile.INVENTORY&&inventory==null)throw new IllegalArgumentException("Missing source evidence");
             if(profile==Profile.INVENTORY&&!Set.of("item-drop","item-pickup","fixture-item-delivery").contains(kind)
-                    ||profile==Profile.STRUCTURE&&(!kind.startsWith("structure-")||kind.equals("structure-activation-review")||timedStructureExit(kind))
+                    ||profile==Profile.STRUCTURE&&(!kind.startsWith("structure-")||kind.equals("structure-activation-review"))
                     ||profile==Profile.STRUCTURE&&kind.equals("structure-place")&&inventory==null
                     ||profile==Profile.INTENTIONAL_LOSS&&(!kind.equals("item-loss")||!intentional(original)))throw new IllegalArgumentException("Recipe/profile mismatch");
             if(profile==Profile.INVENTORY){
@@ -44,6 +51,12 @@ public final class RecoveryEnvelope {
     public static Document structure(String kind,Anchor anchor,Document original,Inventory source) {
         Profile profile=timedStructureExit(kind)||kind.equals("structure-activation-review")||kind.equals("structure-place")&&source==null?Profile.ADMIN:Profile.STRUCTURE;
         return encode(new Context(kind,anchor,profile,source,original));
+    }
+    public static Document timedStructure(String kind,Anchor anchor,Document original,long duration){
+        return encode(new Context(kind,anchor,Profile.STRUCTURE,null,original,duration));
+    }
+    public static Document timedAdministrative(String kind,Anchor anchor,Document original,long duration){
+        return encode(new Context(kind,anchor,Profile.ADMIN,null,original,duration));
     }
     public static Document administrative(String kind,Anchor anchor,Document original){return encode(new Context(kind,anchor,Profile.ADMIN,null,original));}
     /** Original caller evidence remains available for immutable receipt matching. */
@@ -69,6 +82,11 @@ public final class RecoveryEnvelope {
             case "structure-place"->a.form()==Form.PORTABLE&&b.form()==Form.COMPACT&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter();
             case "structure-expand"->a.form()==Form.COMPACT&&b.form()==Form.EXPANDED&&a.generation()==b.generation()&&nextRevision&&a.expandAfter()==b.expandAfter();
             case "structure-compact"->a.form()==Form.EXPANDED&&b.form()==Form.COMPACT&&a.generation()==b.generation()&&nextRevision;
+            case STRUCTURE_EXIT_COMPACT,STRUCTURE_DEFEAT->a.form()==Form.EXPANDED&&b.form()==Form.COMPACT
+                    &&Objects.equals(a.position(),b.position())&&a.generation()==b.generation()&&nextRevision
+                    &&a.expandAfter()==b.expandAfter()&&(!STRUCTURE_DEFEAT.equals(c.kind())||a.hp()==0);
+            case STRUCTURE_EXIT_RECOVER->a.form()==Form.EXPANDED&&b.form()==Form.GROUND&&nextGeneration&&nextRevision
+                    &&a.expandAfter()==b.expandAfter()&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             case "structure-break"->a.form()==Form.COMPACT&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter()&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             case "structure-admin_recover"->a.form()==Form.EXPANDED&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             default->false;
@@ -91,21 +109,26 @@ public final class RecoveryEnvelope {
     public static Document encode(Context c) {
         try {
             var bytes=new ByteArrayOutputStream();var out=new DataOutputStream(bytes);
-            out.writeInt(0x494C5231);text(out,c.kind());uuid(out,c.anchor().world());out.writeInt(c.anchor().chunkX());out.writeInt(c.anchor().chunkZ());out.writeInt(c.profile().ordinal());
+            boolean timed=c.exitCooldownMillis()!=null;
+            out.writeInt(timed?0x494C5232:0x494C5231);text(out,c.kind());uuid(out,c.anchor().world());out.writeInt(c.anchor().chunkX());out.writeInt(c.anchor().chunkZ());out.writeInt(c.profile().ordinal());
             out.writeBoolean(c.inventory()!=null);
             if(c.inventory()!=null){Inventory s=c.inventory();uuid(out,s.actor());out.writeInt(s.slot());byte[] b=s.bytes().copy();out.writeInt(b.length);out.write(b);out.writeBoolean(s.deliveryOperation()!=null);if(s.deliveryOperation()!=null)uuid(out,s.deliveryOperation());}
-            text(out,c.original().content());out.flush();return new Document(2,Base64.getEncoder().encodeToString(bytes.toByteArray()));
+            if(timed)out.writeLong(c.exitCooldownMillis());
+            text(out,c.original().content());out.flush();return new Document(timed?3:2,Base64.getEncoder().encodeToString(bytes.toByteArray()));
         }catch(IOException impossible){throw new UncheckedIOException(impossible);}
     }
     public static Optional<Context> decode(Document d) {
-        if(d.version()!=2)return Optional.empty();
+        if(d.version()!=2&&d.version()!=3)return Optional.empty();
+        boolean timed=d.version()==3;
         try {
             byte[] decoded=Base64.getDecoder().decode(d.content());if(decoded.length>1_048_576)return Optional.empty();
-            var in=new DataInputStream(new ByteArrayInputStream(decoded));if(in.readInt()!=0x494C5231)return Optional.empty();
+            var in=new DataInputStream(new ByteArrayInputStream(decoded));if(in.readInt()!=(timed?0x494C5232:0x494C5231))return Optional.empty();
             String kind=text(in);Anchor anchor=new Anchor(uuid(in),in.readInt(),in.readInt());int p=in.readInt();if(p<0||p>=Profile.values().length)return Optional.empty();
             Inventory source=null;
             if(in.readBoolean()){UUID actor=uuid(in);int slot=in.readInt(),n=in.readInt();if(n<1||n>1_048_576||n>in.available())return Optional.empty();byte[] b=in.readNBytes(n);source=new Inventory(actor,slot,new ResourceBytes(b),in.readBoolean()?uuid(in):null);}
-            Context c=new Context(kind,anchor,Profile.values()[p],source,new Document(1,text(in)));if(in.available()!=0)return Optional.empty();return Optional.of(c);
+            Long duration=timed?in.readLong():null;
+            Context c=new Context(kind,anchor,Profile.values()[p],source,new Document(1,text(in)),duration);
+            if(in.available()!=0)return Optional.empty();return Optional.of(c);
         }catch(IOException|RuntimeException malformed){return Optional.empty();}
     }
     private static void uuid(DataOutputStream out,UUID id)throws IOException{out.writeLong(id.getMostSignificantBits());out.writeLong(id.getLeastSignificantBits());}

@@ -51,8 +51,11 @@ otherwise eligible and prevented by the timer.
 Defeat, manual compaction and expanded administrative recovery start a fresh per-tower
 cooldown at the verified exit. The SQL worker samples wall time after writer admission
 and stores the deadline with the final tower and journal receipt in one transaction.
-Pending manifests keep the prior deadline and timed exits require a reviewed disposition
-if interrupted before completion. A completed receipt preserves its stamped deadline.
+Pending manifests keep the prior deadline and the timed recipe records the duration
+selected when the exit was admitted. Trusted reconciliation of exact, independently
+matched BEFORE saves restores the original deadline. A verified AFTER recovery starts
+the full admitted cooldown at its recovery commit because the historical exit time
+is unproved. A completed receipt preserves its stamped deadline.
 A zero duration writes an immediate eligibility timestamp of zero. Failed transitions
 preserve the previous timestamp. Successful expansion, compact breaking, placement, and
 item transfer preserve the stored expansion timestamp and the separate repair lock.

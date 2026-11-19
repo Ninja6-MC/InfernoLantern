@@ -79,7 +79,10 @@ class PaperStructureEffectsTest {
         var restoration=new java.util.concurrent.atomic.AtomicBoolean();
         var effects=new PaperStructureEffects((r,state,restoring)->!restoring||restoration.get(),compact,false);
         var prepared=effects.prepare(request,source);assertNotNull(prepared);
-        var after=new State(new Tower(towerId,"fixture",0,100,Form.COMPACT,2,2,null,base,true,false,1200,44),null,prepared.manifest());
+        var recipe=com.ninja6.infernolantern.recovery.RecoveryEnvelope.decode(prepared.evidence()).orElseThrow();
+        assertEquals(com.ninja6.infernolantern.recovery.RecoveryEnvelope.Profile.STRUCTURE,recipe.profile());
+        assertEquals(200L,recipe.exitCooldownMillis().longValue());
+        var after=new State(new Tower(towerId,"fixture",0,100,Form.COMPACT,2,2,null,base,true,false,0,44),null,prepared.manifest());
         var intent=new Intent(request.operation(),towerId,2,2,1,"structure-defeat",after,prepared.evidence());
         var claim=new Claim(request,new Operation(intent,zero,Phase.INTENT,0,"Fixture"),prepared);
         assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));assertEquals("minecraft:air",blocks.get(light));

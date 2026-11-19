@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.catalog;
 
 import com.ninja6.infernolantern.health.TargetHealth;
 import com.ninja6.infernolantern.health.TowerHealth;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.repository.*;
 import com.ninja6.infernolantern.structure.StructureLifecycle;
 import org.junit.jupiter.api.*;
@@ -169,6 +170,21 @@ class TowerHealthTest {
         assertEquals(0, replay.applied);
         assertEquals(receipt, get(repository.operation(op)).orElseThrow());
         assertEquals(compact, read(before.state().tower().id()));
+    }
+
+    @Test void timedExitAdmissionRejectsADurationOutsideTheManagedDefinition() throws Exception {
+        var row=placed(repository,Form.EXPANDED);
+        var tower=row.state().tower();
+        var compact=new Tower(tower.id(),tower.variantId(),tower.hp(),tower.maximumHp(),Form.COMPACT,tower.generation(),
+                tower.deploymentRevision()+1,null,tower.position(),tower.light(),tower.defence(),tower.expandAfter(),tower.repairAfter());
+        var after=new State(compact,null,List.of(row.state().components().getFirst()));
+        var anchor=new com.ninja6.infernolantern.scheduling.WorldScheduler.Anchor(WORLD,0,0);
+        var recipe=RecoveryEnvelope.timedStructure(STRUCTURE_EXIT_COMPACT,anchor,new Document(1,"Fixture"),1);
+        var intent=new Intent(UUID.randomUUID(),tower.id(),row.rowVersion(),tower.generation(),tower.deploymentRevision(),
+                STRUCTURE_EXIT_COMPACT,after,recipe);
+        assertThrows(ExecutionException.class,()->get(repository.beginStructureIntent(intent,settings.revision())));
+        assertTrue(get(repository.operation(intent.id())).isEmpty());
+        assertEquals(row,read(tower.id()));
     }
 
     @Test void genericCompletionCannotPublishADeadlineFromPendingExitEvidence() throws Exception {

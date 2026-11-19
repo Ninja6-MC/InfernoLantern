@@ -94,7 +94,7 @@ public final class StructureLifecycle implements AutoCloseable {
                         var context=RecoveryEnvelope.decode(prepared.evidence()).filter(c->c.kind().equals(kind(request))&&c.anchor().equals(request.anchor()));
                         Document original=RecoveryEnvelope.original(prepared.evidence());
                         Document payload=new Document(1,fingerprint(request)+"\n"+original.content());
-                        Document recovery=context.isPresent()?RecoveryEnvelope.structure(kind(request),request.anchor(),payload,context.get().inventory()):RecoveryEnvelope.administrative(kind(request),request.anchor(),payload);
+                        Document recovery=recoveryEvidence(request,payload,context);
                         intent=new Intent(request.operation(),request.tower(),before.rowVersion(),request.generation(),request.revision(),kind(request),after,recovery);
                     } catch(RuntimeException invalid){return discard(request,effects,prepared);}
                     return repository.beginStructureIntent(intent,request.policy().revision()).handle((operation,failure)->{
@@ -108,6 +108,18 @@ public final class StructureLifecycle implements AutoCloseable {
             });
         }).exceptionally(failure->new Result(Outcome.QUARANTINED,request.operation()))
                 .whenComplete((result,failure)->inFlight.remove(request.operation()));
+    }
+    private static Document recoveryEvidence(Request request,Document payload,Optional<RecoveryEnvelope.Context> prepared){
+        String kind=kind(request);
+        if(timedStructureExit(kind)){
+            long duration=request.policy().cooldownMillis();
+            boolean matches=prepared.filter(context->context.profile()==RecoveryEnvelope.Profile.STRUCTURE
+                    &&Objects.equals(context.exitCooldownMillis(),duration)).isPresent();
+            return matches?RecoveryEnvelope.timedStructure(kind,request.anchor(),payload,duration)
+                    :RecoveryEnvelope.timedAdministrative(kind,request.anchor(),payload,duration);
+        }
+        return prepared.isPresent()?RecoveryEnvelope.structure(kind,request.anchor(),payload,prepared.get().inventory())
+                :RecoveryEnvelope.administrative(kind,request.anchor(),payload);
     }
     private CompletableFuture<Boolean> variantReady(Request r,String variant){
         return repository.variant(variant).thenApply(found->found.isPresent()&&((r.action()!=Action.PLACE&&r.action()!=Action.EXPAND)||found.get().status()==VariantStatus.ACTIVE));
@@ -143,7 +155,7 @@ public final class StructureLifecycle implements AutoCloseable {
         String evidence="Verified structure effects, not an atomic Minecraft save";
         Policy policy=claim.request().policy();
         if(timedStructureExit(applied.intent().kind())){
-            completion=repository.completeStructureExit(id,applied.rowVersion(),policy.revision(),evidence,permit,policy.cooldownMillis(),exitClock);
+            completion=repository.completeStructureExit(id,applied.rowVersion(),policy.revision(),evidence,permit,exitClock);
         }else{
             completion=repository.completeStructureOperation(id,applied.rowVersion(),policy.revision(),evidence,permit);
         }

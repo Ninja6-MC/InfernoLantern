@@ -14,6 +14,7 @@ import java.util.*;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
 import static com.ninja6.infernolantern.structure.StructureLifecycle.*;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.timedStructureExit;
 
 /** Reusable Paper owner-thread effects; not registered as a native placement/menu handler. */
 public final class PaperStructureEffects implements WorldEffects {
@@ -187,7 +188,7 @@ public final class PaperStructureEffects implements WorldEffects {
         if(physicalEvidence.getBytes(java.nio.charset.StandardCharsets.UTF_8).length+(long)visualItems.size()*256+256>com.ninja6.infernolantern.repository.RepositoryRecords.MAX_PAYLOAD)return null;
         RecoveryEnvelope.Inventory inventory=source==null?null:new RecoveryEnvelope.Inventory(r.actor(),sourceSlot,new ResourceBytes(source),null);
         String anticipated=physicalEvidence+";stagedVisuals="+Collections.nCopies(visualItems.size(),new UUID(0,0))+";stagedGround="+(dropping?new UUID(0,0):"none");
-        try{RecoveryEnvelope.structure(kind(r),r.anchor(),new Document(1,anticipated),inventory);}catch(IllegalArgumentException oversized){return null;}
+        try{recoveryEvidence(r,anticipated,inventory);}catch(IllegalArgumentException oversized){return null;}
         if(!dropping){
             int i=0;
             for(Visual visual:layout.visuals()){
@@ -216,7 +217,13 @@ public final class PaperStructureEffects implements WorldEffects {
             ground=new Ground(stagedDrop.getUniqueId(),base.world(),base.x()>>4,base.z()>>4,r.operation(),"active");
         }
         String evidence=physicalEvidence+";stagedVisuals="+stagedVisuals.stream().map(Entity::getUniqueId).toList()+";stagedGround="+(ground==null?"none":ground.entity());
-        preparation=new Preparation(manifest,ground,RecoveryEnvelope.structure(kind(r),r.anchor(),new Document(1,evidence),inventory));return preparation;
+        preparation=new Preparation(manifest,ground,recoveryEvidence(r,evidence,inventory));return preparation;
+    }
+    private static Document recoveryEvidence(Request request,String evidence,RecoveryEnvelope.Inventory inventory){
+        String kind=kind(request);
+        var payload=new Document(1,evidence);
+        return timedStructureExit(kind)?RecoveryEnvelope.timedStructure(kind,request.anchor(),payload,request.policy().cooldownMillis())
+                :RecoveryEnvelope.structure(kind,request.anchor(),payload,inventory);
     }
     @Override public CommitPermit commitPermit(){owner();return access.commitPermit();}
     @Override public boolean validate(Claim claim){owner();return claim.preparation()==preparation&&session(claim.request())&&access.allowed(request,before.state());}
