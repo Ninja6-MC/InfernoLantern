@@ -3,6 +3,7 @@ package com.ninja6.infernolantern.structure;
 import com.ninja6.infernolantern.repository.*;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
+import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BooleanSupplier;
@@ -224,7 +225,13 @@ public final class StructureLifecycle implements AutoCloseable {
         };
     }
     public static boolean hasExpansionHealth(Tower tower,double percent){
-        return tower.hp()>0&&tower.hp()>=tower.maximumHp()*(percent/100);
+        return expansionHealthShortfall(tower,percent).signum()==0;
+    }
+    /** Same decimal threshold for the displayed shortfall and the expansion gate. */
+    public static BigDecimal expansionHealthShortfall(Tower tower,double percent){
+        if(!Double.isFinite(percent)||percent<=0||percent>100)throw new IllegalArgumentException("Expansion health percent");
+        return BigDecimal.valueOf(tower.maximumHp()).multiply(BigDecimal.valueOf(percent)).movePointLeft(2)
+                .subtract(BigDecimal.valueOf(tower.hp())).max(BigDecimal.ZERO);
     }
     private static State after(Request r,State before,Preparation prepared){
         Tower t=before.tower();Form form=switch(r.action()){case PLACE,COMPACT,DEFEAT->Form.COMPACT;case EXPAND->Form.EXPANDED;case BREAK,ADMIN_RECOVER->Form.GROUND;};

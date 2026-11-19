@@ -46,7 +46,13 @@ class ResourceRepairTest {
     private Path databasePath() { return temporary.resolve("repair.db"); }
 
     private static Map<String,Object> repairConfig(double rate, long cooling) {
+        return repairConfig(rate, cooling, 100, 50);
+    }
+
+    private static Map<String,Object> repairConfig(double rate, long cooling, double maximumHp, double expansionPercent) {
         var variant = variant();
+        variant.put("maximum-hp", maximumHp);
+        variant.put("expansion-hp-percent", expansionPercent);
         variant.put("repair", Map.of("resources", Map.of(RESOURCE, rate), "cooling-ms", cooling));
         return config(Map.of("test", variant));
     }
@@ -86,6 +92,70 @@ class ResourceRepairTest {
         assertTrue(last.partialFinalItem());
         assertTrue(RepairQuote.calculate(100, 100, 10, 64).isEmpty());
         assertTrue(RepairQuote.calculate(90, 100, Double.MIN_VALUE, 64).isEmpty());
+    }
+
+    @Test void fractionalDamageRequiresOnlyOneItemForTheDurableMaximum() throws Exception {
+        settings = get(catalog.reload(repairConfig(0.1, 0, 0.3, 50))).snapshot();
+        var deployed = placed(repository, Form.EXPANDED, 4, 0.3, 0.3);
+        var structures = new StructureLifecycle(repository, owner, time::get);
+        try {
+            var health = new TowerHealth(repository, catalog, owner, structures, time::get);
+            var result = owner.drain(health.damage(settings, deployed, new TowerHealth.Damage(0.1, 0),
+                    row -> new TowerHealth.Admission(null), UUID.randomUUID(), row -> fail("Deployed health stays positive")));
+            var damaged = result.settled();
+            assertEquals(0.3 - 0.1, damaged.state().tower().hp());
+
+            var inventory = new Inventory(3);
+            var attempt = UUID.randomUUID();
+            var excess = new RepairPayment(inventory.actor, inventory.session, 0, RESOURCE, 2,
+                    inventory.bytes(3), inventory.bytes(1), inventory.bytes(2));
+            assertThrows(ExecutionException.class, () -> get(repository.beginRepair(attempt, damaged,
+                    settings.revision(), excess, time.get(), new CommitPermit())));
+            assertTrue(get(repository.escrow(attempt)).isEmpty());
+
+            var quote = quote(damaged, inventory);
+            assertEquals(1, quote.details().items());
+            assertEquals(0.3, quote.details().resultingHp());
+            assertEquals(COMMITTED, owner.drain(quote.confirm()));
+            assertEquals(2, inventory.quantity);
+            assertEquals(0.3, read(damaged).state().tower().hp());
+        } finally {
+            structures.close();
+        }
+    }
+
+    @Test void decimalExpansionPreviewAndActualGateAgreeAtTheConfiguredBoundary() throws Exception {
+        settings = get(catalog.reload(repairConfig(0.1, 0, 100, 0.9))).snapshot();
+        var exact = placed(repository, Form.COMPACT, 4, 0.9, 100);
+        var below = placed(repository, Form.COMPACT, 5, Math.nextDown(0.9), 100);
+        var exactQuote = quote(exact, new Inventory(1));
+        var belowQuote = quote(below, new Inventory(1));
+        assertEquals(0, exactQuote.details().hpToExpansion().signum());
+        assertTrue(StructureLifecycle.hasExpansionHealth(exact.state().tower(), 0.9));
+        assertTrue(belowQuote.details().hpToExpansion().signum() > 0);
+        assertFalse(StructureLifecycle.hasExpansionHealth(below.state().tower(), 0.9));
+        var zero = placed(repository, Form.COMPACT, 6, 0, 100).state().tower();
+        assertFalse(StructureLifecycle.hasExpansionHealth(zero, Double.MIN_VALUE));
+        exactQuote.cancel();
+        belowQuote.cancel();
+    }
+
+    @Test void maximalConfiguredCoolingCannotRejectPositiveDamageOrAttackCooling() throws Exception {
+        settings = get(catalog.reload(repairConfig(10, Long.MAX_VALUE))).snapshot();
+        var hit = placed(repository, Form.EXPANDED, 4);
+        var attacking = placed(repository, Form.EXPANDED, 5);
+        var structures = new StructureLifecycle(repository, owner, time::get);
+        try {
+            var health = new TowerHealth(repository, catalog, owner, structures, time::get);
+            var result = owner.drain(health.damage(settings, hit, new TowerHealth.Damage(10, 0),
+                    row -> new TowerHealth.Admission(null), UUID.randomUUID(), row -> fail("Deployed health stays positive")));
+            assertEquals(65, result.settled().state().tower().hp());
+            assertEquals(Long.MAX_VALUE, read(hit).state().tower().repairAfter());
+            assertEquals(Long.MAX_VALUE, get(repository.recordRepairCooling(
+                    settings.revision(), attacking, time.get(), null)).state().tower().repairAfter());
+        } finally {
+            structures.close();
+        }
     }
 
     @Test void confirmedFinalPartialItemSettlesExactDebitAndDurableHpOnce() throws Exception {

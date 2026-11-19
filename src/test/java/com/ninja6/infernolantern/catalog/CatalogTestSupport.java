@@ -25,11 +25,13 @@ final class CatalogTestSupport {
     }
     static Tower portable(UUID id){return new Tower(id,"test",75,100,Form.PORTABLE,1,0,null,null,true,true,170,230);}
     static TowerSnapshot placed(SqliteRepository repository,Form form)throws Exception{return placed(repository,form,4);}
-    static TowerSnapshot placed(SqliteRepository repository,Form form,int x)throws Exception{
-        UUID id=UUID.randomUUID(),operation=UUID.randomUUID();get(repository.createTower(portable(id)));
+    static TowerSnapshot placed(SqliteRepository repository,Form form,int x)throws Exception{return placed(repository,form,x,75,100);}
+    static TowerSnapshot placed(SqliteRepository repository,Form form,int x,double hp,double maximumHp)throws Exception{
+        UUID id=UUID.randomUUID(),operation=UUID.randomUUID();
+        get(repository.createTower(new Tower(id,"test",hp,maximumHp,Form.PORTABLE,1,0,null,null,true,true,170,230)));
         var components=new ArrayList<Component>();components.add(new Component("base",ComponentKind.BLOCK,WORLD,x,70,4,"minecraft:air","minecraft:barrier[waterlogged=false]",null,null));
         if(form==Form.EXPANDED){components.add(new Component("shaft",ComponentKind.BLOCK,WORLD,x,71,4,"minecraft:air","minecraft:barrier[waterlogged=false]",null,null));components.add(new Component("light",ComponentKind.BLOCK,WORLD,x,72,4,"minecraft:air","minecraft:air",null,null));}
-        Tower tower=new Tower(id,"test",75,100,form,2,1,form==Form.EXPANDED?ACTOR:null,new Position(WORLD,x,70,4,"north"),true,true,170,230);
+        Tower tower=new Tower(id,"test",hp,maximumHp,form,2,1,form==Form.EXPANDED?ACTOR:null,new Position(WORLD,x,70,4,"north"),true,true,170,230);
         Operation op=get(repository.beginCatalogIntent(new Intent(operation,id,0,1,0,"synthetic-placement",new State(tower,null,components),new Document(1,"synthetic source/manifest proof")),get(repository.catalog()).revision()));
         op=get(repository.advanceOperation(operation,op.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"synthetic owned effects"));get(repository.completeOperation(operation,op.rowVersion(),"synthetic verified result"));return get(repository.tower(id)).orElseThrow();
     }

@@ -476,7 +476,7 @@ public final class SqliteRepository {
             require(loadCatalog().revision()==catalogRevision,"Catalog changed before attack cooling");
             require(expected.equals(ownedTower(t.id(),expected.rowVersion(),null))&&t.form()==Form.EXPANDED&&t.hp()>0,
                     "Stale deployed attack");
-            long until=Math.max(t.repairAfter(),Math.addExact(now,activeRepairPolicy(t).coolingMillis()));
+            long until=Math.max(t.repairAfter(),repairDeadline(now,activeRepairPolicy(t).coolingMillis()));
             if(until==t.repairAfter())return expected;
             Tower changed=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),
                     t.controller(),t.position(),t.light(),t.defence(),t.expandAfter(),until);

@@ -6,6 +6,7 @@ import com.ninja6.infernolantern.repository.RepairPayment;
 import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
+import com.ninja6.infernolantern.structure.StructureLifecycle;
 
 import java.math.BigDecimal;
 import java.util.Map;
@@ -132,9 +133,7 @@ public final class RepairService {
             if (payment == null || !authorization.owns(payment) || payment.items() != quote.items() || !payment.resource().equals(resource)
                     || !inventory.sourceMatches(payment) || inventory.slotPermit() == null
                     || !catalog.isPublished(settings)) return Optional.empty();
-            BigDecimal remaining = BigDecimal.valueOf(tower.maximumHp())
-                    .multiply(BigDecimal.valueOf(definition.expansionPercent())).movePointLeft(2)
-                    .subtract(BigDecimal.valueOf(tower.hp())).max(BigDecimal.ZERO);
+            BigDecimal remaining = StructureLifecycle.expansionHealthShortfall(tower, definition.expansionPercent());
             var details = new Details(resource, quote.items(), tower.hp(), tower.maximumHp(), quote.resultingHp(),
                     quote.hpGain(), quote.partialFinalItem(), definition.expansionPercent(), remaining, rates);
             return Optional.of(new Preview(settings, observed, inventory, access, payment, details));

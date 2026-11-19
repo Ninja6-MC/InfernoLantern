@@ -23,9 +23,11 @@ One quote addresses an exact tower row and deployment, catalog revision,
 viewer connection, source slot, and serialized stack. The caller supplies the
 selected number of whole items. The quote carries current and maximum HP,
 expansion threshold and shortfall, configured rates, and the exact cost and
-health gain. Decimal arithmetic caps the cost to the useful whole-item count
-and caps the resulting health at the authoritative maximum. A quote
-distinguishes a partial final item so the caller can show the actual benefit
+health gain. Decimal arithmetic caps the resulting health at the
+authoritative maximum. If fewer items reach the same representable stored HP,
+the quote charges only that smaller count. The expansion shortfall uses the
+same decimal threshold as expansion eligibility. A quote distinguishes a
+partial final item so the caller can show the actual benefit
 before confirmation. Explicit confirmation consumes the quoted count once.
 Full health, no representable gain, incompatible resource, stale revisions or
 a different source stack cannot charge a player. An expanded tower at zero HP
@@ -72,7 +74,9 @@ The native authorizer must report idle combat and provide a revocable idle
 permit. A valid attack attempt invalidates that permit as soon as the
 inactivity observation is stale, including between attack ticks. The
 authoritative cooling update uses the variant's duration and keeps the later
-of the saved expiry and the current hit's expiry. Once repair owns the tower,
+of the saved expiry and the current hit's expiry. A deadline beyond the
+representable range saturates at that range's endpoint, so an authorized hit
+still settles. Once repair owns the tower,
 damage and attack-cooling changes cannot mutate that row until settlement.
 Native callers must deny a conflicting damage effect before admission or
 defer its exact authorized receipt until the same deployment can be

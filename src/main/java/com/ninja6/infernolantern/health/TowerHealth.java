@@ -73,7 +73,7 @@ public final class TowerHealth {
                 if (admission == null || !catalog.isPublished(settings)) return null;
                 var repair = entry.definition().repair();
                 long cooling = repair == null ? damage.repairCoolingMillis() : repair.coolingMillis();
-                return new AuthorizedDamage(admission, Math.addExact(now(), cooling));
+                return new AuthorizedDamage(admission, repairDeadline(now(), cooling));
             }).thenCompose(authorized -> {
                 if (authorized == null) return denied();
                 return repository.damageTower(settings.revision(), tower.id(), observed.rowVersion(), tower.generation(),
