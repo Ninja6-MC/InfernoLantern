@@ -67,7 +67,7 @@ requires an uncancelled event and a still-zero native result. The exact event ca
 one melee observation. A bounded deployment queue serializes accepted observations.
 An unrelated target replacement closes the native lease to new hits. A hit already
 accepted against the same deployment can settle after fresh protection checks. Deployment
-changes, unloads and permission denial revoke pending damage. A damaged tower uses
+changes, source-zombie removal or unload, and permission denial revoke pending damage. A damaged tower uses
 the existing authoritative health, repair cooling and defeat compaction path.
 Provider-native modifications after the proxy shield and external direct entity/health
 edits require independent compatibility tests.

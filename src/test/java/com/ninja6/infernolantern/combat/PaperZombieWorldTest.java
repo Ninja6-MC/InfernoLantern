@@ -97,7 +97,7 @@ class PaperZombieWorldTest {
                 (object, method, args) -> handler.apply(method.getName(), args)));
     }
 
-    private static final class DormantAccess implements PaperZombieWorld.Access {
+    static final class DormantAccess implements PaperZombieWorld.Access {
         @Override public Conditions inspect(TowerSnapshot tower) { throw new AssertionError(); }
         @Override public boolean allows(Action action, TowerSnapshot tower, Villager proxy, Zombie target) { throw new AssertionError(); }
         @Override public boolean proxyFits(TowerSnapshot tower, Location origin) { throw new AssertionError(); }

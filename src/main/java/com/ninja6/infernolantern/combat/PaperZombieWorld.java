@@ -357,8 +357,13 @@ public final class PaperZombieWorld implements ZombieCombat.WorldPort, Listener,
         if (combat == null) return;
         for (Entity entity : event.getEntities()) {
             if (managed(entity)) combat.proxyGone(entity.getUniqueId());
-            else if (ordinary(entity)) combat.zombieGone(entity.getUniqueId());
+            else if (entity instanceof Zombie) combat.zombieGone(entity.getUniqueId());
         }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void removed(EntityRemoveEvent event) {
+        if (combat != null && event.getEntity() instanceof Zombie) combat.zombieGone(event.getEntity().getUniqueId());
     }
 
     @EventHandler

@@ -6,6 +6,7 @@ import com.ninja6.infernolantern.catalog.CatalogService;
 import com.ninja6.infernolantern.health.TowerHealth;
 import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.SqliteRepository;
+import com.ninja6.infernolantern.repository.SqliteTestConnections;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import com.ninja6.infernolantern.structure.StructureLifecycle;
 import org.bukkit.Bukkit;
@@ -15,6 +16,7 @@ import org.bukkit.World;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Villager;
 import org.bukkit.entity.Zombie;
+import org.bukkit.event.entity.EntityRemoveEvent;
 import org.bukkit.event.entity.EntityTargetEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.junit.jupiter.api.*;
@@ -228,6 +230,43 @@ class ZombieCombatTest {
         assertEquals(75, current().state().tower().hp());
         assertEquals(EXTERNAL, world.targets.get(FIRST));
         assertTrue(world.removed.contains(proxy));
+    }
+
+    @Test void exactZombieRemovalRevokesDetachedMeleeAfterOwnerAuthorization() throws Exception {
+        start(Mode.RETALIATION, 1_000);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 3.5));
+        assertTrue(combat.melee(combat.captureMelee(proxy, FIRST), 2));
+        combat.targetChanged(FIRST, null);
+        world.targets.put(FIRST, EXTERNAL);
+        var adapter = new PaperZombieWorld(new PaperZombieWorldTest.DormantAccess());
+        adapter.bind(combat);
+
+        combat.tick(2);
+        owner.waitForWork(); // The authoritative row read finished before owner damage authorization.
+        try (var writer = SqliteTestConnections.open(directory.resolve("combat.db"))) {
+            writer.setAutoCommit(false);
+            owner.next(); // Authorize detached melee and queue the SQL write behind this writer.
+            adapter.removed(zombieRemoval(SECOND));
+            assertFalse(world.removed.contains(proxy));
+            adapter.removed(zombieRemoval(FIRST));
+            assertTrue(world.removed.contains(proxy));
+            writer.rollback();
+        }
+        owner.next();
+        assertEquals(75, current().state().tower().hp());
+        assertEquals(EXTERNAL, world.targets.get(FIRST));
+        assertNotNull(combat.idle(current()));
+    }
+
+    private static EntityRemoveEvent zombieRemoval(UUID id) {
+        var zombie = PaperZombieWorldTest.fake(Zombie.class, (name, args) -> {
+            assertEquals("getUniqueId", name);
+            return id;
+        });
+        return new EntityRemoveEvent(zombie, EntityRemoveEvent.Cause.UNLOAD);
     }
 
     @Test void acquiredLeaseRevokesIdlePermitAndQueuedMeleeCannotCrossUnload() throws Exception {

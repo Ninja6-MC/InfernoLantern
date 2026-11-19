@@ -75,6 +75,7 @@ public final class ZombieCombat implements AutoCloseable {
     private final int perTick, candidates, concurrency;
     private final LinkedHashMap<UUID, Deployment> deployments = new LinkedHashMap<>();
     private final Map<UUID, Lease> zombies = new HashMap<>();
+    private final Map<UUID, Set<Lease>> detachedMeleeByZombie = new HashMap<>();
     private final Map<UUID, Deployment> proxies = new HashMap<>();
     private final Set<UUID> unsettledCooling = new HashSet<>();
     private boolean closed;
@@ -347,6 +348,7 @@ public final class ZombieCombat implements AutoCloseable {
                 row -> acceptedDamageAllowed(lease) ? new TowerHealth.Admission(lease.permit) : null,
                 UUID.randomUUID(), world.defeatEffects()), (result, failure) -> {
                     current.activeMelee = null;
+                    if (lease.detached && current.melee.isEmpty()) revokeMelee(lease);
                     if (!registered(current)) return;
                     if (failure != null || result.settled().state().tower().hp() == 0
                             || current.lease == null && current.melee.isEmpty()) {
@@ -444,6 +446,8 @@ public final class ZombieCombat implements AutoCloseable {
         requireOwner.run();
         Lease lease = zombies.get(zombie);
         if (lease != null) suspend(lease.deployment);
+        Set<Lease> detached = detachedMeleeByZombie.remove(zombie);
+        if (detached != null) detached.forEach(source -> suspend(source.deployment));
     }
 
     public void proxyGone(UUID proxy) {
@@ -515,15 +519,27 @@ public final class ZombieCombat implements AutoCloseable {
         if (old == null) return null;
         deployment.lease = null;
         zombies.remove(old.zombie, old);
-        if (!old.detached || !pendingMelee(deployment)) old.permit.revoke();
+        if (old.detached && pendingMelee(deployment)) {
+            detachedMeleeByZombie.computeIfAbsent(old.zombie, key -> new HashSet<>()).add(old);
+        } else {
+            revokeMelee(old);
+        }
         if (timeout) deployment.timedOut = old.zombie;
         deployment.idle = new CommitPermit();
         return old;
     }
 
+    private void revokeMelee(Lease source) {
+        source.permit.revoke();
+        Set<Lease> detached = detachedMeleeByZombie.get(source.zombie);
+        if (detached != null && detached.remove(source) && detached.isEmpty()) {
+            detachedMeleeByZombie.remove(source.zombie);
+        }
+    }
+
     private void suspend(Deployment deployment) {
-        if (deployment.activeMelee != null) deployment.activeMelee.source().permit.revoke();
-        deployment.melee.forEach(hit -> hit.source().permit.revoke());
+        if (deployment.activeMelee != null) revokeMelee(deployment.activeMelee.source());
+        deployment.melee.forEach(hit -> revokeMelee(hit.source()));
         deployment.melee.clear();
         try {
             release(deployment, false);
