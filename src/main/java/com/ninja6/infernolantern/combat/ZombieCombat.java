@@ -1,5 +1,6 @@
 package com.ninja6.infernolantern.combat;
 
+import com.ninja6.infernolantern.catalog.CatalogConfig.HeadFluid;
 import com.ninja6.infernolantern.catalog.CatalogConfig.WorldRef;
 import com.ninja6.infernolantern.catalog.CatalogService;
 import com.ninja6.infernolantern.health.TowerHealth;
@@ -34,10 +35,11 @@ public final class ZombieCombat implements AutoCloseable {
         }
     }
 
-    public record Conditions(WorldRef world, Controller controller, boolean fluid, boolean integrity) {
+    public record Conditions(WorldRef world, Controller controller, HeadFluid fluid, boolean integrity) {
         public Conditions {
             Objects.requireNonNull(world);
             Objects.requireNonNull(controller);
+            Objects.requireNonNull(fluid);
         }
     }
 
@@ -302,7 +304,8 @@ public final class ZombieCombat implements AutoCloseable {
         Lease lease = new Lease(current, zombie, tick);
         current.lease = lease;
         zombies.put(zombie, lease);
-        if (settings.mode() == Mode.PRIORITY && world.allows(Action.TARGET, current.row, current.proxy, zombie)) {
+        if (settings.mode() == Mode.PRIORITY && world.allows(Action.TARGET, current.row, current.proxy, zombie)
+                && leaseCurrent(lease) && current(current) && effective(current)) {
             world.prioritize(zombie, current.proxy);
         }
         return lease;
@@ -382,7 +385,7 @@ public final class ZombieCombat implements AutoCloseable {
                 && world.allows(Action.MELEE, deployment.row, source.proxy, source.zombie)
                 && acceptedSourceCurrent(source)
                 && world.allows(Action.TARGET, deployment.row, source.proxy, source.zombie)
-                && acceptedSourceCurrent(source);
+                && acceptedSourceCurrent(source) && effective(deployment);
     }
 
     private boolean acceptedSourceCurrent(Lease source) {
@@ -513,7 +516,7 @@ public final class ZombieCombat implements AutoCloseable {
         Deployment deployment = lease.deployment;
         return leaseCurrent(lease) && current(deployment) && effective(deployment) && reachable(lease)
                 && world.allows(action, deployment.row, deployment.proxy, lease.zombie)
-                && leaseCurrent(lease) && current(deployment);
+                && leaseCurrent(lease) && current(deployment) && effective(deployment);
     }
 
     private boolean reachable(Lease lease) {
@@ -532,8 +535,10 @@ public final class ZombieCombat implements AutoCloseable {
         Conditions conditions = world.inspect(deployment.row);
         if (conditions == null) return false;
         boolean eligible = conditions.controller() == Controller.ELIGIBLE || conditions.controller() == Controller.OFFLINE;
-        return CatalogService.effective(deployment.catalog, deployment.row, conditions.world(),
-                new CatalogService.Conditions(eligible, conditions.fluid(), false, true, conditions.integrity())).defence();
+        var entry = deployment.catalog.entries().get(deployment.tower.variantId());
+        return entry != null && CatalogService.effective(deployment.catalog, deployment.row, conditions.world(),
+                new CatalogService.Conditions(eligible, entry.definition().fluids().allowsDefence(conditions.fluid()),
+                        false, true, conditions.integrity())).defence();
     }
 
     private boolean registered(Deployment deployment) {

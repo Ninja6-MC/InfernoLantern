@@ -46,6 +46,49 @@ class CatalogConfigTest {
         var nullPolicy=CatalogYaml.read("schema: 1\nvariants: {}\ncapabilities: null\n");assertTrue(nullPolicy.containsKey("capabilities"));assertThrows(IllegalArgumentException.class,()->CatalogConfig.parse(nullPolicy));
         assertThrows(RuntimeException.class,()->CatalogYaml.read("schema: 1\nvariants: &a {}\ncapabilities: *a\n"));
     }
+    @Test void fluidsAreIndependentAndLegacyCatalogEncodingsRemainCanonical(){
+        var defaults=CatalogConfig.parse(config());
+        var dry=defaults.variants().get("test");
+        assertEquals(new FluidRule(true,true,false),dry.fluids().water());
+        assertEquals(new FluidRule(false,false,false),dry.fluids().lava());
+        assertEquals(1,CatalogCodec.definition(dry).version());
+        assertEquals(FluidPolicy.DEFAULT,CatalogCodec.candidate(CatalogCodec.candidate(defaults)).variants().get("test").fluids());
+
+        var repaired=variant();
+        repaired.put("repair",Map.of("resources",Map.of("minecraft:iron_ingot",2),"cooling-ms",500));
+        var legacy=CatalogConfig.parse(config(Map.of("repaired",repaired)));
+        assertEquals(2,CatalogCodec.candidate(legacy).version());
+        assertEquals(legacy,CatalogCodec.candidate(CatalogCodec.candidate(legacy)));
+
+        var changed=variant();
+        changed.put("fluids",Map.of("water",Map.of("place",false,"submerged-defence",true),
+                "lava",Map.of("expand",true)));
+        var catalog=CatalogConfig.parse(config(Map.of("dry",variant(),"wet",changed,"repaired",repaired)));
+        Definition wet=catalog.variants().get("wet");
+        assertEquals(new FluidRule(false,true,true),wet.fluids().water());
+        assertEquals(new FluidRule(false,true,false),wet.fluids().lava());
+        assertTrue(wet.fluids().allowsDefence(HeadFluid.DRY));
+        assertTrue(wet.fluids().allowsDefence(HeadFluid.WATER));
+        assertFalse(wet.fluids().allowsDefence(HeadFluid.LAVA));
+        assertFalse(wet.fluids().allowsDefence(HeadFluid.UNKNOWN));
+        assertFalse(FluidPolicy.DEFAULT.allowsDefence(HeadFluid.WATER));
+        assertFalse(FluidPolicy.DEFAULT.allowsDefence(HeadFluid.LAVA));
+        assertEquals(3,CatalogCodec.definition(wet).version());
+        assertEquals(3,CatalogCodec.candidate(catalog).version());
+        assertEquals(catalog,CatalogCodec.candidate(CatalogCodec.candidate(catalog)));
+        assertEquals(wet,CatalogCodec.definition(CatalogCodec.definition(wet)));
+        assertEquals(2,CatalogCodec.definition(catalog.variants().get("repaired")).version());
+
+        changed.put("fluids",Map.of("water",Map.of("place",true,"expand",true,"submerged-defence",false)));
+        assertEquals(1,CatalogCodec.candidate(CatalogConfig.parse(config(Map.of("test",changed)))).version());
+    }
+    @Test void fluidsRejectInvalidValuesAndGroundItemOptions(){
+        for(Object invalid:List.of(Map.of("water",Map.of("place","true")),
+                Map.of("lava",Map.of("invulnerable",true)),Map.of("unsupported",Map.of()))){
+            var changed=variant();changed.put("fluids",invalid);
+            assertThrows(IllegalArgumentException.class,()->CatalogConfig.parse(config(Map.of("test",changed))));
+        }
+    }
     @Test void malformedPayloadCannotBecomeAuthority(){
         var candidate=CatalogConfig.parse(config());var doc=CatalogCodec.candidate(candidate);
         assertThrows(IllegalArgumentException.class,()->CatalogCodec.definition(doc));assertThrows(IllegalArgumentException.class,()->CatalogCodec.candidate(new com.ninja6.infernolantern.repository.RepositoryRecords.Document(1,doc.content()+"AA")));

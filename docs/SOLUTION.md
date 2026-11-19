@@ -193,8 +193,8 @@ arrangements privately rather than partially deploying.
 
 Store original block/fluid states and expected plugin-owned states. Cleanup restores only
 positions still owned by that tower/revision; it must not overwrite later unrelated changes.
-Proposed first implementation rejects piston movement of tower components rather than moving a
-multi-component ledger, subject to prototype confirmation. No physical artifact should survive
+Reject piston movement that would touch the tower's reserved positions, including pending
+before/after reservations. No physical artifact should survive
 recovery as an invisible Wither cage. Do not guarantee general anti-trapping beyond tested
 footprints and permitted exposure.
 
@@ -202,7 +202,7 @@ Real illumination must be explicitly provided, not inferred from emissive textur
 light-source implementation alongside the representation; persist/clean up its occupied
 positions and verify light values and water/lava cases. Preserve baseline fluids and reject
 unsupported waterlogged/flowing combinations without converting or draining terrain.
-Submerged-combat detection at the attack head remains a proposal to test.
+Submerged-combat detection checks the current attack-head voxel of the exact loaded deployment.
 
 Pack strategy: generic assets per variant and compact/deployed state; server branding overrides
 stable documented asset paths. Support default delivery, stacking, and complete combined packs
@@ -327,8 +327,7 @@ chained explosions, a blast also reaching zero HP, protection denial, Wither spa
 normal item survival/expiry afterward.
 
 Compact bases break as ordinary blocks for eligible players; normal breaking is not an HP
-payment. Incoming compact-base melee/projectile damage behaviour is a remaining product
-decision. Do not invent a second recovery path while implementing it.
+payment. Incoming ordinary melee and projectile HP damage applies to expanded towers only. Do not invent a second recovery path while implementing it.
 
 ## 10. Rewards and Standalone Operation
 
@@ -369,7 +368,7 @@ builds, client versions, model strategy and supported provider versions when tes
 | Supported server/client versions and command/permission names | Public runtime interface; repository and GPL-3.0 license are selected. |
 | Compact/expanded rendering, collision, damage target, real-light implementation and dimensions | Finishing G0; do not build final packs/reward logic first. |
 | World selector syntax, submerged detection, provider-specific blast precedence/exposure | World/fluid/blast implementation. |
-| Repair cooling defaults and compact non-blast damage | Damage and production configuration modules. |
+| Repair cooling defaults | Damage and production configuration modules. |
 | Controller logout/eligibility loss behaviour, unreachable timeout and target arbitration | Combat lifecycle tests. Controller record persists until compaction; choose operational suspension separately. |
 | Dragon recipients, repeat policy, attribution and provider | Dragon adapter. |
 | Numeric balance, health indicator presentation, pack readiness for externally managed delivery | Playtest configuration and UI release. |

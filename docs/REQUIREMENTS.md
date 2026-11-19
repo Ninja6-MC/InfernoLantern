@@ -79,9 +79,9 @@ fluids and waterlogged blocks. Allowing a fluid does not permit replacing a soli
 obstruction. When a structure encounters both fluids, each applicable policy must pass.
 
 Lighting operates after deployment only where the effective feature, world, and variant settings
-permit it. The proposed combat definition of submerged is fluid intersecting the attack head;
-finalize this rule before implementation and apply it to later fluid changes as well as initial
-deployment. Entering a disallowed combat fluid must suspend attacks immediately.
+permit it. For Defence, fluid at the attack head counts as submersion. Apply the same test to
+later fluid changes and at initial deployment. A disallowed combat fluid suspends attacks even
+when the current target remains reachable.
 
 Preserve surrounding water and lava, including source/flow and waterlogged state where
 applicable. On collapse or removal, restore only fluid space displaced by this tower without
@@ -95,6 +95,8 @@ policy is independent of permission to place or expand a tower in lava. Dropped 
 item despawning by default, with a per-variant option to disable despawning. “Never despawn”
 does not imply immunity to other configured destruction sources or automatic replacement after
 loss.
+
+Pistons cannot move a lantern or push or pull blocks into its reserved positions.
 
 ### World and Dimension Restrictions (Proposal)
 
@@ -330,6 +332,9 @@ initial mapping is instant damage to HP, no poison/slowness/weakness effects on 
 no healing from potions. Final potion mapping and beam damage type remain review decisions.
 Splash effects may still affect nearby players; targeting the tower does not confer player
 immunity.
+
+Ordinary non-blast hits apply to expanded towers. Compact bases use the normal authorized
+breaking and permitted blast rules.
 
 Manual compaction is an authorized UI action, distinct from hostile hits. Normal players cannot
 directly break/recover an expanded tower, including their own deployment: the current expander

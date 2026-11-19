@@ -1,6 +1,16 @@
 package com.ninja6.infernolantern.combat;
 
+import com.ninja6.infernolantern.catalog.CatalogConfig.Dimension;
+import com.ninja6.infernolantern.catalog.CatalogConfig.HeadFluid;
+import com.ninja6.infernolantern.catalog.CatalogConfig.WorldRef;
 import com.ninja6.infernolantern.health.TowerHealth;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
+import org.bukkit.Server;
+import org.bukkit.block.Block;
+import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Levelled;
+import org.bukkit.block.data.Waterlogged;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.damage.DamageSource;
@@ -19,9 +29,11 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiFunction;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.ninja6.infernolantern.combat.ZombieCombat.*;
-import static com.ninja6.infernolantern.repository.RepositoryRecords.TowerSnapshot;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import static org.bukkit.event.entity.EntityDamageEvent.DamageCause.ENTITY_ATTACK;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -81,6 +93,72 @@ class PaperZombieWorldTest {
         return new EntityDamageByEntityEvent(damager, victim, ENTITY_ATTACK, source, amount);
     }
 
+    @Test void observesOnlyTheCurrentBoundAttackHeadAndNeverReadsAnUnavailableCell() throws Exception {
+        var worldId = UUID.randomUUID();
+        var towerId = UUID.randomUUID();
+        var tower = new Tower(towerId, "test", 75, 100, Form.EXPANDED, 2, 9, UUID.randomUUID(),
+                new Position(worldId, 2, 70, 2, "north"), true, true, 0, 0);
+        var base = new Component("base", ComponentKind.BLOCK, worldId, 2, 70, 2,
+                "minecraft:water[level=0]", "minecraft:barrier[waterlogged=true]", null, null);
+        var head = new Component("head", ComponentKind.BLOCK, worldId, 2, 72, 2,
+                "minecraft:air", "minecraft:air", null, null);
+        var row = new TowerSnapshot(new State(tower, null, List.of(base, head)), 6, null);
+        var proof = new AtomicReference<>(new PaperZombieWorld.AttackHead(towerId, 2, 9, head));
+        var loaded = new AtomicBoolean(true);
+        var data = new AtomicReference<BlockData>(fake(BlockData.class, (n, a) -> Material.AIR));
+        var world = fake(World.class, (name, args) -> switch (name) {
+            case "isChunkLoaded" -> loaded.get();
+            case "getMinHeight" -> -64;
+            case "getMaxHeight" -> 320;
+            case "getBlockAt" -> {
+                assertArrayEquals(new Object[]{2,72,2}, args, "Only the exact head is observed");
+                yield fake(Block.class, (n, a) -> data.get());
+            }
+            default -> throw new AssertionError(name);
+        });
+        var adapter = new PaperZombieWorld(new DormantAccess(){
+            @Override public PaperZombieWorld.Inspection inspect(TowerSnapshot current) {
+                assertSame(row, current);
+                return new PaperZombieWorld.Inspection(new WorldRef(worldId, "generic", Dimension.OVERWORLD, false),
+                        Controller.ELIGIBLE, true, proof.get());
+            }
+        });
+        var field = Bukkit.class.getDeclaredField("server");
+        field.setAccessible(true);
+        var previous = field.get(null);
+        field.set(null, fake(Server.class, (name, args) -> switch (name) {
+            case "getWorld" -> world;
+            case "isPrimaryThread" -> true;
+            default -> throw new AssertionError(name);
+        }));
+        try {
+            assertEquals(HeadFluid.DRY, adapter.inspect(row).fluid());
+            data.set(fake(Levelled.class, (name, args) -> switch (name) {
+                case "getMaterial" -> Material.WATER;
+                case "getLevel" -> 6;
+                default -> throw new AssertionError(name);
+            }));
+            assertEquals(HeadFluid.WATER, adapter.inspect(row).fluid());
+            data.set(fake(Waterlogged.class, (name, args) -> switch (name) {
+                case "getMaterial" -> Material.BARRIER;
+                case "isWaterlogged" -> true;
+                default -> throw new AssertionError(name);
+            }));
+            assertEquals(HeadFluid.WATER, adapter.inspect(row).fluid());
+            data.set(fake(Levelled.class, (name, args) -> Material.LAVA));
+            assertEquals(HeadFluid.LAVA, adapter.inspect(row).fluid());
+            data.set(fake(BlockData.class, (name, args) -> Material.BUBBLE_COLUMN));
+            assertEquals(HeadFluid.UNKNOWN, adapter.inspect(row).fluid());
+            data.set(fake(BlockData.class, (name, args) -> fail("Stale proofs cannot read head terrain")));
+            proof.set(new PaperZombieWorld.AttackHead(towerId, 2, 8, head));
+            assertEquals(HeadFluid.UNKNOWN, adapter.inspect(row).fluid());
+            loaded.set(false);
+            assertNull(adapter.inspect(row));
+        } finally {
+            field.set(null, previous);
+        }
+    }
+
     private static <T extends Entity> T entity(Class<T> entity, EntityType type, boolean baby) {
         UUID id = UUID.randomUUID();
         return fake(entity, (name, args) -> switch (name) {
@@ -97,8 +175,8 @@ class PaperZombieWorldTest {
                 (object, method, args) -> handler.apply(method.getName(), args)));
     }
 
-    static final class DormantAccess implements PaperZombieWorld.Access {
-        @Override public Conditions inspect(TowerSnapshot tower) { throw new AssertionError(); }
+    static class DormantAccess implements PaperZombieWorld.Access {
+        @Override public PaperZombieWorld.Inspection inspect(TowerSnapshot tower) { throw new AssertionError(); }
         @Override public boolean allows(Action action, TowerSnapshot tower, Villager proxy, Zombie target) { throw new AssertionError(); }
         @Override public boolean proxyFits(TowerSnapshot tower, Location origin) { throw new AssertionError(); }
         @Override public List<UUID> candidates(TowerSnapshot tower, Location origin, double range, int limit) { throw new AssertionError(); }

@@ -54,6 +54,12 @@ Names are current policy selectors only. Stored tower positions retain actual wo
 
 `PaperWorldRef` maps the pinned platform's NORMAL/NETHER/THE_END environment categories. CUSTOM is represented but reports unsupported until an actual native support gate establishes reliable behavior. A `custom` allowlist cannot match an unsupported custom observation. No internal dimension IDs or name heuristics are used. An independent platform integration may provide a reliably supported custom category later, with evidence. The rolling [Paper environment API](https://jd.papermc.io/paper/26.3/org/bukkit/World.Environment.html) is reference only; compilation uses the repository's pinned 26.3.build.249-stable API.
 
+## Fluid rules
+
+A variant can configure independent water and lava rules for placement, expansion and submerged
+Defence. See [fluid placement and cleanup](FLUID_POLICIES.md) for defaults, supported block
+representations, and the required ownership and physics checks.
+
 ## Durable publication and ownership
 
 **Schema 4 migrates on every repository open**, including an existing item harness opening a store with creation disabled. It adds catalog revision/managed-ID metadata and catalog-owned award holds; versions 1–3 retain their checksums. Migration does not import, adopt, retire or alter existing legacy/prototype variants. Older candidates reject the future schema; never lower a schema version, delete data or deploy this candidate into preserved quarantined evidence to resume testing. A future approved deployment needs matched complete stopped-state backups, not database-only swaps.

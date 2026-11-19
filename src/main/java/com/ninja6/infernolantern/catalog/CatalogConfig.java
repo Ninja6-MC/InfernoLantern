@@ -44,14 +44,38 @@ public final class CatalogConfig {
             });
         }
     }
+    public enum HeadFluid { DRY, WATER, LAVA, UNKNOWN }
+    public record FluidRule(boolean place, boolean expand, boolean submergedDefence) {}
+    public record FluidPolicy(FluidRule water, FluidRule lava) {
+        public static final FluidPolicy DEFAULT = new FluidPolicy(new FluidRule(true, true, false), new FluidRule(false, false, false));
+
+        public FluidPolicy {
+            Objects.requireNonNull(water);
+            Objects.requireNonNull(lava);
+        }
+        public boolean allowsDefence(HeadFluid fluid) {
+            return switch (fluid) {
+                case DRY -> true;
+                case WATER -> water.submergedDefence();
+                case LAVA -> lava.submergedDefence();
+                case UNKNOWN -> false;
+            };
+        }
+    }
     public record Definition(String id,boolean lightAvailable,boolean defenceAvailable,boolean defaultLight,boolean defaultDefence,
                              int lightLevel,double maximumHp,double expansionPercent,long expansionCooldownMillis,String permission,
-                             Geometry geometry,Map<Action,WorldRule> worlds,RepairPolicy repair) {
+                             Geometry geometry,Map<Action,WorldRule> worlds,RepairPolicy repair,FluidPolicy fluids) {
         public Definition {
             identifier(id);if(id.startsWith("prototype."))throw new IllegalArgumentException("Reserved fixture variant");
             if(lightLevel<0||lightLevel>15||!Double.isFinite(maximumHp)||maximumHp<=0||!Double.isFinite(expansionPercent)||expansionPercent<=0||expansionPercent>100||expansionCooldownMillis<0)throw new IllegalArgumentException("Variant numeric bounds");
             if(permission!=null){text(permission,256);if(!permission.matches("[a-z0-9][a-z0-9_.:-]{0,255}"))throw new IllegalArgumentException("Permission syntax");}
-            Objects.requireNonNull(geometry);worlds=Map.copyOf(worlds);if(!worlds.keySet().equals(EnumSet.allOf(Action.class)))throw new IllegalArgumentException("Complete action policies required");
+            Objects.requireNonNull(geometry);Objects.requireNonNull(fluids);worlds=Map.copyOf(worlds);if(!worlds.keySet().equals(EnumSet.allOf(Action.class)))throw new IllegalArgumentException("Complete action policies required");
+        }
+        public Definition(String id,boolean lightAvailable,boolean defenceAvailable,boolean defaultLight,boolean defaultDefence,
+                          int lightLevel,double maximumHp,double expansionPercent,long expansionCooldownMillis,String permission,
+                          Geometry geometry,Map<Action,WorldRule> worlds,RepairPolicy repair) {
+            this(id,lightAvailable,defenceAvailable,defaultLight,defaultDefence,lightLevel,maximumHp,expansionPercent,
+                    expansionCooldownMillis,permission,geometry,worlds,repair,FluidPolicy.DEFAULT);
         }
         public Definition(String id,boolean lightAvailable,boolean defenceAvailable,boolean defaultLight,boolean defaultDefence,
                           int lightLevel,double maximumHp,double expansionPercent,long expansionCooldownMillis,String permission,
@@ -73,7 +97,7 @@ public final class CatalogConfig {
         Map<String,?> variants=map(required(root,"variants"));var result=new TreeMap<String,Definition>();
         for(var entry:variants.entrySet()){
             String id=entry.getKey();Map<String,?> v=map(entry.getValue());
-            keys(v,"capabilities","player-switches","light-level","maximum-hp","expansion-hp-percent","expansion-cooldown-ms","permission","geometry","world-rules","repair");
+            keys(v,"capabilities","player-switches","light-level","maximum-hp","expansion-hp-percent","expansion-cooldown-ms","permission","geometry","world-rules","repair","fluids");
             Map<String,?> c=map(optional(v,"capabilities"));keys(c,"light","defence");
             Map<String,?> switches=map(required(v,"player-switches"));keys(switches,"light","defence");
             boolean defaultLight=booleanValue(required(switches,"light")),defaultDefence=booleanValue(required(switches,"defence"));
@@ -81,9 +105,19 @@ public final class CatalogConfig {
             Geometry geometry=new Geometry(string(required(g,"compact-model")),string(required(g,"expanded-model")),integer(required(g,"width")),integer(required(g,"height")),integer(required(g,"depth")),integer(required(g,"light-x")),integer(required(g,"light-y")),integer(required(g,"light-z")));
             Map<String,?> rules=map(optional(v,"world-rules"));keys(rules,"place","expand","light","defence");var worlds=new EnumMap<Action,WorldRule>(Action.class);
             for(Action action:Action.values())worlds.put(action,rule(map(optional(rules,action.name().toLowerCase(Locale.ROOT)))));
-            result.put(id,new Definition(id,bool(c,"light",light),bool(c,"defence",defence),defaultLight,defaultDefence,integer(required(v,"light-level")),number(required(v,"maximum-hp")),v.containsKey("expansion-hp-percent")?number(v.get("expansion-hp-percent")):50,nonnegativeLong(required(v,"expansion-cooldown-ms")),v.containsKey("permission")?string(v.get("permission")):null,geometry,worlds,v.containsKey("repair")?repair(map(v.get("repair"))):null));
+            result.put(id,new Definition(id,bool(c,"light",light),bool(c,"defence",defence),defaultLight,defaultDefence,integer(required(v,"light-level")),number(required(v,"maximum-hp")),v.containsKey("expansion-hp-percent")?number(v.get("expansion-hp-percent")):50,nonnegativeLong(required(v,"expansion-cooldown-ms")),v.containsKey("permission")?string(v.get("permission")):null,geometry,worlds,v.containsKey("repair")?repair(map(v.get("repair"))):null,fluids(map(optional(v,"fluids")))));
         }
         return new Candidate(light,defence,result);
+    }
+    private static FluidPolicy fluids(Map<String,?> input) {
+        keys(input,"water","lava");
+        return new FluidPolicy(fluidRule(map(optional(input,"water")),FluidPolicy.DEFAULT.water()),
+                fluidRule(map(optional(input,"lava")),FluidPolicy.DEFAULT.lava()));
+    }
+    private static FluidRule fluidRule(Map<String,?> input,FluidRule defaults) {
+        keys(input,"place","expand","submerged-defence");
+        return new FluidRule(bool(input,"place",defaults.place()),bool(input,"expand",defaults.expand()),
+                bool(input,"submerged-defence",defaults.submergedDefence()));
     }
     private static RepairPolicy repair(Map<String,?> input) {
         keys(input,"resources","cooling-ms");

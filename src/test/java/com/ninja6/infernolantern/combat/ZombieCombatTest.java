@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.combat;
 
 import com.ninja6.infernolantern.catalog.CatalogConfig.Dimension;
 import com.ninja6.infernolantern.catalog.CatalogConfig.WorldRef;
+import com.ninja6.infernolantern.catalog.CatalogConfig.HeadFluid;
 import com.ninja6.infernolantern.catalog.CatalogService;
 import com.ninja6.infernolantern.health.TowerHealth;
 import com.ninja6.infernolantern.repository.RepositoryException;
@@ -91,6 +92,20 @@ class ZombieCombatTest {
         assertEquals(2, world.attacks.size());
         assertEquals(EXTERNAL, world.targets.get(FIRST));
         assertTrue(world.removed.contains(proxy));
+    }
+
+    @Test void waterReachingTheAttackHeadReleasesDefenceAndDoesNotChangeSavedPreference() throws Exception {
+        start(Mode.RETALIATION, 10);
+        settledCooling();
+        UUID proxy = world.proxy();
+        target(proxy, FIRST);
+        world.headFluid = HeadFluid.WATER;
+        combat.tick(10);
+        assertEquals(List.of(FIRST), world.attacks);
+        assertFalse(world.targets.containsKey(FIRST));
+        assertTrue(world.removed.contains(proxy));
+        assertTrue(current().state().tower().defence());
+        assertEquals(75, current().state().tower().hp());
     }
 
     @Test void cancelledBeamCannotOpenRetaliationOrStartCooling() throws Exception {
@@ -512,7 +527,7 @@ class ZombieCombatTest {
             default -> throw new AssertionError(name);
         });
         var adapter = new PaperZombieWorld(new PaperZombieWorld.Access() {
-            @Override public Conditions inspect(TowerSnapshot row) { throw new AssertionError(); }
+            @Override public PaperZombieWorld.Inspection inspect(TowerSnapshot row) { throw new AssertionError(); }
             @Override public boolean allows(Action action, TowerSnapshot row, Villager proxy, Zombie target) { throw new AssertionError(); }
             @Override public boolean proxyFits(TowerSnapshot row, Location from) { return true; }
             @Override public List<UUID> candidates(TowerSnapshot row, Location from, double range, int limit) { throw new AssertionError(); }
@@ -687,6 +702,7 @@ class ZombieCombatTest {
         final Set<Action> denied = EnumSet.noneOf(Action.class);
         List<Candidate> available = List.of(new Candidate(FIRST, 4));
         Controller controller = Controller.ELIGIBLE;
+        HeadFluid headFluid = HeadFluid.DRY;
         boolean acceptAttack = true;
         UUID nextProxy;
         Runnable beforeAttack = () -> {};
@@ -696,7 +712,7 @@ class ZombieCombatTest {
         UUID proxy() { return proxies.getLast(); }
         @Override public Conditions inspect(TowerSnapshot tower) {
             owner.require();
-            return new Conditions(new WorldRef(WORLD, "generic", Dimension.OVERWORLD, false), controller, true, true);
+            return new Conditions(new WorldRef(WORLD, "generic", Dimension.OVERWORLD, false), controller, headFluid, true);
         }
         @Override public UUID spawnProxy(TowerSnapshot tower, UUID token) {
             owner.require();
