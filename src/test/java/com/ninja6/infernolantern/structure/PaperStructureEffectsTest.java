@@ -1,11 +1,14 @@
 package com.ninja6.infernolantern.structure;
 
 import com.ninja6.infernolantern.item.GroundPolicy;
+import com.ninja6.infernolantern.item.PaperItemIdentity;
+import io.papermc.paper.persistence.PersistentDataContainerView;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.*;
 import org.bukkit.inventory.*;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.*;
 import org.junit.jupiter.api.*;
 import java.lang.reflect.*;
@@ -25,7 +28,7 @@ class PaperStructureEffectsTest {
     final AtomicReference<UUID> liveSession=new AtomicReference<>(session);
     final Map<NamespacedKey,Object> tags=new HashMap<>();
     boolean permission=true;Object previousServer;
-    World world;Player player;
+    World world;Player player;Dropped dropped;
     interface Answer {Object get(Method method,Object[] args);}
     static <T>T proxy(Class<T> type,Answer answer){return type.cast(Proxy.newProxyInstance(type.getClassLoader(),new Class<?>[]{type},(p,m,args)->{
         if(m.getName().equals("equals"))return p==args[0];if(m.getName().equals("hashCode"))return System.identityHashCode(p);if(m.getName().equals("toString"))return type.getSimpleName()+"Stub";
@@ -43,6 +46,12 @@ class PaperStructureEffectsTest {
             case "getUID"->worldId;case "getMinHeight"->-64;case "getMaxHeight"->320;case "isChunkLoaded"->true;
             case "getWorldBorder"->proxy(WorldBorder.class,(method,args)->{if(method.getName().equals("isInside"))return true;throw unsupported(method);});
             case "getNearbyEntities"->List.of();case "getEntity"->entities.get(a[0]);
+            case "dropItem"->{
+                dropped=new Dropped((Location)a[0],(ItemStack)a[1]);
+                @SuppressWarnings("unchecked") var initialize=(java.util.function.Consumer<Item>)a[2];
+                initialize.accept(dropped.item);
+                yield dropped.item;
+            }
             case "getBlockAt"->{Cell c=new Cell(worldId,(int)a[0],(int)a[1],(int)a[2]);yield proxy(Block.class,(method,args)->switch(method.getName()){
                 case "getBlockData"->data(blocks.getOrDefault(c,"minecraft:air"));
                 case "setBlockData"->{blocks.put(c,((BlockData)args[0]).getAsString());yield null;}
@@ -65,6 +74,92 @@ class PaperStructureEffectsTest {
     Claim claim(Request request,Preparation prepared,TowerSnapshot source){
         State after=new State(new Tower(towerId,"fixture",75,100,Form.EXPANDED,2,2,actor,base,true,false,0,44),null,prepared.manifest());
         Intent intent=new Intent(request.operation(),towerId,2,2,1,"structure-expand",after,prepared.evidence());return new Claim(request,new Operation(intent,source.state(),Phase.INTENT,0,"intent"),prepared);
+    }
+    private static PersistentDataContainer container(Map<NamespacedKey,Object> values){
+        return proxy(PersistentDataContainer.class,(m,a)->switch(m.getName()){
+            case "get"->values.get(a[0]);
+            case "has"->values.containsKey(a[0]);
+            case "set"->{values.put((NamespacedKey)a[0],a[2]);yield null;}
+            case "remove"->{values.remove(a[0]);yield null;}
+            default->throw unsupported(m);
+        });
+    }
+    final class Dropped {
+        final UUID id=UUID.randomUUID();
+        final Location location;
+        final ItemStack stack;
+        final PersistentDataContainer pdc=container(new HashMap<>());
+        boolean alive=true,playerPickup,mobPickup,invulnerable,gravity,unlimited;
+        final Item item=proxy(Item.class,(m,a)->switch(m.getName()){
+            case "getUniqueId"->id;case "getLocation"->location();case "getWorld"->world;
+            case "getItemStack"->stack();case "getPersistentDataContainer"->pdc;case "isValid"->alive;
+            case "canPlayerPickup"->playerPickup;case "canMobPickup"->mobPickup;case "isInvulnerable"->invulnerable;
+            case "setCanPlayerPickup"->{playerPickup=(boolean)a[0];yield null;}
+            case "setCanMobPickup"->{mobPickup=(boolean)a[0];yield null;}
+            case "setInvulnerable"->{invulnerable=(boolean)a[0];yield null;}
+            case "setGravity"->{gravity=(boolean)a[0];yield null;}
+            case "setUnlimitedLifetime"->{unlimited=(boolean)a[0];yield null;}
+            case "setVelocity"->null;
+            case "remove"->{alive=false;yield null;}
+            default->throw unsupported(m);
+        });
+        Dropped(Location location,ItemStack stack){this.location=location;this.stack=stack;}
+        private Location location(){return location.clone();}
+        private ItemStack stack(){return stack;}
+    }
+    static final class BlastTemplate extends ItemStack {
+        final Map<NamespacedKey,Object> values=new HashMap<>();
+        final PersistentDataContainer pdc=container(values);
+        final ItemMeta meta=proxy(ItemMeta.class,(m,a)->switch(m.getName()){
+            case "getPersistentDataContainer"->pdc;
+            case "setMaxStackSize","setFireResistant"->null;
+            default->throw unsupported(m);
+        });
+        int amount=1;
+        @Override public Material getType(){return Material.PAPER;}
+        @Override public int getAmount(){return amount;}
+        @Override public void setAmount(int amount){this.amount=amount;}
+        @Override public PersistentDataContainerView getPersistentDataContainer(){return pdc;}
+        @Override public ItemMeta getItemMeta(){return meta;}
+        @Override public boolean setItemMeta(ItemMeta value){assertSame(meta,value);return true;}
+        @Override public BlastTemplate clone(){var copy=new BlastTemplate();copy.values.putAll(values);copy.amount=amount;return copy;}
+    }
+    private Claim blastClaim(PaperStructureEffects effects,OldStand stand){
+        TowerSnapshot source=beforeWith(stand);
+        var impact=BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of("base","old.0"),25,1,false,1000,0);
+        var request=new Request(impact.operation(towerId),towerId,2,2,1,null,null,Action.BLAST,base,
+                new Policy(1,50,200,1000,false),impact);
+        var prepare=effects.prepare(request,source);assertNotNull(prepare);
+        var after=new State(new Tower(towerId,"fixture",50,100,Form.GROUND,3,2,null,null,true,false,0,44),
+                prepare.stagedGround(),List.of());
+        var intent=new Intent(request.operation(),towerId,2,2,1,STRUCTURE_BLAST,after,prepare.evidence());
+        return new Claim(request,new Operation(intent,source.state(),Phase.INTENT,0,"fixture"),prepare);
+    }
+    private final PaperStructureEffects.BlastAccess blastPhysical=new PaperStructureEffects.BlastAccess(){
+        @Override public boolean allowed(Request request,State before){return permission;}
+        @Override public boolean mayRestore(Request request,State before){return permission;}
+    };
+    @Test void actualBlastAdapterStagesOneTokenAndRemovesOnlyItsOwnStructure(){
+        var admitted=new ArrayList<Item>();
+        var effects=new PaperStructureEffects(blastPhysical,new BlastTemplate(),GroundPolicy.DEFAULT,admitted::add);
+        OldStand stand=new OldStand();
+        Claim claim=blastClaim(effects,stand);
+        assertTrue(dropped.invulnerable);assertFalse(dropped.playerPickup);assertFalse(dropped.mobPickup);assertTrue(admitted.isEmpty());
+        assertEquals(3,new PaperItemIdentity().read(dropped.stack).orElseThrow().generation());
+        assertTrue(effects.apply(claim));assertTrue(effects.verify(claim));assertTrue(stand.valid);
+        assertEquals("minecraft:air",blocks.get(new Cell(worldId,4,70,4)));
+        assertTrue(effects.activate(claim,completed(claim)));
+        assertEquals(1,stand.removed);assertFalse(dropped.invulnerable);
+        assertEquals(List.of(dropped.item),admitted);assertTrue(dropped.gravity);
+    }
+    @Test void actualBlastAdapterCancelsStageButNeverOverwritesExternalEditing(){
+        var effects=new PaperStructureEffects(blastPhysical,new BlastTemplate(),GroundPolicy.DEFAULT,
+                item->fail("No item may activate"));
+        OldStand stand=new OldStand();Claim claim=blastClaim(effects,stand);
+        assertTrue(effects.apply(claim));
+        Cell baseCell=new Cell(worldId,4,70,4);blocks.put(baseCell,"minecraft:stone");
+        assertFalse(effects.verify(claim));assertFalse(effects.rollback(claim));
+        assertEquals("minecraft:stone",blocks.get(baseCell));assertFalse(dropped.alive);assertEquals(0,stand.removed);
     }
     @Test void systemDefeatUsesWorldProtectionWithoutAPlayerAndRestoresOwnedLight(){
         Cell light=new Cell(worldId,4,71,4);

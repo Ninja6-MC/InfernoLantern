@@ -56,3 +56,6 @@ payment and cooling. Native repair menus and acceptance remain pending.
 
 [Ordinary zombie combat](docs/ZOMBIE_COMBAT.md) documents the initial bounded owner loop,
 native beam and melee adapter, and remaining production and client acceptance work.
+
+[Lantern blast transactions](docs/BLAST_TRANSACTIONS.md) documents whole-lantern protection,
+journaled damage and drop, and the pending native exposure and provider routing.

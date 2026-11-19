@@ -600,9 +600,10 @@ state, and timers unchanged and do not emit a drop. When allowed, apply the norm
 damage-and-drop transaction. Administrators may explicitly disable this setting so the tower's
 own blast handling ignores protection denial; this must not uncancel the world explosion or
 change protection for unrelated blocks, entities, or players. The setting applies to creeper and
-incidental Wither blasts alike. Document supported protection integrations. The exact exposure
-test and resolution of mixed entity-damage/block-destruction decisions still require an
-integration-level definition before implementation.
+incidental Wither blasts alike. An applicable denial on any affected component protects the whole
+lantern, including when an entity receives a different decision than a block. Require a complete
+same-explosion exposure proof and explicit decisions. Native exposure production and supported
+protection integrations still need acceptance.
 
 This is an environmental rule, not direct boss combat support. Wither spawn explosions must not
 leave an intact tower that can be used as a Wither cage. Test actual blast exposure and any

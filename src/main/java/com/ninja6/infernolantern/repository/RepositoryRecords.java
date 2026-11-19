@@ -10,9 +10,12 @@ public final class RepositoryRecords {
     public static final int MAX_COMPONENTS = 4096;
     public static final String STRUCTURE_EXIT_COMPACT = "structure-exit-compact";
     public static final String STRUCTURE_EXIT_RECOVER = "structure-exit-admin-recover";
+    public static final String STRUCTURE_BLAST = "structure-blast";
+    public static final String STRUCTURE_EXIT_BLAST = "structure-exit-blast";
     public static final String STRUCTURE_DEFEAT = "structure-defeat";
     public static boolean timedStructureExit(String kind) {
-        return STRUCTURE_EXIT_COMPACT.equals(kind) || STRUCTURE_EXIT_RECOVER.equals(kind) || STRUCTURE_DEFEAT.equals(kind);
+        return STRUCTURE_EXIT_COMPACT.equals(kind) || STRUCTURE_EXIT_RECOVER.equals(kind) || STRUCTURE_DEFEAT.equals(kind)
+                || STRUCTURE_EXIT_BLAST.equals(kind);
     }
     /** A representable deadline for any accepted nonnegative repair cooling duration. */
     public static long repairDeadline(long now,long cooling){

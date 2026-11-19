@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.structure;
 
 import com.ninja6.infernolantern.repository.*;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
@@ -49,7 +50,7 @@ class StructureLifecycleTest {
         final Map<Cell,String> captured=new HashMap<>(),writes=new HashMap<>();
         public Preparation prepare(Request request,TowerSnapshot snapshot){
             scheduler.assertOwner();r=request;before=snapshot;if(!allowed||!sourceValid)return null;
-            boolean drop=r.action()==Action.BREAK||r.action()==Action.ADMIN_RECOVER;
+            boolean drop=r.action()==Action.BREAK||r.action()==Action.ADMIN_RECOVER||r.action()==Action.BLAST;
             List<Component> manifest=new ArrayList<>();int height=r.action()==Action.EXPAND?3:1;
             Map<Cell,Component> old=new HashMap<>();before.state().components().forEach(c->old.put(new Cell(c.world(),c.x(),c.y(),c.z()),c));
             if(!drop)for(int i=0;i<height;i++){
@@ -62,7 +63,12 @@ class StructureLifecycleTest {
             }
             for(Component c:before.state().components())captured.put(new Cell(c.world(),c.x(),c.y(),c.z()),block(new Cell(c.world(),c.x(),c.y(),c.z())));
             Ground g=drop?new Ground(UUID.randomUUID(),worldId,0,0,r.operation(),"active"):null;
-            prepared=new Preparation(manifest,g,new Document(1,"exact synthetic source/session/world/config evidence"));return prepared;
+            var evidence=new Document(1,"exact synthetic source/session/world/config evidence");
+            if(r.action()==Action.BLAST){
+                evidence=r.impact().expanded()?RecoveryEnvelope.timedStructure(kind(r),r.anchor(),evidence,r.policy().cooldownMillis())
+                        :RecoveryEnvelope.structure(kind(r),r.anchor(),evidence,null);
+            }
+            prepared=new Preparation(manifest,g,evidence);return prepared;
         }
         public boolean validate(Claim claim){scheduler.assertOwner();return allowed&&sourceValid;}
         public boolean apply(Claim claim){
@@ -88,6 +94,134 @@ class StructureLifecycleTest {
             scheduler.assertOwner();if(!activation)return false;activated++;
             if(completed.state().ground()!=null)usableDrops.add(completed.state().ground().entity());return true;
         }
+    }
+    private BlastImpact blast(boolean expanded,double damage,double multiplier,String... affected){
+        return BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of(affected),damage,multiplier,expanded,1000,0);
+    }
+    private BlastImpact.Observation observe(BlastImpact impact,Map<String,BlastImpact.Decision> protections){
+        scheduler.assertOwner();
+        return new BlastImpact.Observation(impact,protections,true,true,new CommitPermit());
+    }
+    private BlastImpact.Observation allowBlast(BlastImpact impact,State before){
+        return observe(impact,impact.affected().stream().collect(java.util.stream.Collectors.toMap(
+                component->component,component->BlastImpact.Decision.ALLOW)));
+    }
+    @Test void blastMixedDenialAndPartialExposureLeaveTheEntireStructureUntouched()throws Exception{
+        execute(Action.PLACE);execute(Action.EXPAND);
+        TowerSnapshot before=row();BlastImpact impact=blast(true,35,1,"cell.0","cell.1");
+        var policy=new Policy(1,50,200,1000,false);
+        var denied=Map.of("cell.0",BlastImpact.Decision.DENY,"cell.1",BlastImpact.Decision.ALLOW);
+        assertEquals(Outcome.REJECTED,drain(service.blast(before,policy,impact,new Effects(),(proof,state)->observe(proof,denied))).outcome());
+        assertEquals(Outcome.REJECTED,drain(service.blast(before,policy,impact,new Effects(),(proof,state)->
+                observe(proof,Map.of("cell.0",BlastImpact.Decision.ALLOW)))).outcome());
+        assertEquals(Outcome.REJECTED,drain(service.blast(before,policy,impact,new Effects(),(proof,state)->
+                new BlastImpact.Observation(proof,Map.of("cell.0",BlastImpact.Decision.ALLOW,"cell.1",BlastImpact.Decision.ALLOW),
+                        false,true,new CommitPermit()))).outcome());
+        assertEquals(before,row());assertTrue(await(repository.operation(impact.operation(id))).isEmpty());
+        assertTrue(usableDrops.isEmpty());assertEquals("minecraft:barrier[waterlogged=false]",block(cell(71)));
+    }
+    @Test void blastOverrideOnlyBypassesExplicitDenialAndRetainsCompactTimers()throws Exception{
+        execute(Action.PLACE);TowerSnapshot before=row();
+        var impact=new BlastImpact(UUID.randomUUID(),worldId,Set.of("cell.0"),20,.5,false,false,2000,200);
+        var policy=new Policy(1,50,200,2000,false);
+        assertEquals(Outcome.REJECTED,drain(service.blast(before,policy,impact,new Effects(),(proof,state)->
+                observe(proof,Map.of("cell.0",BlastImpact.Decision.UNKNOWN)))).outcome());
+        assertEquals(Outcome.REJECTED,drain(service.blast(before,policy,impact,new Effects(),(proof,state)->
+                new BlastImpact.Observation(proof,Map.of("cell.0",BlastImpact.Decision.DENY),true,false,new CommitPermit()))).outcome());
+        assertEquals(Outcome.COMMITTED,drain(service.blast(before,policy,impact,new Effects(),(proof,state)->
+                observe(proof,Map.of("cell.0",BlastImpact.Decision.DENY)))).outcome());
+        Tower after=row().state().tower();assertEquals(65,after.hp());assertEquals(Form.GROUND,after.form());
+        assertEquals(33,after.expandAfter());assertEquals(2200,after.repairAfter());assertNull(after.controller());
+        assertEquals("minecraft:air",block(cell(70)));assertEquals(1,usableDrops.size());
+    }
+    @Test void blastDamageRefreshesRepairWithoutShorteningALockOrOverflowing()throws Exception{
+        execute(Action.PLACE);
+        Tower original=row().state().tower();
+        var locked=new Tower(id,original.variantId(),original.hp(),original.maximumHp(),original.form(),
+                original.generation(),original.deploymentRevision(),null,base,true,false,33,5555);
+        TowerSnapshot before=await(repository.compareAndSetTower(row().rowVersion(),locked));
+        var shortLock=BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of("cell.0"),15,1,
+                false,2000,500);
+        assertEquals(5555,shortLock.repairAfter(locked));
+        var full=BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of("cell.0"),15,1,
+                false,2000,Long.MAX_VALUE);
+        assertEquals(Outcome.COMMITTED,drain(service.blast(before,new Policy(1,50,200,2000,false),full,
+                new Effects(),this::allowBlast)).outcome());
+        assertEquals(60,row().state().tower().hp());assertEquals(Long.MAX_VALUE,row().state().tower().repairAfter());
+    }
+    @Test void expandedBlastStampsOnceAndAChainBlastDoesNotInheritDropProtection()throws Exception{
+        execute(Action.PLACE);execute(Action.EXPAND);
+        TowerSnapshot before=row();BlastImpact impact=blast(true,100,2,"cell.0","cell.1");
+        var policy=new Policy(1,50,200,1000,false);
+        var delayed=new Effects(){
+            @Override public boolean verify(Claim claim){exitClock.set(8000);return super.verify(claim);}
+        };
+        assertEquals(Outcome.COMMITTED,drain(service.blast(before,policy,impact,delayed,this::allowBlast)).outcome());
+        State ground=row().state();Tower after=ground.tower();
+        assertEquals(0,after.hp());assertEquals(8200,after.expandAfter());assertEquals(44,after.repairAfter());
+        assertNull(after.controller());assertTrue(await(repository.structureCells(id)).isEmpty());assertEquals(1,usableDrops.size());
+        assertEquals("minecraft:air",block(cell(70)));assertEquals("minecraft:air",block(cell(71)));
+        assertTrue(impact.protectsOriginDrop(ground,ground.ground().entity()));
+        assertFalse(impact.protectsOriginDrop(ground,UUID.randomUUID()));
+        assertFalse(blast(true,100,2,"cell.0").protectsOriginDrop(ground,ground.ground().entity()));
+        var operation=await(repository.operation(impact.operation(id))).orElseThrow();
+        var recipe=RecoveryEnvelope.decode(operation.intent().effects()).orElseThrow();
+        assertEquals(impact,BlastImpact.fromJournal(recipe.original().content()));
+        assertEquals(200L,recipe.exitCooldownMillis().longValue());
+        exitClock.set(30000);
+        assertEquals(Outcome.COMMITTED,drain(service.blast(before,policy,impact,new Effects(),this::allowBlast)).outcome());
+        assertEquals(8200,row().state().tower().expandAfter());assertEquals(1,usableDrops.size());
+    }
+    @Test void sameBlastAndCompactionCannotBothOwnAnExpandedZeroHpTower()throws Exception{
+        execute(Action.PLACE);execute(Action.EXPAND);
+        Tower current=row().state().tower();
+        Tower zero=new Tower(id,current.variantId(),0,current.maximumHp(),current.form(),current.generation(),
+                current.deploymentRevision(),current.controller(),base,current.light(),current.defence(),
+                current.expandAfter(),current.repairAfter());
+        await(repository.compareAndSetTower(row().rowVersion(),zero));
+        TowerSnapshot before=row();BlastImpact impact=BlastImpact.respectingProtection(UUID.randomUUID(),worldId,Set.of("cell.0"),15,0,true,2000,100);
+        var policy=new Policy(1,50,200,2000,false);
+        var first=service.blast(before,policy,impact,new Effects(),this::allowBlast);
+        var duplicate=service.blast(before,policy,impact,new Effects(),this::allowBlast);
+        assertEquals(Outcome.REJECTED,await(duplicate).outcome());
+        var defeat=service.defeat(UUID.randomUUID(),before,policy,new Effects(),()->true);
+        boolean dropped=drain(first).outcome()==Outcome.COMMITTED;
+        boolean compacted=drain(defeat).outcome()==Outcome.COMMITTED;
+        assertNotEquals(dropped,compacted);
+        assertEquals(dropped?Form.GROUND:Form.COMPACT,row().state().tower().form());
+        assertEquals(dropped?1:0,usableDrops.size());
+        assertEquals(44,row().state().tower().repairAfter());
+    }
+    @Test void revokingTheBlastPermitAtFinalCommitRestoresTheExactOwnedStructure()throws Exception{
+        execute(Action.PLACE);TowerSnapshot before=row();BlastImpact impact=blast(false,20,1,"cell.0");
+        var policy=new Policy(1,50,200,2000,false);
+        var permitted=new CommitPermit();
+        var staged=new Effects(){
+            @Override public CommitPermit commitPermit(){permitted.revoke();return null;}
+        };
+        assertEquals(Outcome.ROLLED_BACK,drain(service.blast(before,policy,impact,staged,(proof,state)->
+                new BlastImpact.Observation(proof,Map.of("cell.0",BlastImpact.Decision.ALLOW),true,true,permitted))).outcome());
+        assertEquals(before.state(),row().state());
+        assertEquals("minecraft:barrier[waterlogged=false]",block(cell(70)));
+        assertEquals(Phase.ROLLED_BACK,await(repository.operation(impact.operation(id))).orElseThrow().phase());
+        assertTrue(usableDrops.isEmpty());
+    }
+    @Test void sameBlastReceiptCannotDropALaterDeploymentEvenWithAnUpdatedSnapshot()throws Exception{
+        execute(Action.PLACE);TowerSnapshot before=row();BlastImpact impact=blast(false,10,1,"cell.0");
+        var policy=new Policy(1,50,200,2000,false);
+        assertEquals(Outcome.COMMITTED,drain(service.blast(before,policy,impact,new Effects(),this::allowBlast)).outcome());
+        TowerSnapshot ground=row();Tower old=ground.state().tower();
+        var portable=new Tower(id,old.variantId(),old.hp(),old.maximumHp(),Form.PORTABLE,old.generation()+1,old.deploymentRevision(),
+                null,null,old.light(),old.defence(),old.expandAfter(),old.repairAfter());
+        var pickup=await(repository.beginNewIntent(new Intent(UUID.randomUUID(),id,ground.rowVersion(),old.generation(),
+                old.deploymentRevision(),"item-pickup",new State(portable,null,List.of()),new Document(1,"fixture"))));
+        var applied=await(repository.advanceOperation(pickup.intent().id(),pickup.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"fixture"));
+        await(repository.completeOperation(applied.intent().id(),applied.rowVersion(),"fixture"));
+        sources.add(id);
+        assertEquals(Outcome.COMMITTED,execute(Action.PLACE).outcome());
+        assertEquals(Outcome.QUARANTINED,drain(service.blast(row(),policy,impact,new Effects(),this::allowBlast)).outcome());
+        assertEquals(Form.COMPACT,row().state().tower().form());assertEquals(65,row().state().tower().hp());
+        assertEquals(1,usableDrops.size());
     }
     @Test void completeLifecyclePreservesHpTimersAndInvalidatesOldRevision()throws Exception{
         assertEquals(Outcome.COMMITTED,execute(Action.PLACE).outcome());Tower placed=row().state().tower();

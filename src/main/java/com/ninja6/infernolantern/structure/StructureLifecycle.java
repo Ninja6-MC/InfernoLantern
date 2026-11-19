@@ -12,7 +12,7 @@ import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 /** Journaled structure transitions. World/player saves are independent of database commits. */
 public final class StructureLifecycle implements AutoCloseable {
-    public enum Action { PLACE, EXPAND, COMPACT, BREAK, ADMIN_RECOVER, DEFEAT }
+    public enum Action { PLACE, EXPAND, COMPACT, BREAK, ADMIN_RECOVER, DEFEAT, BLAST }
     public enum Outcome { COMMITTED, REJECTED, ROLLED_BACK, QUARANTINED }
     public record Result(Outcome outcome,UUID operation) {}
     /** Managed variants require the current catalog revision; unmanaged legacy policies keep their own revision. */
@@ -23,13 +23,20 @@ public final class StructureLifecycle implements AutoCloseable {
     }
     /** Session and revision are capabilities to revalidate, not permanent ownership. */
     public record Request(UUID operation,UUID tower,long rowVersion,long generation,long revision,UUID actor,UUID session,
-                          Action action,Position base,Policy policy) {
+                          Action action,Position base,Policy policy,BlastImpact impact) {
+        public Request(UUID operation,UUID tower,long rowVersion,long generation,long revision,UUID actor,UUID session,
+                       Action action,Position base,Policy policy){
+            this(operation,tower,rowVersion,generation,revision,actor,session,action,base,policy,null);
+        }
         public Request {
             Objects.requireNonNull(operation);Objects.requireNonNull(tower);Objects.requireNonNull(action);
             Objects.requireNonNull(base);Objects.requireNonNull(policy);
-            if(action==Action.DEFEAT){
-                if(actor!=null||session!=null||policy.explicitOverride())throw new IllegalArgumentException("System defeat has no player authority");
+            if(action==Action.DEFEAT||action==Action.BLAST){
+                if(actor!=null||session!=null||policy.explicitOverride())throw new IllegalArgumentException("System transition has no player authority");
             }else{Objects.requireNonNull(actor);Objects.requireNonNull(session);}
+            if((action==Action.BLAST)!=(impact!=null)
+                    ||impact!=null&&(!operation.equals(impact.operation(tower))||!base.world().equals(impact.world())))
+                throw new IllegalArgumentException("Blast ownership");
             if(rowVersion<0||generation<0||revision<0)throw new IllegalArgumentException("Expected version");
         }
         public WorldScheduler.Anchor anchor(){return new WorldScheduler.Anchor(base.world(),base.x()>>4,base.z()>>4);}
@@ -67,8 +74,8 @@ public final class StructureLifecycle implements AutoCloseable {
     }
     public CompletableFuture<Result> execute(Request request,WorldEffects effects){
         Objects.requireNonNull(request);Objects.requireNonNull(effects);
-        if(request.action()==Action.DEFEAT)return done(Outcome.REJECTED,request.operation());
-        return executeOwned(request,effects,()->true);
+        if(request.action()==Action.DEFEAT||request.action()==Action.BLAST)return done(Outcome.REJECTED,request.operation());
+        return executeOwned(request,effects,before->true);
     }
     /** Entry point for an already settled zero-HP deployment. No player/session or override is fabricated. */
     public CompletableFuture<Result> defeat(UUID operation,TowerSnapshot zero,Policy policy,WorldEffects effects,BooleanSupplier policyCurrent){
@@ -76,9 +83,34 @@ public final class StructureLifecycle implements AutoCloseable {
         Tower tower=zero.state().tower();
         if(!zero.mutationReady()||tower.form()!=Form.EXPANDED||tower.hp()!=0)return done(Outcome.REJECTED,operation);
         return executeOwned(new Request(operation,tower.id(),zero.rowVersion(),tower.generation(),tower.deploymentRevision(),
-                null,null,Action.DEFEAT,tower.position(),policy),effects,policyCurrent);
+                null,null,Action.DEFEAT,tower.position(),policy),effects,before->policyCurrent.getAsBoolean());
     }
-    private CompletableFuture<Result> executeOwned(Request request,WorldEffects effects,BooleanSupplier policyCurrent){
+    /** Only a complete owner-authorized hit may enter the physical blast path. */
+    public CompletableFuture<Result> blast(TowerSnapshot before,Policy policy,BlastImpact impact,WorldEffects effects,
+                                           BlastImpact.Authority authority){
+        Objects.requireNonNull(effects);Objects.requireNonNull(authority);
+        Tower tower=before.state().tower();UUID operation=impact.operation(tower.id());
+        if(!before.mutationReady()||!impact.matches(before.state()))return done(Outcome.REJECTED,operation);
+        var request=new Request(operation,tower.id(),before.rowVersion(),tower.generation(),tower.deploymentRevision(),
+                null,null,Action.BLAST,tower.position(),policy,impact);
+        return executeOwned(request,effects,new CurrentAccess(){
+            private CommitPermit permit;
+            @Override public boolean allowed(State actual){
+                if(!before.state().equals(actual))return false;
+                BlastImpact.Observation observation=authority.inspect(impact,actual);
+                permit=impact.permits(observation)?observation.permit():null;
+                if(permit==null)return false;
+                try{permit.requireValid();return true;}
+                catch(RepositoryException.CommitRevoked revoked){return false;}
+            }
+            @Override public CommitPermit commitPermit(){return permit;}
+        });
+    }
+    @FunctionalInterface private interface CurrentAccess {
+        boolean allowed(State before);
+        default CommitPermit commitPermit(){return null;}
+    }
+    private CompletableFuture<Result> executeOwned(Request request,WorldEffects effects,CurrentAccess policyCurrent){
         if(closed||!inFlight.add(request.operation()))return done(Outcome.REJECTED,request.operation());
         return repository.operation(request.operation()).thenCompose(receipt->{
             if(receipt.isPresent()){
@@ -88,13 +120,14 @@ public final class StructureLifecycle implements AutoCloseable {
             return repository.tower(request.tower()).thenCompose(found->{
                 if(closed||found.isEmpty()||!matches(request,found.get()))return done(Outcome.REJECTED,request.operation());
                 TowerSnapshot before=found.get();
-                return scheduler.supply(request.anchor(),()->closed||!policyCurrent.getAsBoolean()?null:effects.prepare(request,before)).thenCompose(prepared->{
+                return scheduler.supply(request.anchor(),()->closed||!policyCurrent.allowed(before.state())?null:effects.prepare(request,before)).thenCompose(prepared->{
                     if(prepared==null)return done(Outcome.REJECTED,request.operation());
                     Intent intent;
                     try { State after=after(request,before.state(),prepared);
                         var context=RecoveryEnvelope.decode(prepared.evidence()).filter(c->c.kind().equals(kind(request))&&c.anchor().equals(request.anchor()));
                         Document original=RecoveryEnvelope.original(prepared.evidence());
-                        Document payload=new Document(1,fingerprint(request)+"\n"+original.content());
+                        Document payload=new Document(1,fingerprint(request)+"\n"
+                                +(request.impact()==null?"":request.impact().encode()+"\n")+original.content());
                         Document recovery=recoveryEvidence(request,payload,context);
                         intent=new Intent(request.operation(),request.tower(),before.rowVersion(),request.generation(),request.revision(),kind(request),after,recovery);
                     } catch(RuntimeException invalid){return discard(request,effects,prepared);}
@@ -129,26 +162,31 @@ public final class StructureLifecycle implements AutoCloseable {
         return scheduler.supply(r.anchor(),()->{effects.discard(r,prepared);return new Result(Outcome.REJECTED,r.operation());})
                 .exceptionally(failure->new Result(Outcome.QUARANTINED,r.operation()));
     }
-    private CompletableFuture<Result> run(Claim claim,WorldEffects effects,BooleanSupplier policyCurrent){
+    private CompletableFuture<Result> run(Claim claim,WorldEffects effects,CurrentAccess policyCurrent){
         Request r=claim.request();
-        return variantReady(r,claim.operation().before().tower().variantId()).thenCompose(variantReady->scheduler.supply(r.anchor(),()->!closed&&variantReady&&policyCurrent.getAsBoolean()&&effects.validate(claim)&&effects.apply(claim)))
+        return variantReady(r,claim.operation().before().tower().variantId()).thenCompose(variantReady->scheduler.supply(r.anchor(),()->!closed&&variantReady&&policyCurrent.allowed(claim.operation().before())&&effects.validate(claim)&&effects.apply(claim)))
                 .handle((applied,failure)->failure==null&&Boolean.TRUE.equals(applied)).thenCompose(applied->{
                     if(!applied)return rollback(claim,effects);
-                    return variantReady(r,claim.operation().before().tower().variantId()).thenCompose(variantReady->scheduler.supply(r.anchor(),()->!closed&&variantReady&&policyCurrent.getAsBoolean()&&effects.validate(claim)&&effects.verify(claim)))
+                    return variantReady(r,claim.operation().before().tower().variantId()).thenCompose(variantReady->scheduler.supply(r.anchor(),()->!closed&&variantReady&&policyCurrent.allowed(claim.operation().before())&&effects.validate(claim)&&effects.verify(claim)))
                             .handle((verified,failure)->failure==null&&Boolean.TRUE.equals(verified))
                             .thenCompose(verified->verified?finish(claim,effects,policyCurrent):rollback(claim,effects));
                 });
     }
     private record CommitCheck(CommitPermit permit) {}
-    private CompletableFuture<Result> finish(Claim claim,WorldEffects effects,BooleanSupplier policyCurrent){
+    private CompletableFuture<Result> finish(Claim claim,WorldEffects effects,CurrentAccess policyCurrent){
         Operation op=claim.operation();UUID id=op.intent().id();
         return repository.advanceOperation(id,op.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"Owner verified named structure effects; world/player saves remain independent")
                 .thenCompose(applied->variantReady(claim.request(),op.before().tower().variantId())
-                        .thenCompose(ready->scheduler.supply(claim.request().anchor(),()->!closed&&ready&&policyCurrent.getAsBoolean()&&effects.validate(claim)
-                                ?new CommitCheck(effects.commitPermit()):null))
+                        .thenCompose(ready->scheduler.supply(claim.request().anchor(),()->!closed&&ready&&policyCurrent.allowed(claim.operation().before())&&effects.validate(claim)
+                                ?new CommitCheck(combine(policyCurrent.commitPermit(),effects.commitPermit())):null))
                         .handle((check,failure)->failure==null?check:null)
                         .thenCompose(check->check==null?rollback(claim,effects,applied):complete(claim,effects,applied,check.permit())))
                 .exceptionallyCompose(failure->quarantineLatest(claim));
+    }
+    private static CommitPermit combine(CommitPermit first,CommitPermit second){
+        if(first==null)return second;
+        if(second==null)return first;
+        return CommitPermit.allOf(first,second);
     }
     private CompletableFuture<Result> complete(Claim claim,WorldEffects effects,Operation applied,CommitPermit permit){
         UUID id=applied.intent().id();
@@ -220,6 +258,7 @@ public final class StructureLifecycle implements AutoCloseable {
                     &&(r.policy().explicitOverride()||r.policy().now()>=t.expandAfter());
             case COMPACT->t.form()==Form.EXPANDED&&(r.policy().explicitOverride()||r.actor().equals(t.controller()));
             case DEFEAT->t.form()==Form.EXPANDED&&t.hp()==0;
+            case BLAST->r.impact().matches(row.state());
             case BREAK->t.form()==Form.COMPACT;
             case ADMIN_RECOVER->t.form()==Form.EXPANDED&&r.policy().explicitOverride();
         };
@@ -234,11 +273,13 @@ public final class StructureLifecycle implements AutoCloseable {
                 .subtract(BigDecimal.valueOf(tower.hp())).max(BigDecimal.ZERO);
     }
     private static State after(Request r,State before,Preparation prepared){
-        Tower t=before.tower();Form form=switch(r.action()){case PLACE,COMPACT,DEFEAT->Form.COMPACT;case EXPAND->Form.EXPANDED;case BREAK,ADMIN_RECOVER->Form.GROUND;};
+        Tower t=before.tower();Form form=switch(r.action()){case PLACE,COMPACT,DEFEAT->Form.COMPACT;case EXPAND->Form.EXPANDED;case BREAK,ADMIN_RECOVER,BLAST->Form.GROUND;};
         long generation=r.action()==Action.PLACE||form==Form.GROUND?Math.incrementExact(t.generation()):t.generation();
         long revision=Math.incrementExact(t.deploymentRevision());
-        Tower next=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),form,generation,revision,form==Form.EXPANDED?r.actor():null,
-                form==Form.GROUND?null:r.base(),t.light(),t.defence(),t.expandAfter(),t.repairAfter());
+        double hp=r.impact()==null?t.hp():r.impact().remainingHp(t.hp());
+        long repairAfter=r.impact()==null?t.repairAfter():r.impact().repairAfter(t);
+        Tower next=new Tower(t.id(),t.variantId(),hp,t.maximumHp(),form,generation,revision,form==Form.EXPANDED?r.actor():null,
+                form==Form.GROUND?null:r.base(),t.light(),t.defence(),t.expandAfter(),repairAfter);
         if(form==Form.GROUND){Ground g=Objects.requireNonNull(prepared.stagedGround());
             if(!g.deliveryOperation().equals(r.operation())||!g.world().equals(r.base().world())||g.chunkX()!=r.anchor().chunkX()||g.chunkZ()!=r.anchor().chunkZ()||!prepared.manifest().isEmpty())throw new IllegalArgumentException("Ground staging ownership");
         }else if(prepared.stagedGround()!=null)throw new IllegalArgumentException("Unexpected drop");
@@ -260,12 +301,20 @@ public final class StructureLifecycle implements AutoCloseable {
         if(form==Form.COMPACT&&unique.size()!=1)throw new IllegalArgumentException("Compact footprint must be one voxel");
         return new State(next,prepared.stagedGround(),prepared.manifest());
     }
-    private static String fingerprint(Request r){return r.toString();}
+    private static String fingerprint(Request r){
+        // Keep existing receipts stable after adding blast-specific request evidence.
+        return r.impact()==null?"Request[operation="+r.operation()+", tower="+r.tower()+", rowVersion="+r.rowVersion()
+                +", generation="+r.generation()+", revision="+r.revision()+", actor="+r.actor()+", session="+r.session()
+                +", action="+r.action()+", base="+r.base()+", policy="+r.policy()+"]"
+                :"blast-request:"+r.operation()+":"+r.tower()+":"+r.rowVersion()+":"+r.generation()+":"+r.revision()
+                +":"+r.policy().revision()+":"+r.policy().cooldownMillis();
+    }
     static String kind(Request r){
         return switch(r.action()){
             case COMPACT->STRUCTURE_EXIT_COMPACT;
             case ADMIN_RECOVER->STRUCTURE_EXIT_RECOVER;
             case DEFEAT->STRUCTURE_DEFEAT;
+            case BLAST->r.impact().expanded()?STRUCTURE_EXIT_BLAST:STRUCTURE_BLAST;
             default->"structure-"+r.action().name().toLowerCase(Locale.ROOT);
         };
     }
@@ -274,7 +323,7 @@ public final class StructureLifecycle implements AutoCloseable {
         boolean matchingKind=storedKind.equals(kind(r))
                 ||r.action()==Action.COMPACT&&storedKind.equals("structure-compact")
                 ||r.action()==Action.ADMIN_RECOVER&&storedKind.equals("structure-admin_recover");
-        return matchingKind&&RecoveryEnvelope.original(op.intent().effects()).content().startsWith(fingerprint(r)+"\n")&&op.intent().towerId().equals(r.tower())&&op.intent().expectedRowVersion()==r.rowVersion()
+        return matchingKind&&RecoveryEnvelope.original(op.intent().effects()).content().startsWith(fingerprint(r)+"\n"+(r.impact()==null?"":r.impact().encode()+"\n"))&&op.intent().towerId().equals(r.tower())&&op.intent().expectedRowVersion()==r.rowVersion()
                 &&op.intent().expectedGeneration()==r.generation()&&op.intent().expectedDeploymentRevision()==r.revision();
     }
     private static Throwable unwrap(Throwable e){while(e instanceof CompletionException&&e.getCause()!=null)e=e.getCause();return e;}
