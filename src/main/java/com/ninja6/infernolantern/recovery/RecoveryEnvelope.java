@@ -5,6 +5,7 @@ import com.ninja6.infernolantern.scheduling.WorldScheduler.Anchor;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 /** Named observation recipe, not proof that independent Minecraft saves agree. */
 public final class RecoveryEnvelope {
@@ -19,7 +20,7 @@ public final class RecoveryEnvelope {
             if(!KINDS.contains(kind)||original.version()!=1)throw new IllegalArgumentException("Recovery recipe");
             if(profile==Profile.INVENTORY&&inventory==null)throw new IllegalArgumentException("Missing source evidence");
             if(profile==Profile.INVENTORY&&!Set.of("item-drop","item-pickup","fixture-item-delivery").contains(kind)
-                    ||profile==Profile.STRUCTURE&&(!kind.startsWith("structure-")||kind.equals("structure-activation-review"))
+                    ||profile==Profile.STRUCTURE&&(!kind.startsWith("structure-")||kind.equals("structure-activation-review")||timedStructureExit(kind))
                     ||profile==Profile.STRUCTURE&&kind.equals("structure-place")&&inventory==null
                     ||profile==Profile.INTENTIONAL_LOSS&&(!kind.equals("item-loss")||!intentional(original)))throw new IllegalArgumentException("Recipe/profile mismatch");
             if(profile==Profile.INVENTORY){
@@ -29,7 +30,7 @@ public final class RecoveryEnvelope {
         }
     }
     private static final Set<String> KINDS=Set.of("item-drop","item-pickup","item-loss","item-place","fixture-item-delivery","fixture-activation-review",
-            "structure-place","structure-expand","structure-compact","structure-defeat","structure-break","structure-admin_recover","structure-activation-review");
+            "structure-place","structure-expand","structure-compact",STRUCTURE_DEFEAT,STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER,"structure-break","structure-admin_recover","structure-activation-review");
     public static Document item(String kind,Anchor anchor,Document original) {
         Inventory source=inventory(original,false,null);
         Profile profile=(kind.equals("item-drop")||kind.equals("item-pickup"))&&source!=null&&original.content().startsWith("action="+kind.substring(5)+";")?Profile.INVENTORY:Profile.ADMIN;
@@ -41,7 +42,7 @@ public final class RecoveryEnvelope {
         return encode(new Context(kind,anchor,kind.equals("fixture-item-delivery")&&source!=null?Profile.INVENTORY:Profile.ADMIN,source,original));
     }
     public static Document structure(String kind,Anchor anchor,Document original,Inventory source) {
-        Profile profile=kind.equals("structure-activation-review")||kind.equals("structure-place")&&source==null?Profile.ADMIN:Profile.STRUCTURE;
+        Profile profile=timedStructureExit(kind)||kind.equals("structure-activation-review")||kind.equals("structure-place")&&source==null?Profile.ADMIN:Profile.STRUCTURE;
         return encode(new Context(kind,anchor,profile,source,original));
     }
     public static Document administrative(String kind,Anchor anchor,Document original){return encode(new Context(kind,anchor,Profile.ADMIN,null,original));}
@@ -68,7 +69,6 @@ public final class RecoveryEnvelope {
             case "structure-place"->a.form()==Form.PORTABLE&&b.form()==Form.COMPACT&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter();
             case "structure-expand"->a.form()==Form.COMPACT&&b.form()==Form.EXPANDED&&a.generation()==b.generation()&&nextRevision&&a.expandAfter()==b.expandAfter();
             case "structure-compact"->a.form()==Form.EXPANDED&&b.form()==Form.COMPACT&&a.generation()==b.generation()&&nextRevision;
-            case "structure-defeat"->a.form()==Form.EXPANDED&&b.form()==Form.COMPACT&&a.hp()==0&&b.hp()==0&&a.generation()==b.generation()&&nextRevision;
             case "structure-break"->a.form()==Form.COMPACT&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter()&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             case "structure-admin_recover"->a.form()==Form.EXPANDED&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             default->false;

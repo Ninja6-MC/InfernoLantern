@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import static com.ninja6.infernolantern.structure.StructureLifecycle.*;
@@ -19,20 +20,21 @@ class StructureLifecycleTest {
     final UUID id=UUID.randomUUID(),worldId=UUID.randomUUID(),actor=UUID.randomUUID(),session=UUID.randomUUID();
     final Position base=new Position(worldId,4,70,4,"north");
     final Owner scheduler=new Owner();
+    final AtomicLong exitClock=new AtomicLong(1000);
     final Map<Cell,String> blocks=new HashMap<>();
     final Set<UUID> sources=new HashSet<>(),usableDrops=new HashSet<>();
     int physical,activated;
     @BeforeEach void setup()throws Exception{
         repository=await(SqliteRepository.open(directory.resolve("structures.db"),256));
         await(repository.createVariant(new Variant("fixture",1,VariantStatus.ACTIVE,new Document(1,"immutable generic definition"),0)));
-        seed(id);service=new StructureLifecycle(repository,scheduler);
+        seed(id);service=new StructureLifecycle(repository,scheduler,exitClock::get);
     }
     void seed(UUID tower)throws Exception{await(repository.createTower(new Tower(tower,"fixture",75,100,Form.PORTABLE,1,0,null,null,true,false,33,44)));sources.add(tower);}
     @AfterEach void close()throws Exception{service.close();await(repository.closeAsync());}
     static <T>T await(CompletableFuture<T> f)throws Exception{return f.get(10,TimeUnit.SECONDS);}
     TowerSnapshot row()throws Exception{return await(repository.tower(id)).orElseThrow();}
     Request request(Action action)throws Exception{return request(action,row(),actor,false,1000);}
-    Request request(Action action,TowerSnapshot t,UUID who,boolean override,long now){return new Request(UUID.randomUUID(),t.state().tower().id(),t.rowVersion(),t.state().tower().generation(),t.state().tower().deploymentRevision(),who,session,action,base,new Policy(1,50,200,now,override));}
+    Request request(Action action,TowerSnapshot t,UUID who,boolean override,long now){exitClock.set(now);return new Request(UUID.randomUUID(),t.state().tower().id(),t.rowVersion(),t.state().tower().generation(),t.state().tower().deploymentRevision(),who,session,action,base,new Policy(1,50,200,now,override));}
     Result drain(CompletableFuture<Result> f)throws Exception{
         long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(10);
         while(!f.isDone()){scheduler.runOne();if(System.nanoTime()>until)fail("Timed out");Thread.yield();}return await(f);
@@ -106,6 +108,27 @@ class StructureLifecycleTest {
         execute(Action.PLACE);Request breaking=request(Action.BREAK);Effects effects=new Effects();assertEquals(Outcome.COMMITTED,drain(service.execute(breaking,effects)).outcome());
         assertEquals(33,row().state().tower().expandAfter());assertEquals(44,row().state().tower().repairAfter());assertEquals(3,row().state().tower().generation());assertFalse(sources.contains(id));
         int calls=physical;assertEquals(Outcome.COMMITTED,drain(service.execute(breaking,new Effects())).outcome());assertEquals(calls,physical);assertEquals(1,usableDrops.size());
+    }
+    @Test void manualCompactionAndAdminRecoveryStartTheirCooldownAfterDelayedWorldEffects()throws Exception{
+        execute(Action.PLACE);execute(Action.EXPAND);
+        Request compact=request(Action.COMPACT);
+        Effects delayed=new Effects(){
+            @Override public boolean verify(Claim claim){exitClock.set(9000);return super.verify(claim);}
+        };
+        assertEquals(Outcome.COMMITTED,drain(service.execute(compact,delayed)).outcome());
+        assertEquals(9200,row().state().tower().expandAfter());
+        exitClock.set(20000);
+        assertEquals(Outcome.COMMITTED,drain(service.execute(compact,new Effects())).outcome());
+        assertEquals(9200,row().state().tower().expandAfter());
+        assertEquals(Outcome.COMMITTED,drain(service.execute(request(Action.EXPAND,row(),actor,false,9300),new Effects())).outcome());
+        Request recover=request(Action.ADMIN_RECOVER,row(),actor,true,9301);
+        Effects delayedRecovery=new Effects(){
+            @Override public boolean verify(Claim claim){exitClock.set(19000);return super.verify(claim);}
+        };
+        assertEquals(Outcome.COMMITTED,drain(service.execute(recover,delayedRecovery)).outcome());
+        assertEquals(Form.GROUND,row().state().tower().form());
+        assertEquals(19200,row().state().tower().expandAfter());
+        assertEquals(19200,await(repository.operation(recover.operation())).orElseThrow().intent().after().tower().expandAfter());
     }
     @Test void zeroDurationExitClearsDeadlineAndAClockChangeCannotReenableIt()throws Exception{
         execute(Action.PLACE);execute(Action.EXPAND);

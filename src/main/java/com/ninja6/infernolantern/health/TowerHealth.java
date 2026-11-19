@@ -101,10 +101,8 @@ public final class TowerHealth {
         return scheduler.supply(anchor(tower), () -> {
             if (!catalog.isPublished(settings)) return null;
             var definition = entry.definition();
-            long exitTime = now();
-            Math.addExact(exitTime, definition.expansionCooldownMillis());
             var policy = new StructureLifecycle.Policy(settings.revision(), definition.expansionPercent(),
-                    definition.expansionCooldownMillis(), exitTime, false);
+                    definition.expansionCooldownMillis(), 0, false);
             var prepared = effects.prepare(observed);
             return prepared == null ? null : new DefeatPlan(policy, prepared);
         }).handle((plan, failure) -> failure == null ? plan : null)

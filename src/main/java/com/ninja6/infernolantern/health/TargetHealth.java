@@ -45,12 +45,23 @@ public final class TargetHealth {
         Objects.requireNonNull(audience);
         var tower = observed.state().tower();
         if (tower.position() == null) return CompletableFuture.completedFuture(false);
-        return repository.tower(tower.id()).thenCompose(found -> scheduler.supply(TowerHealth.anchor(tower), () -> {
-            TowerSnapshot current = found.orElse(null);
-            boolean visible = current != null && TowerHealth.deployed(current) && current.equals(observed)
-                    && audience.targets(viewer, current);
-            audience.display(viewer, visible ? new Sample(tower.hp(), tower.maximumHp()) : null);
-            return visible;
-        }));
+        var anchor = TowerHealth.anchor(tower);
+        if (!TowerHealth.deployed(observed)) return clear(viewer, anchor, audience).thenApply(ignored -> false);
+        return repository.observeTower(observed).thenCompose(found -> {
+            var permit = found.orElse(null);
+            try {
+                return scheduler.supply(anchor, () -> {
+                    // Target proof may run caller hooks, so the durable fence is checked again at display admission.
+                    boolean visible = permit != null && permit.current() && audience.targets(viewer, observed) && permit.current();
+                    audience.display(viewer, visible ? new Sample(tower.hp(), tower.maximumHp()) : null);
+                    return visible;
+                }).whenComplete((visible, failure) -> {
+                    if (permit != null) permit.close();
+                });
+            } catch (RuntimeException | Error failure) {
+                if (permit != null) permit.close();
+                throw failure;
+            }
+        });
     }
 }

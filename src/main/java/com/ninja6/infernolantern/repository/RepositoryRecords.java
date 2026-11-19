@@ -8,6 +8,12 @@ public final class RepositoryRecords {
     public static final int MAX_PAGE = 256;
     public static final int MAX_PAYLOAD = 1_048_576;
     public static final int MAX_COMPONENTS = 4096;
+    public static final String STRUCTURE_EXIT_COMPACT = "structure-exit-compact";
+    public static final String STRUCTURE_EXIT_RECOVER = "structure-exit-admin-recover";
+    public static final String STRUCTURE_DEFEAT = "structure-defeat";
+    public static boolean timedStructureExit(String kind) {
+        return STRUCTURE_EXIT_COMPACT.equals(kind) || STRUCTURE_EXIT_RECOVER.equals(kind) || STRUCTURE_DEFEAT.equals(kind);
+    }
     public enum Form { PORTABLE, GROUND, COMPACT, EXPANDED, LOST }
     public enum VariantStatus { ACTIVE, RETIRED }
     public enum Phase { INTENT, EFFECTS_APPLIED, RECONCILING, COMPLETE, ROLLED_BACK }

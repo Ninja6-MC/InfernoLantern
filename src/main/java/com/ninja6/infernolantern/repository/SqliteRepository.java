@@ -6,12 +6,17 @@ import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 /** Async storage only. A committed database intent is not a committed Minecraft effect. */
 public final class SqliteRepository {
     private final ArrayBlockingQueue<Job<?>> queue;
     private final Object admission = new Object();
+    private final Semaphore observationSlots;
+    private final ConcurrentMap<UUID,Set<TowerObservation>> observations = new ConcurrentHashMap<>();
+    private volatile Object observationCatalog = new Object();
     private final CompletableFuture<SqliteRepository> ready = new CompletableFuture<>();
     private final CompletableFuture<Void> closed = new CompletableFuture<>();
     private volatile boolean closing;
@@ -25,6 +30,7 @@ public final class SqliteRepository {
     private SqliteRepository(Path file,int capacity) {
         if(capacity<1||capacity>100_000)throw new IllegalArgumentException("Queue capacity");
         queue=new ArrayBlockingQueue<>(capacity);
+        observationSlots=new Semaphore(capacity);
         worker=new Thread(()->run(file),"infernolantern-repository");
         worker.setDaemon(true);
         worker.start();
@@ -55,6 +61,7 @@ public final class SqliteRepository {
         }catch(Throwable e){failure=e;ready.completeExceptionally(e);}
         finally {
             synchronized(admission){closing=true;}
+            observations.keySet().forEach(this::invalidateObservations);
             Job<?> job;while((job=queue.poll())!=null)job.future().completeExceptionally(failure==null?new RepositoryException("Repository closed"):failure);
             try {if(connection!=null)connection.close();}catch(SQLException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
             if(failure==null)closed.complete(null);else closed.completeExceptionally(failure);
@@ -69,7 +76,11 @@ public final class SqliteRepository {
         return future;
     }
     /** Stop admission, drain accepted requests, then close on the database thread. Never join on a world thread. */
-    public CompletableFuture<Void> closeAsync() { synchronized(admission){closing=true;} return closed; }
+    public CompletableFuture<Void> closeAsync() {
+        synchronized(admission){closing=true;}
+        observations.keySet().forEach(this::invalidateObservations);
+        return closed;
+    }
     /** Immutable startup diagnostic, published with the successfully opened repository. */
     public String validatedEngineVersion(){return validatedEngineVersion;}
     public int queuedRequests() {return queue.size();}
@@ -165,6 +176,7 @@ public final class SqliteRepository {
         }
         return submit(()->transaction(()->{
             CatalogSnapshot current=loadCatalog();require(current.equals(expected),"Catalog publication changed");
+            observationCatalog=new Object();
             var existing=new HashMap<String,Variant>();for(Variant v:current.variants())existing.put(v.id(),v);
             var all=new TreeSet<String>(existing.keySet());all.addAll(wanted.keySet());
             for(String id:geometry)require(!pendingRepresentation(id,true),"Pending geometry change needs resolution");
@@ -240,6 +252,7 @@ public final class SqliteRepository {
             Tower changed=new Tower(t.id(),t.variantId(),Math.max(0,t.hp()-damage),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),
                     t.controller(),t.position(),t.light(),t.defence(),t.expandAfter(),Math.max(t.repairAfter(),repairAfter));
             State state=new State(changed,null,old.state().components());long version=next(expectedVersion);
+            invalidateObservations(t.id());
             require(update("UPDATE towers SET hp=?,repair_after=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",
                     changed.hp(),changed.repairAfter(),version,t.id(),expectedVersion)==1,"Damage CAS lost");
             return new TowerSnapshot(state,version,null);
@@ -253,6 +266,44 @@ public final class SqliteRepository {
         writeTower(state,0,null,true,0,null);return new TowerSnapshot(state,0,null);
     }));}
     public CompletableFuture<Optional<TowerSnapshot>> tower(UUID id){Objects.requireNonNull(id);return submit(()->snapshot(()->Optional.ofNullable(loadTower(id))));}
+    /**
+     * Authoritative display fence for the single runtime repository owner.
+     * Invalidated before a target-row mutation, catalog publication or shutdown.
+     */
+    public final class TowerObservation implements AutoCloseable {
+        private final UUID tower;
+        private final Object catalog;
+        private final AtomicBoolean open=new AtomicBoolean(true);
+
+        private TowerObservation(UUID tower){this.tower=tower;this.catalog=observationCatalog;}
+        public boolean current(){return !closing&&fatal==null&&open.get()&&catalog==observationCatalog;}
+        @Override public void close(){
+            if(!open.compareAndSet(true,false))return;
+            observations.computeIfPresent(tower,(id,holders)->{
+                holders.remove(this);return holders.isEmpty()?null:holders;
+            });
+            observationSlots.release();
+        }
+    }
+    /** Snapshot and registration are serialized with writes. Close on every display or scheduling outcome. */
+    public CompletableFuture<Optional<TowerObservation>> observeTower(TowerSnapshot expected){
+        Objects.requireNonNull(expected);
+        UUID id=expected.state().tower().id();
+        return submit(()->{
+            if(closing||!expected.equals(snapshot(()->loadTower(id)))||!observationSlots.tryAcquire())return Optional.empty();
+            TowerObservation observation=new TowerObservation(id);
+            observations.compute(id,(key,holders)->{
+                if(holders==null)holders=new HashSet<>();
+                holders.add(observation);return holders;
+            });
+            if(closing){observation.close();return Optional.empty();}
+            return Optional.of(observation);
+        });
+    }
+    private void invalidateObservations(UUID tower){
+        Set<TowerObservation> holders=observations.remove(tower);
+        if(holders!=null)holders.forEach(TowerObservation::close);
+    }
     /** Paged snapshots have no shared live collection or database cursor. UUID lexical cursor is exclusive. */
     public CompletableFuture<List<TowerSnapshot>> towers(UUID after,int limit){page(limit);return submit(()->snapshot(()->{
         var result=new ArrayList<TowerSnapshot>();
@@ -298,6 +349,7 @@ public final class SqliteRepository {
     }
     private void writeTower(State state,long version,UUID operation,boolean insert,long expectedVersion,UUID expectedOperation)throws Exception{
         SnapshotCodec.encode(state);Tower t=state.tower();Position p=t.position();
+        invalidateObservations(t.id());
         Object[] values={t.variantId(),t.hp(),t.maximumHp(),t.form().name(),t.generation(),t.deploymentRevision(),t.controller(),p==null?null:p.world(),p==null?null:p.x(),p==null?null:p.y(),p==null?null:p.z(),p==null?null:p.orientation(),t.light(),t.defence(),t.expandAfter(),t.repairAfter(),version,operation,t.id()};
         if(insert)update("INSERT INTO towers(variant_id,hp,maximum_hp,form,generation,deployment_revision,controller,world,x,y,z,orientation,light,defence,expand_after,repair_after,row_version,active_operation,id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",values);
         else {
@@ -334,6 +386,7 @@ public final class SqliteRepository {
         byte[] beforeBytes=SnapshotCodec.encode(tower.state()),afterBytes=SnapshotCodec.encode(intent.after());
         update("INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,?,?,?,0,?)",intent.id(),intent.towerId(),intent.expectedRowVersion(),intent.expectedGeneration(),intent.expectedDeploymentRevision(),intent.kind(),beforeBytes,afterBytes,intent.effects().version(),intent.effects().content(),Phase.INTENT.name(),"Intent recorded; world effects unverified");
         syncCells(intent.towerId(), List.of(tower.state(), intent.after()), intent.id());
+        invalidateObservations(intent.towerId());
         require(update("UPDATE towers SET active_operation=?,row_version=? WHERE id=? AND row_version=? AND active_operation IS NULL",intent.id(),next(intent.expectedRowVersion()),intent.towerId(),intent.expectedRowVersion())==1,"Intent CAS lost");
         return loadOperation(intent.id());
     }));}
@@ -379,13 +432,21 @@ public final class SqliteRepository {
     /** Native structure completion repeats its admission guard for managed definitions. */
     public CompletableFuture<Operation> completeStructureOperation(UUID id,long expected,long catalogRevision,String evidence,CommitPermit permit){
         if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");
-        text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision,true,permit);
+        text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision,true,permit,null);
     }
+    /** Stamp one verified deployed exit after SQLite writer admission. The clock is thread-safe and server independent. */
+    public CompletableFuture<Operation> completeStructureExit(UUID id,long expected,long catalogRevision,String evidence,
+            CommitPermit permit,long cooldownMillis,LongSupplier clock){
+        if(catalogRevision<0||cooldownMillis<0)throw new IllegalArgumentException("Exit policy bounds");
+        text(evidence,MAX_PAYLOAD);
+        return finish(id,expected,evidence,false,false,catalogRevision,true,permit,new ExitTiming(cooldownMillis,Objects.requireNonNull(clock)));
+    }
+    private record ExitTiming(long duration,LongSupplier clock) {}
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){
-        return finish(id,expected,evidence,rollback,allowReceipt,catalogRevision,false,null);
+        return finish(id,expected,evidence,rollback,allowReceipt,catalogRevision,false,null,null);
     }
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
-            boolean managedOnly,CommitPermit permit){Objects.requireNonNull(id);return submit(()->transaction(()->{
+            boolean managedOnly,CommitPermit permit,ExitTiming timing){Objects.requireNonNull(id);return submit(()->transaction(()->{
         if(!managedOnly&&catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
@@ -394,9 +455,36 @@ public final class SqliteRepository {
         if(managedOnly&&catalogManaged(op.before().tower().variantId())&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Escrow escrow=loadEscrow(id);
         if(escrow!=null)require(rollback?(escrow.payment()==PaymentPhase.REFUNDED&&escrow.hpPhase()==HpPhase.NOT_APPLIED):(escrow.payment()==PaymentPhase.COMMITTED&&escrow.hpPhase()==HpPhase.APPLIED),"Escrow not settled; retain reconciliation");
-        writeTower(rollback?op.before():op.intent().after(),Math.addExact(op.intent().expectedRowVersion(),2),null,false,next(op.intent().expectedRowVersion()),id);
-        require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=?",terminal.name(),next(expected),evidence,id,expected)==1,"Completion CAS lost");return loadOperation(id);
+        State after=op.intent().after();
+        if(!rollback){
+            require(timedStructureExit(op.intent().kind())==(timing!=null),"Timed exit completion requires a verified exit clock");
+            if(timing!=null)after=stampExit(op,timing);
+        }
+        writeTower(rollback?op.before():after,Math.addExact(op.intent().expectedRowVersion(),2),null,false,next(op.intent().expectedRowVersion()),id);
+        int saved=timing==null
+                ?update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=?",
+                        terminal.name(),next(expected),evidence,id,expected)
+                :update("UPDATE operations SET phase=?,row_version=?,evidence=?,after_state=? WHERE id=? AND row_version=?",
+                        terminal.name(),next(expected),evidence,SnapshotCodec.encode(after),id,expected);
+        require(saved==1,"Completion CAS lost");return loadOperation(id);
     },permit));}
+    private State stampExit(Operation op,ExitTiming timing)throws Exception{
+        Tower before=op.before().tower();State after=op.intent().after();Tower tower=after.tower();
+        Form expectedForm=STRUCTURE_EXIT_RECOVER.equals(op.intent().kind())?Form.GROUND:Form.COMPACT;
+        require(before.form()==Form.EXPANDED&&tower.form()==expectedForm&&tower.expandAfter()==before.expandAfter()
+                        &&(!STRUCTURE_DEFEAT.equals(op.intent().kind())||before.hp()==0&&tower.hp()==0),
+                "Invalid timed structure exit");
+        if(catalogManaged(tower.variantId())){
+            Variant variant=loadVariant(tower.variantId());
+            require(CatalogCodec.definition(variant.lastValidDefinition()).expansionCooldownMillis()==timing.duration(),
+                    "Timed exit duration does not match the current catalog");
+        }
+        long now=timing.clock().getAsLong();nonnegative(now);
+        long deadline=timing.duration()==0?0:Math.addExact(now,timing.duration());
+        Tower timed=new Tower(tower.id(),tower.variantId(),tower.hp(),tower.maximumHp(),tower.form(),tower.generation(),tower.deploymentRevision(),
+                tower.controller(),tower.position(),tower.light(),tower.defence(),deadline,tower.repairAfter());
+        return new State(timed,after.ground(),after.components());
+    }
     private Operation requireOperation(UUID id,long version)throws Exception{Operation op=loadOperation(id);require(op!=null&&op.rowVersion()==version&&op.pending(),"Stale or terminal operation");return op;}
     private Operation loadOperation(UUID id)throws Exception{
         try(var p=statement("SELECT * FROM operations WHERE id=?",id);var r=p.executeQuery()){

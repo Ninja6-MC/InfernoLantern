@@ -31,7 +31,7 @@ class TowerHealthTest {
     @BeforeEach void open() throws Exception {
         repository = get(SqliteRepository.open(directory.resolve("health.db"), 256));
         catalog = new CatalogService(repository, owner, definition -> {}, published -> CompletableFuture.completedFuture(null));
-        structures = new StructureLifecycle(repository, owner);
+        structures = new StructureLifecycle(repository, owner, clock::get);
         health = new TowerHealth(repository, catalog, owner, structures, clock::get);
         settings = get(catalog.reload(config())).snapshot();
     }
@@ -141,6 +141,62 @@ class TowerHealthTest {
         assertEquals(1, success.applied);
     }
 
+    @Test void delayedDefeatStartsCooldownAtVerifiedExitAndSameReceiptDoesNotRestartIt() throws Exception {
+        var before = placed(repository, Form.EXPANDED);
+        var op = UUID.randomUUID();
+        var delayed = new CompactEffects() {
+            @Override public boolean apply(Claim claim) {
+                assertEquals(170, claim.operation().intent().after().tower().expandAfter());
+                clock.set(121_000);
+                return super.apply(claim);
+            }
+            @Override public boolean activate(Claim claim, TowerSnapshot completed) {
+                assertEquals(completed.state(), claim.operation().intent().after());
+                return super.activate(claim, completed);
+            }
+        };
+        var hit = owner.drain(health.damage(settings, before, new TowerHealth.Damage(75, 200), this::allowedDamage,
+                op, zero -> delayed));
+        assertEquals(Outcome.COMMITTED, hit.defeat().outcome());
+        var compact = read(before.state().tower().id());
+        assertEquals(181_000, compact.state().tower().expandAfter());
+        assertEquals(1_200, compact.state().tower().repairAfter());
+        var receipt = get(repository.operation(op)).orElseThrow();
+        assertEquals(compact.state(), receipt.intent().after());
+        clock.set(300_000);
+        var replay = new CompactEffects();
+        assertEquals(Outcome.COMMITTED, owner.drain(health.compactDefeated(settings, hit.settled(), op, row -> replay)).outcome());
+        assertEquals(0, replay.applied);
+        assertEquals(receipt, get(repository.operation(op)).orElseThrow());
+        assertEquals(compact, read(before.state().tower().id()));
+    }
+
+    @Test void genericCompletionCannotPublishADeadlineFromPendingExitEvidence() throws Exception {
+        var before = placed(repository, Form.EXPANDED);
+        var op = UUID.randomUUID();
+        var hit = health.damage(settings, before, new TowerHealth.Damage(75, 200), this::allowedDamage,
+                op, zero -> new CompactEffects());
+        // Authorization, factory, prepare, apply and verify, then leave the commit callback queued.
+        for (int i = 0; i < 5; i++) {
+            owner.await();
+            owner.run();
+        }
+        owner.await();
+        var applied = get(repository.operation(op)).orElseThrow();
+        assertEquals(Phase.EFFECTS_APPLIED, applied.phase());
+        assertEquals(170, applied.intent().after().tower().expandAfter());
+        assertThrows(ExecutionException.class, () -> get(repository.completeOperation(op, applied.rowVersion(), "Fixture")));
+
+        try (var writer = SqliteTestConnections.open(directory.resolve("health.db"))) {
+            writer.setAutoCommit(false);
+            owner.run();
+            clock.set(241_000);
+            writer.setAutoCommit(true);
+        }
+        assertEquals(Outcome.COMMITTED, owner.drain(hit).defeat().outcome());
+        assertEquals(301_000, read(before.state().tower().id()).state().tower().expandAfter());
+    }
+
     @Test void uncertainDefeatRetainsZeroAndRejectsRetryWithoutPhysicalReplay() throws Exception {
         var before = placed(repository, Form.EXPANDED);
         var denied = new CompactEffects();
@@ -194,6 +250,86 @@ class TowerHealthTest {
         assertEquals(50, current.state().tower().maximumHp());
         assertEquals(230, current.state().tower().repairAfter());
         assertEquals(before.rowVersion() + 1, current.rowVersion());
+    }
+
+    @Test void capPublicationAndRowMutationsInvalidateQueuedPrivateSamples() throws Exception {
+        TargetHealth view = new TargetHealth(repository, owner);
+        var row = placed(repository, Form.EXPANDED);
+        var viewer = UUID.randomUUID();
+        var samples = new ArrayList<TargetHealth.Sample>();
+        var audience = new TargetHealth.Audience() {
+            @Override public boolean targets(UUID id, TowerSnapshot deployed) { owner.assertOwner(); return viewer.equals(id); }
+            @Override public void display(UUID id, TargetHealth.Sample sample) {
+                owner.assertOwner();
+                assertEquals(viewer, id);
+                samples.add(sample);
+            }
+        };
+
+        var queued = view.show(viewer, row, audience);
+        owner.await();
+        var smaller = variant();
+        smaller.put("maximum-hp", 50);
+        settings = get(catalog.reload(config(Map.of("test", smaller)))).snapshot();
+        assertFalse(owner.drain(queued));
+        assertNull(samples.removeFirst());
+
+        var clamped = read(row.state().tower().id());
+        assertTrue(owner.drain(view.show(viewer, clamped, audience)));
+        assertEquals(new TargetHealth.Sample(50, 50), samples.removeFirst());
+
+        var stale = view.show(viewer, clamped, audience);
+        owner.await();
+        // Apply a durable hit while the render waits in the owner queue.
+        var t = clamped.state().tower();
+        get(repository.damageTower(settings.revision(), t.id(), clamped.rowVersion(), t.generation(),
+                t.deploymentRevision(), 10, 400, null));
+        assertFalse(owner.drain(stale));
+        assertNull(samples.removeFirst());
+        assertTrue(samples.isEmpty());
+    }
+
+    @Test void failedDisplaySchedulingReleasesTheBoundedPermitAndShutdownInvalidatesIt() throws Exception {
+        var row = placed(repository, Form.EXPANDED);
+        get(repository.closeAsync());
+        repository = get(SqliteRepository.open(directory.resolve("health.db"), 1));
+        TargetHealth view = new TargetHealth(repository, owner);
+        var audience = new TargetHealth.Audience() {
+            @Override public boolean targets(UUID id, TowerSnapshot deployed) { return fail("Unavailable owner"); }
+            @Override public void display(UUID id, TargetHealth.Sample sample) { fail("Unavailable owner"); }
+        };
+        owner.available = false;
+        assertThrows(ExecutionException.class, () -> owner.drain(view.show(UUID.randomUUID(), row, audience)));
+        owner.available = true;
+
+        var permit = get(repository.observeTower(row)).orElseThrow();
+        assertTrue(permit.current());
+        assertTrue(get(repository.observeTower(row)).isEmpty());
+        var closing = repository.closeAsync();
+        assertFalse(permit.current());
+        permit.close();
+        get(closing);
+    }
+
+    @Test void targetProofCannotPublishAfterItCausesASynchronousRowChange() throws Exception {
+        TargetHealth view = new TargetHealth(repository, owner);
+        var row = placed(repository, Form.EXPANDED);
+        var viewer = UUID.randomUUID();
+        var audience = new TargetHealth.Audience() {
+            @Override public boolean targets(UUID id, TowerSnapshot deployed) {
+                owner.assertOwner();
+                var t = deployed.state().tower();
+                try {
+                    get(repository.damageTower(settings.revision(), t.id(), deployed.rowVersion(), t.generation(),
+                            t.deploymentRevision(), 5, 400, null));
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+                return true;
+            }
+            @Override public void display(UUID id, TargetHealth.Sample sample) { owner.assertOwner(); assertNull(sample); }
+        };
+        assertFalse(owner.drain(view.show(viewer, row, audience)));
     }
 
     @Test void privateHealthTracksOnlyCurrentDeployedTargetAndClearsOnLoss() throws Exception {

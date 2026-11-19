@@ -48,8 +48,12 @@ the approved admin override applies. Native eligibility, protection, and placeme
 conditions still apply. The requester receives private remaining-time feedback when
 otherwise eligible and prevented by the timer.
 
-A verified exit from the expanded form starts a fresh per-tower cooldown. A configured
-duration of zero writes an immediate eligibility timestamp of zero. Failed transitions
+Defeat, manual compaction and expanded administrative recovery start a fresh per-tower
+cooldown at the verified exit. The SQL worker samples wall time after writer admission
+and stores the deadline with the final tower and journal receipt in one transaction.
+Pending manifests keep the prior deadline and timed exits require a reviewed disposition
+if interrupted before completion. A completed receipt preserves its stamped deadline.
+A zero duration writes an immediate eligibility timestamp of zero. Failed transitions
 preserve the previous timestamp. Successful expansion, compact breaking, placement, and
 item transfer preserve the stored expansion timestamp and the separate repair lock.
 Deadlines are based on elapsed wall time, including offline time. There is no expansion
@@ -68,10 +72,12 @@ expansion eligibility. Existing expanded towers remain subject to the normal zer
 boundary and current access/capability policies.
 
 The targeted indicator is private to the player currently targeting a deployed tower.
-`TargetHealth` verifies an exact ready deployment snapshot and asks the owner-bound
-audience to confirm the live viewer session and exact current target component before
-rendering current/maximum HP to that player. The audience must clear on target loss,
-disconnect or world change. The native target resolver, rendering style, and client
+`TargetHealth` verifies an exact ready deployment snapshot and acquires a bounded
+observation permit from the runtime repository owner. A target-row write, catalog
+publication, or repository shutdown invalidates queued samples. The owner-bound
+audience confirms the live viewer and exact current target component. Display admission
+rechecks the permit and renders only to that viewer. The audience must clear on target
+loss, disconnect or world change. The native target resolver, rendering style, and client
 behavior remain integration work.
 
 ## Verification
