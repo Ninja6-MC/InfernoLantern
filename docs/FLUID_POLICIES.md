@@ -32,8 +32,10 @@ current native authorization.
 
 Changing fluid state in the target clearance after preparation requires a fresh request. In
 particular, a flow becoming source water is a distinct observation and does not silently authorize
-the previously prepared snapshot. The adapter checks exact state before writing. A compact layout
-can retain its exact already-owned waterlogged base during cleanup.
+the previously prepared snapshot. The adapter checks exact state before writing. Compaction can
+replace a still-owned waterlogged block with a different waterloggable compact block while preserving
+the same recorded source. Rollback restores the exact prior waterlogged block when the operation
+still owns its replacement.
 
 ## Submerged Defence
 
@@ -49,13 +51,23 @@ Defence preference for when the current conditions allow operation again.
 
 ## Piston movement and compact hits
 
-A piston can neither move reserved lantern components nor enter their reserved positions.
-`PaperPistonGuard` checks the base, head, affected sources and moved destinations of the event.
-The owner supplies a current loaded-cell lookup covering both committed and active-operation
-before/after reservations. The listener preserves existing cancellation and allows disjoint
-movements, including those in other worlds. Native structure routing requires the owner lookup
-to be published before use. The listener performs coordinate lookups without chunk loading or a
-database wait. [Paper piston event implementation](https://github.com/PaperMC/Paper/blob/main/paper-server/patches/sources/net/minecraft/world/level/block/piston/PistonBaseBlock.java.patch)
+Preparation and apply exclude existing piston bases, heads and moving blocks from the planned
+reservation. A one-block neighborhood check also rejects adjacent moving pistons and extended
+pistons facing into the reservation. The check uses loaded chunks only. An unobserved neighbor
+prevents admitting the affected layout. The layout cannot introduce a piston component.
+
+The runtime must publish its loaded-cell lookup for committed and pending before/after reservations
+before enabling native placement or structure effects. `PaperPistonGuard` then prevents piston
+placement in these cells, plus extension by a piston whose base or head overlaps them. Extend and
+retract callbacks check reported affected sources and moved destinations. The guard preserves
+existing cancellation and leaves disjoint movements unaffected. Lookups use exact coordinates
+without a chunk load or database wait.
+
+On pinned Paper a sticky retraction can write its base before its callback or remove its head
+without a callback. Admission and earlier extension establish the protected footprint before either
+path. The retract handler protects its reported moves. Direct world edits that bypass native
+admission remain outside this guarantee. A conflicting external edit stays in place for
+reconciliation. [Pinned Paper piston implementation](https://github.com/PaperMC/Paper/blob/1a995d67e68af9a46eb5fde023b3309921311f70/paper-server/patches/sources/net/minecraft/world/level/block/piston/PistonBaseBlock.java.patch#L16-L49)
 
 Ordinary non-blast hits affect expanded towers only. Compact bases remain subject to normal
 authorized breaking and the separate permitted blast transaction. Local tests confirm that the

@@ -176,6 +176,7 @@ public final class PaperStructureEffects implements WorldEffects {
     }
     private String replacement(Voxel voxel,Terrain terrain,Component previous) {
         BlockData result=Bukkit.createBlockData(voxel.replacement());
+        if(PaperPistonGuard.pistonPart(result.getMaterial()))throw new IllegalArgumentException("Unsupported piston replacement");
         if(result.getMaterial()==Material.WATER||result.getMaterial()==Material.LAVA
                 ||result instanceof Waterlogged configured&&configured.isWaterlogged())
             throw new IllegalArgumentException("Replacement must not introduce fluid");
@@ -183,11 +184,20 @@ public final class PaperStructureEffects implements WorldEffects {
         if(terrain==Terrain.WATER_SOURCE&&result instanceof Waterlogged waterlogged){
             waterlogged.setWaterlogged(true);
             if((request.action()==Action.COMPACT||request.action()==Action.DEFEAT)
-                    &&(previous==null||!ownsBlock(previous)||!result.getAsString().equals(previous.expectedState())))
+                    &&!ownsWaterloggedSource(previous))
                 throw new IllegalArgumentException("Cleanup cannot create a new fluid displacement");
             return result.getAsString();
         }
         throw new IllegalArgumentException("Unsupported fluid replacement");
+    }
+    private static boolean ownsWaterloggedSource(Component previous) {
+        return previous!=null&&ownsBlock(previous)
+                &&Bukkit.createBlockData(previous.expectedState()) instanceof Waterlogged wet&&wet.isWaterlogged();
+    }
+    private boolean pistonFree(Collection<Cell> cells) {
+        if(cells.isEmpty())return true;
+        World world=world();
+        return cells.stream().allMatch(cell->PaperPistonGuard.canReserve(world,cell));
     }
     private boolean spaceFree(Collection<Cell> cells){
         Set<UUID> own=new HashSet<>();stagedVisuals.forEach(e->own.add(e.getUniqueId()));if(stagedDrop!=null)own.add(stagedDrop.getUniqueId());before.state().components().stream().filter(c->c.entity()!=null).forEach(c->own.add(c.entity()));
@@ -213,7 +223,7 @@ public final class PaperStructureEffects implements WorldEffects {
         if(!dropping){
             var oldBlocks=new HashMap<Cell,Component>();before.state().components().stream().filter(c->c.kind()==ComponentKind.BLOCK).forEach(c->oldBlocks.put(cell(c),c));
             List<Cell> target=layout.voxels().stream().map(v->cell(v.x(),v.y(),v.z())).toList();
-            if(!spaceFree(target))return null;
+            if(!spaceFree(target)||!pistonFree(target))return null;
             FluidPolicy fluids=access.fluidPolicy();
             int i=0;
             for(Voxel voxel:layout.voxels()){
@@ -291,7 +301,8 @@ public final class PaperStructureEffects implements WorldEffects {
     @Override public boolean apply(Claim claim){
         owner();if(applied||!validate(claim)||!oldExact()||!stagedVisuals.stream().allMatch(this::visualStage)||!stageExact()||(request.action()==Action.PLACE&&!exactSource()))return false;
         for(var c:captured.entrySet())if(!state(c.getKey()).equals(c.getValue()))return false;
-        if(!spaceFree(preparation.manifest().stream().filter(c->c.kind()==ComponentKind.BLOCK).map(PaperStructureEffects::cell).toList()))return false;
+        var targetCells=preparation.manifest().stream().filter(c->c.kind()==ComponentKind.BLOCK).map(PaperStructureEffects::cell).toList();
+        if(!spaceFree(targetCells)||!pistonFree(targetCells))return false;
         var target=new LinkedHashMap<Cell,String>();
         for(Component c:before.state().components())if(c.kind()==ComponentKind.BLOCK&&ownsBlock(c))target.put(cell(c),c.originalState());
         for(Component c:preparation.manifest())if(c.kind()==ComponentKind.BLOCK)target.put(cell(c),c.expectedState());
