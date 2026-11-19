@@ -24,7 +24,10 @@ Each request binds operation/tower identity, expected row version, item generati
 | BREAK | COMPACT to GROUND; one actual staged ground UUID; consume generation and invalidate deployment revision; preserve HP and existing timestamps; no inventory delivery. |
 | ADMIN_RECOVER | EXPANDED to GROUND only with explicit override; clear controller; fresh expansion eligibility time and revision; one ground item; preserve HP and repair timestamp. |
 
-Ordinary expanded breaking is rejected. A permission grant alone is never an enabled session override. Override does not waive HP, clearance, integrity, external protection or other unimplemented policies. Retired variants reject place/expand while permitting authorized compaction/recovery. The repository checks current variant status before applying and verifying effects; the caller must additionally revalidate its published effective configuration/access snapshot on the owner thread so changes between asynchronous checks cannot slip through.
+Ordinary expanded breaking is rejected. A permission grant alone is never an enabled session override. Override does not waive HP, clearance, integrity, external protection or other unimplemented policies. Retired variants reject place/expand while permitting authorized compaction/recovery. The service checks variant status and owner authorization before applying, verifying and
+committing. [Native access](NATIVE_ACCESS.md) supplies the binding to current catalog,
+connection and override. Managed structure completion also checks the catalog revision
+inside the database transaction.
 
 A stale menu/hit/action must pass the exact request revision, generation and row version, even if the same actor re-expanded the tower. An old component cannot be adopted into a newer deployment. HP, maximum HP, repair lock and light/defence preferences are copied from repository state, never from item lore or caller-provided cached HP.
 

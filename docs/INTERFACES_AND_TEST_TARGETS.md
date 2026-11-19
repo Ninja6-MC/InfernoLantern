@@ -34,11 +34,11 @@ The selected Java 25 baseline departs from the inherited [contribution guidance]
 
 ## Public interface decisions
 
-The maintainer approved the standalone registered root `/infernolantern`, declared alias `/ilantern`, and permission namespace `infernolantern` on 2026-11-13. Do not register or advertise a shared organization command root. The long root remains usable if the short alias is unavailable. These are selected future names, not implemented commands.
+The maintainer approved the standalone registered root `/infernolantern`, declared alias `/ilantern`, and permission namespace `infernolantern` on 2026-11-13. Do not register or advertise a shared organization command root. The long root remains usable if the short alias is unavailable. The plugin registers the root and alias.
 
 ### Selected command tokens and permissions
 
-The maintainer approved the following command tokens and permission defaults on 2026-11-13. These names define the intended interface; no command is implemented yet.
+The maintainer approved the following command tokens and permission defaults on 2026-11-13. The plugin implements help, status and session override. Reload and award remain planned.
 
 | Command token | Purpose | Permission |
 | :--- | :--- | :--- |
@@ -48,7 +48,9 @@ The maintainer approved the following command tokens and permission defaults on 
 | `award` | Trusted idempotent issuance; exact arguments and campaign-key contract deferred to #24 | `infernolantern.admin.award` |
 | `override on\|off\|status` | Explicit actor/session override control; player session required | `infernolantern.admin.override` |
 
-Command tokens identify future interfaces, not a requirement to implement gameplay or reward commands in #4. Do not document an executable command before its implementation exists. Approve names before their implementation; any token later documented as a third-party configuration hook needs a compatible dispatcher alias if renamed.
+The [native access contract](NATIVE_ACCESS.md) describes the implemented session override.
+Any token documented as a third-party configuration hook needs a compatible dispatcher
+alias if renamed.
 
 Native usage permission: `infernolantern.use`, default true. Each native action still checks applicable variant eligibility, current controller, world/fluid restrictions, protection, HP, cooldown and lifecycle conditions. Possession does not grant permission. No permission in this plugin gates manual pickup/storage withdrawal; separately configured external acquisition policy remains independent.
 

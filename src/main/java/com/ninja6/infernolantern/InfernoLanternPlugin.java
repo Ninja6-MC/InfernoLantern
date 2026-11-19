@@ -1,5 +1,6 @@
 package com.ninja6.infernolantern;
 
+import com.ninja6.infernolantern.access.OverrideSessions;
 import com.ninja6.infernolantern.prototype.RenderingPrototype;
 import com.ninja6.infernolantern.prototype.ItemPrototype;
 import com.ninja6.infernolantern.item.GroundPolicy;
@@ -17,6 +18,7 @@ import java.util.Locale;
 public final class InfernoLanternPlugin extends JavaPlugin {
     private RenderingPrototype prototype;
     private ItemPrototype items;
+    private OverrideSessions override;
     private boolean itemCreationEnabled() { return getConfig().getBoolean("prototype.enabled") && getConfig().getBoolean("prototype.item-lifecycle.enabled"); }
 
     @Override
@@ -39,10 +41,14 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         items = new ItemPrototype(this, this::itemCreationEnabled, new GroundPolicy(
                 getConfig().getBoolean("prototype.item-lifecycle.survives-fire-lava", true),
                 getConfig().getBoolean("prototype.item-lifecycle.despawns", true)));
+        override = new OverrideSessions();
+        override.start(getServer().getOnlinePlayers());
+        getServer().getPluginManager().registerEvents(override, this);
     }
 
     @Override
     public void onDisable() {
+        if (override != null) override.close();
         if (items != null) items.close();
         if (prototype != null) prototype.close();
     }
@@ -54,6 +60,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             case "help" -> {
                 sender.sendMessage("/" + label + " help");
                 if (sender.hasPermission("infernolantern.admin.status")) sender.sendMessage("/" + label + " status");
+                override.help(sender, label);
                 if (sender.isOp() && getConfig().getBoolean("prototype.enabled")) sender.sendMessage("/" + label + " prototype [place|remove|cleanup] - disposable rendering fixtures");
                 if (sender.isOp() && itemCreationEnabled()) sender.sendMessage("/" + label + " prototype item - one disposable item in an empty selected slot");
             }
@@ -62,6 +69,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
                 else sender.sendMessage("Rendering prototype: " + (getConfig().getBoolean("prototype.enabled") ? "enabled" : "disabled")
                         + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + prototype.combatStatus() + ". Runtime feasibility evidence pending. Item prototype: " + items.status() + ".");
             }
+            case "override" -> override.command(sender, label, args);
             case "prototype" -> {
                 if (!(sender instanceof Player player)) sender.sendMessage("Prototype fixtures require a player session.");
                 else if (args.length >= 2 && args[1].equalsIgnoreCase("item")) {
@@ -79,9 +87,11 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         if (args.length == 1) {
             var actions = new java.util.ArrayList<>(List.of("help"));
             if (sender.hasPermission("infernolantern.admin.status")) actions.add("status");
+            if (override.available(sender)) actions.add("override");
             if (sender.isOp() && getConfig().getBoolean("prototype.enabled")) actions.add("prototype");
             return actions.stream().filter(action -> action.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }
+        if (args.length == 2 && args[0].equalsIgnoreCase("override")) return override.complete(sender, args[1]);
         if (args.length == 2 && args[0].equalsIgnoreCase("prototype") && sender.isOp() && getConfig().getBoolean("prototype.enabled"))
             return (itemCreationEnabled() ? List.of("place", "remove", "cleanup", "item") : List.of("place", "remove", "cleanup")).stream().filter(action -> action.startsWith(args[1].toLowerCase(Locale.ROOT))).toList();
         return List.of();

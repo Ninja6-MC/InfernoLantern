@@ -104,20 +104,38 @@ public final class StructureLifecycle implements AutoCloseable {
     private CompletableFuture<Result> finish(Claim claim,WorldEffects effects){
         Operation op=claim.operation();UUID id=op.intent().id();
         return repository.advanceOperation(id,op.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"Owner verified named structure effects; world/player saves remain independent")
-                .thenCompose(applied->repository.completeOperation(id,applied.rowVersion(),"Verified structure effects, not an atomic Minecraft save"))
-                .thenCompose(completed->repository.tower(op.intent().towerId()))
-                .thenCompose(found->scheduler.supply(claim.request().anchor(),()->!closed&&found.isPresent()&&effects.activate(claim,found.get())))
-                .thenCompose(active->active?done(Outcome.COMMITTED,id):freezeCompleted(claim))
+                .thenCompose(applied->variantReady(claim.request(),op.before().tower().variantId())
+                        .thenCompose(ready->scheduler.supply(claim.request().anchor(),()->!closed&&ready&&effects.validate(claim)))
+                        .handle((ok,failure)->failure==null&&Boolean.TRUE.equals(ok))
+                        .thenCompose(allowed->allowed?complete(claim,effects,applied):rollback(claim,effects,applied)))
                 .exceptionallyCompose(failure->quarantineLatest(claim));
     }
+    private CompletableFuture<Result> complete(Claim claim,WorldEffects effects,Operation applied){
+        UUID id=applied.intent().id();
+        return repository.completeStructureOperation(id,applied.rowVersion(),claim.request().policy().revision(),"Verified structure effects, not an atomic Minecraft save")
+                .<CompletableFuture<Result>>handle((committed,failure)->{
+                    if(failure!=null){
+                        Throwable cause=unwrap(failure);
+                        return cause instanceof RepositoryException.CatalogSuperseded&&cause.getSuppressed().length==0
+                                ?rollback(claim,effects,applied):quarantineLatest(claim);
+                    }
+                    return repository.tower(applied.intent().towerId())
+                            .thenCompose(found->scheduler.supply(claim.request().anchor(),()->!closed&&found.isPresent()&&effects.activate(claim,found.get())))
+                            .thenCompose(active->active?done(Outcome.COMMITTED,id):freezeCompleted(claim));
+                }).thenCompose(result->result);
+    }
     private CompletableFuture<Result> rollback(Claim claim,WorldEffects effects){
-        return scheduler.supply(claim.request().anchor(),()->!closed&&effects.rollback(claim))
-                .handle((restored,failure)->failure==null&&Boolean.TRUE.equals(restored))
-                .thenCompose(restored->markQuarantined(claim.operation()).thenCompose(quarantined->{
-                    if(!restored)return done(Outcome.QUARANTINED,claim.request().operation());
-                    return repository.resolveRollback(quarantined.intent().id(),quarantined.rowVersion(),"Owner proved source and original structure restored; only owned effects compensated")
-                            .thenCompose(done->done(Outcome.ROLLED_BACK,claim.request().operation()));
-                })).exceptionallyCompose(failure->quarantineLatest(claim));
+        return rollback(claim,effects,claim.operation());
+    }
+    private CompletableFuture<Result> rollback(Claim claim,WorldEffects effects,Operation pending){
+        return markQuarantined(pending).thenCompose(quarantined->
+                scheduler.supply(claim.request().anchor(),()->!closed&&effects.rollback(claim))
+                        .handle((restored,failure)->failure==null&&Boolean.TRUE.equals(restored))
+                        .thenCompose(restored->{
+                            if(!restored)return done(Outcome.QUARANTINED,claim.request().operation());
+                            return repository.resolveRollback(quarantined.intent().id(),quarantined.rowVersion(),"Owner proved source and original structure restored; only owned effects compensated")
+                                    .thenCompose(done->done(Outcome.ROLLED_BACK,claim.request().operation()));
+                        })).exceptionallyCompose(failure->quarantineLatest(claim));
     }
     private CompletableFuture<Operation> markQuarantined(Operation op){
         if(op.phase()==Phase.RECONCILING)return CompletableFuture.completedFuture(op);

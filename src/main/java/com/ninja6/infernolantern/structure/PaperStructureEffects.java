@@ -34,7 +34,11 @@ public final class PaperStructureEffects implements WorldEffects {
         }
     }
     /** Must verify current config/variant, native/eligibility/world/protection/reach and explicit session override. */
-    @FunctionalInterface public interface Access { boolean allowed(Request request,State before); }
+    @FunctionalInterface public interface Access {
+        boolean allowed(Request request,State before);
+        /** Current protection authorization for restoring only the adapter's exact owned changes. */
+        default boolean mayRestore(Request request,State before) { return true; }
+    }
     private static final NamespacedKey TOWER=key("structure_tower"),REVISION=key("structure_revision"),OPERATION=key("structure_operation"),STAGED=key("item_staged");
     private static NamespacedKey key(String name){return new NamespacedKey("infernolantern",name);}
     private final Player player;
@@ -227,16 +231,17 @@ public final class PaperStructureEffects implements WorldEffects {
     }
     @Override public boolean rollback(Claim claim){
         owner();boolean restored=session(request);
+        boolean mayRestore=access.mayRestore(request,before.state());
         // Unrelated edits are never overwritten, even while compensating a partial operation.
         for(var entry:mutated.entrySet()){
             String current=state(entry.getKey());if(current.equals(captured.get(entry.getKey())))continue;
-            if(!current.equals(entry.getValue())){restored=false;continue;}
+            if(!mayRestore||!current.equals(entry.getValue())){restored=false;continue;}
             write(entry.getKey(),captured.get(entry.getKey()));
         }
         for(ArmorStand stand:stagedVisuals){if(visualStage(stand))stand.remove();else restored=false;}
-        for(ArmorStand stand:oldVisuals)if(quiesced.contains(stand.getUniqueId())){if(!oldVisualExact(stand,true)){restored=false;continue;}stand.getEquipment().setHelmet(oldHelmets.get(stand.getUniqueId()));quiesced.remove(stand.getUniqueId());}
+        for(ArmorStand stand:oldVisuals)if(quiesced.contains(stand.getUniqueId())){if(!mayRestore||!oldVisualExact(stand,true)){restored=false;continue;}stand.getEquipment().setHelmet(oldHelmets.get(stand.getUniqueId()));quiesced.remove(stand.getUniqueId());}
         if(stagedDrop!=null){if(stageExact())stagedDrop.remove();else restored=false;}
-        if(consumed){if(session(request)&&emptySource()){player.getInventory().setItem(sourceSlot,ItemStack.deserializeBytes(source));consumed=false;}else restored=false;}
+        if(consumed){if(mayRestore&&session(request)&&emptySource()){player.getInventory().setItem(sourceSlot,ItemStack.deserializeBytes(source));consumed=false;}else restored=false;}
         return restored&&oldExact()&&(request.action()!=Action.PLACE||exactSource());
     }
     @Override public void discard(Request r,Preparation prepared){

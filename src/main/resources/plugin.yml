@@ -6,7 +6,7 @@ description: Configurable compact lanterns that expand into defensive towers.
 website: https://github.com/Ninja6-MC/InfernoLantern
 commands:
   infernolantern:
-    description: InfernoLantern help, status and opt-in rendering prototype.
+    description: InfernoLantern help, status, session override and opt-in prototypes.
     aliases: [ilantern]
     usage: /<command> help
 permissions:

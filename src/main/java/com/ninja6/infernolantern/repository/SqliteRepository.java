@@ -322,12 +322,21 @@ public final class SqliteRepository {
     /** Only the winning fresh finalizer may publish/activate a recovery outcome. Receipts grant no effect ownership. */
     public CompletableFuture<Operation> finalizeReconciliation(UUID id,long expected,boolean rollback,String evidence){text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,rollback,false,-1);}
     public CompletableFuture<Operation> completeCatalogOperation(UUID id,long expected,long catalogRevision,String evidence){if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision);}
-    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){Objects.requireNonNull(id);return submit(()->transaction(()->{
-        if(catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
+    /** Native structure completion repeats its admission guard for managed definitions. */
+    public CompletableFuture<Operation> completeStructureOperation(UUID id,long expected,long catalogRevision,String evidence){
+        if(catalogRevision<0)throw new IllegalArgumentException("Catalog revision");
+        text(evidence,MAX_PAYLOAD);return finish(id,expected,evidence,false,false,catalogRevision,true);
+    }
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision){
+        return finish(id,expected,evidence,rollback,allowReceipt,catalogRevision,false);
+    }
+    private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,boolean managedOnly){Objects.requireNonNull(id);return submit(()->transaction(()->{
+        if(!managedOnly&&catalogRevision>=0&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Operation op=loadOperation(id);require(op!=null,"Unknown operation");Phase terminal=rollback?Phase.ROLLED_BACK:Phase.COMPLETE;
         if(op.phase()==terminal){require(allowReceipt,"Reconciliation was already finalized");return op;} // Receipts never grant a second effect owner.
         require(op.rowVersion()==expected&&op.phase()==(rollback?Phase.RECONCILING:Phase.EFFECTS_APPLIED),"Operation is not ready for completion");
         ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),id);
+        if(managedOnly&&catalogManaged(op.before().tower().variantId())&&loadCatalog().revision()!=catalogRevision)throw new RepositoryException.CatalogSuperseded();
         Escrow escrow=loadEscrow(id);
         if(escrow!=null)require(rollback?(escrow.payment()==PaymentPhase.REFUNDED&&escrow.hpPhase()==HpPhase.NOT_APPLIED):(escrow.payment()==PaymentPhase.COMMITTED&&escrow.hpPhase()==HpPhase.APPLIED),"Escrow not settled; retain reconciliation");
         writeTower(rollback?op.before():op.intent().after(),Math.addExact(op.intent().expectedRowVersion(),2),null,false,next(op.intent().expectedRowVersion()),id);
