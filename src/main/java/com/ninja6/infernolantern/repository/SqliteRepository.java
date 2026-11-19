@@ -4,6 +4,7 @@ import com.ninja6.infernolantern.catalog.CatalogCodec;
 import com.ninja6.infernolantern.catalog.CatalogConfig.RepairPolicy;
 import com.ninja6.infernolantern.repair.RepairQuote;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
+import com.ninja6.infernolantern.structure.BlastImpact;
 
 import java.nio.file.*;
 import java.sql.*;
@@ -384,6 +385,15 @@ public final class SqliteRepository {
         if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
         boolean managed=catalogManaged(before.variantId());
+        if(STRUCTURE_BLAST.equals(intent.kind())||STRUCTURE_EXIT_BLAST.equals(intent.kind())){
+            var recipe=RecoveryEnvelope.decode(intent.effects()).orElse(null);
+            require(recipe!=null&&RecoveryEnvelope.blastMatches(intent,tower.state(),recipe),"Invalid blast journal evidence");
+            if(managed){
+                var repair=CatalogCodec.definition(loadVariant(before.variantId()).lastValidDefinition()).repair();
+                require(BlastImpact.fromJournal(recipe.original().content()).repairCoolingMillis()==(repair==null?0:repair.coolingMillis()),
+                        "Blast repair cooling does not match the current catalog");
+            }
+        }
         if(managed){
             require(before.maximumHp()==after.maximumHp(),"Managed maximum HP changes require catalog publication");
             if(timedStructureExit(intent.kind()))requireCatalogExitDuration(before.variantId(),exitRecipe(intent).exitCooldownMillis());
@@ -594,13 +604,14 @@ public final class SqliteRepository {
         if(!nativeCompletion)require(RecoveryEnvelope.supports(op,recipe),"Timed exit recovery requires a typed structure recipe");
         long duration=recipe.exitCooldownMillis();
         Tower before=op.before().tower();State after=op.intent().after();Tower tower=after.tower();
-        Form expectedForm=STRUCTURE_EXIT_RECOVER.equals(op.intent().kind())?Form.GROUND:Form.COMPACT;
+        Form expectedForm=STRUCTURE_EXIT_RECOVER.equals(op.intent().kind())||STRUCTURE_EXIT_BLAST.equals(op.intent().kind())
+                ?Form.GROUND:Form.COMPACT;
         require(before.form()==Form.EXPANDED&&tower.form()==expectedForm&&tower.expandAfter()==before.expandAfter()
                         &&(!STRUCTURE_DEFEAT.equals(op.intent().kind())||before.hp()==0&&tower.hp()==0),
                 "Invalid timed structure exit");
         if(nativeCompletion&&catalogManaged(tower.variantId()))requireCatalogExitDuration(tower.variantId(),duration);
         long now=exitClock.getAsLong();nonnegative(now);
-        long deadline=duration==0?0:Math.addExact(now,duration);
+        long deadline=duration==0?0:repairDeadline(now,duration);
         Tower timed=new Tower(tower.id(),tower.variantId(),tower.hp(),tower.maximumHp(),tower.form(),tower.generation(),tower.deploymentRevision(),
                 tower.controller(),tower.position(),tower.light(),tower.defence(),deadline,tower.repairAfter());
         return new State(timed,after.ground(),after.components());

@@ -119,7 +119,7 @@ public final class PaperNativeAccess {
                                                UUID operation, TowerSnapshot before, StructureLifecycle.Action action,
                                                Position target, long now, PhysicalAccess physical) {
         sessions.requireOwner();
-        if (!before.mutationReady() || action == StructureLifecycle.Action.DEFEAT) return Optional.empty();
+        if (!before.mutationReady() || action == StructureLifecycle.Action.DEFEAT || action == StructureLifecycle.Action.BLAST) return Optional.empty();
         Action nativeAction = Action.valueOf(action.name());
         Decision decision = decide(actor, settings, nativeAction, before.state(), target, now, physical);
         if (!decision.allowed()) {

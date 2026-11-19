@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.recovery;
 
 import com.ninja6.infernolantern.item.*;
 import com.ninja6.infernolantern.repository.*;
+import com.ninja6.infernolantern.structure.BlastImpact;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
@@ -166,10 +167,17 @@ class ReconciliationServiceTest {
         get(repository.advanceOperation(setup,0,Phase.INTENT,Phase.EFFECTS_APPLIED,"Fixture setup"));
         get(repository.completeOperation(setup,1,"Fixture setup"));
 
-        State after=kind.equals(STRUCTURE_EXIT_RECOVER)
-                ?new State(tower(id,Form.GROUND,3,2,null),new Ground(UUID.randomUUID(),world,0,0,exit,"active"),List.of())
-                :new State(tower(id,Form.COMPACT,2,2,p),null,List.of(base));
-        var evidence=new Document(1,"Synthetic exact structure effects");
+        boolean blast=kind.equals(STRUCTURE_EXIT_BLAST);
+        BlastImpact impact=blast?BlastImpact.respectingProtection(UUID.randomUUID(),world,Set.of("base"),50,.5,true,1_000,500):null;
+        if(blast)exit=impact.operation(id);
+        State after;
+        if(blast){
+            var damaged=new Tower(id,"fixture",50,100,Form.GROUND,3,2,null,null,true,false,300,1500);
+            after=new State(damaged,new Ground(UUID.randomUUID(),world,0,0,exit,"active"),List.of());
+        }else if(kind.equals(STRUCTURE_EXIT_RECOVER)){
+            after=new State(tower(id,Form.GROUND,3,2,null),new Ground(UUID.randomUUID(),world,0,0,exit,"active"),List.of());
+        }else after=new State(tower(id,Form.COMPACT,2,2,p),null,List.of(base));
+        var evidence=new Document(1,blast?"fixture request\n"+impact.encode()+"\nSynthetic exact blast effects":"Synthetic exact structure effects");
         var recipe=typed?RecoveryEnvelope.timedStructure(kind,anchor,evidence,duration)
                 :RecoveryEnvelope.structure(kind,anchor,evidence,null);
         Operation op=get(repository.beginNewIntent(new Intent(exit,id,2,2,1,kind,after,recipe)));
@@ -177,7 +185,7 @@ class ReconciliationServiceTest {
     }
 
     @Test void trustedTimedCompactionAndRecoveryRestoreExactBefore() throws Exception {
-        for(String kind:List.of(STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER)){
+        for(String kind:List.of(STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER,STRUCTURE_EXIT_BLAST)){
             Operation op=timedExit(kind,Phase.EFFECTS_APPLIED,true,60_000);
             var recipe=RecoveryEnvelope.decode(op.intent().effects()).orElseThrow();
             assertEquals(RecoveryEnvelope.Profile.STRUCTURE,recipe.profile());
@@ -194,15 +202,15 @@ class ReconciliationServiceTest {
     }
 
     @Test void trustedTimedAfterUsesOriginalDurationAndOnlyOneFreshPublication() throws Exception {
-        for(String kind:List.of(STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER)){
+        for(String kind:List.of(STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER,STRUCTURE_EXIT_BLAST)){
             exitClock.set(121_000);
             Operation op=timedExit(kind,Phase.RECONCILING,true,60_000);
             Port port=new Port(){
                 @Override public boolean publish(Inspection i,TowerSnapshot resolved){
                     assertEquals(300,i.operation().intent().after().tower().expandAfter());
                     assertEquals(181_000,resolved.state().tower().expandAfter());
-                    assertEquals(75,resolved.state().tower().hp());
-                    assertEquals(400,resolved.state().tower().repairAfter());
+                    assertEquals(STRUCTURE_EXIT_BLAST.equals(kind)?50:75,resolved.state().tower().hp());
+                    assertEquals(STRUCTURE_EXIT_BLAST.equals(kind)?1500:400,resolved.state().tower().repairAfter());
                     assertEquals(op.intent().after().ground(),resolved.state().ground());
                     assertEquals(op.intent().after().components(),resolved.state().components());
                     return super.publish(i,resolved);
@@ -212,7 +220,7 @@ class ReconciliationServiceTest {
             Operation receipt=get(repository.operation(op.intent().id())).orElseThrow();
             assertEquals(row(op).state(),receipt.intent().after());
             assertEquals(181_000,receipt.intent().after().tower().expandAfter());
-            assertEquals(STRUCTURE_EXIT_RECOVER.equals(kind)?0:1,get(repository.structureCells(op.intent().towerId())).size());
+            assertEquals(STRUCTURE_EXIT_COMPACT.equals(kind)?1:0,get(repository.structureCells(op.intent().towerId())).size());
             exitClock.set(400_000);
             assertEquals(Outcome.TERMINAL,drain(service.reconcile(op.intent().id(),port)).outcome());
             assertEquals(receipt,get(repository.operation(op.intent().id())).orElseThrow());

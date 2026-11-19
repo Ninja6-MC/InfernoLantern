@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.recovery;
 
 import com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import com.ninja6.infernolantern.scheduling.WorldScheduler.Anchor;
+import com.ninja6.infernolantern.structure.BlastImpact;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -37,7 +38,7 @@ public final class RecoveryEnvelope {
         }
     }
     private static final Set<String> KINDS=Set.of("item-drop","item-pickup","item-loss","item-place","fixture-item-delivery","fixture-activation-review",
-            "structure-place","structure-expand","structure-compact",STRUCTURE_DEFEAT,STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER,"structure-break","structure-admin_recover","structure-activation-review");
+            "structure-place","structure-expand","structure-compact",STRUCTURE_DEFEAT,STRUCTURE_EXIT_COMPACT,STRUCTURE_EXIT_RECOVER,STRUCTURE_BLAST,STRUCTURE_EXIT_BLAST,"structure-break","structure-admin_recover","structure-activation-review");
     public static Document item(String kind,Anchor anchor,Document original) {
         Inventory source=inventory(original,false,null);
         Profile profile=(kind.equals("item-drop")||kind.equals("item-pickup"))&&source!=null&&original.content().startsWith("action="+kind.substring(5)+";")?Profile.INVENTORY:Profile.ADMIN;
@@ -65,8 +66,9 @@ public final class RecoveryEnvelope {
     /** A supported envelope also has to describe the actual journal transition and owner anchor. */
     public static boolean supports(Operation op,Context c){
         Tower a=op.before().tower(),b=op.intent().after().tower();
+        boolean blast=STRUCTURE_BLAST.equals(c.kind())||STRUCTURE_EXIT_BLAST.equals(c.kind());
         if(!c.kind().equals(op.intent().kind())||c.profile()==Profile.ADMIN||!a.id().equals(b.id())||!a.variantId().equals(b.variantId())
-                ||a.hp()!=b.hp()||a.maximumHp()!=b.maximumHp()||a.light()!=b.light()||a.defence()!=b.defence()||a.repairAfter()!=b.repairAfter())return false;
+                ||!blast&&a.hp()!=b.hp()||a.maximumHp()!=b.maximumHp()||a.light()!=b.light()||a.defence()!=b.defence()||!blast&&a.repairAfter()!=b.repairAfter())return false;
         for(State s:List.of(op.before(),op.intent().after())){
             Position p=s.tower().position();Ground g=s.ground();
             if(p!=null&&(!p.world().equals(c.anchor().world())||(p.x()>>4)!=c.anchor().chunkX()||(p.z()>>4)!=c.anchor().chunkZ()))return false;
@@ -87,10 +89,29 @@ public final class RecoveryEnvelope {
                     &&a.expandAfter()==b.expandAfter()&&(!STRUCTURE_DEFEAT.equals(c.kind())||a.hp()==0);
             case STRUCTURE_EXIT_RECOVER->a.form()==Form.EXPANDED&&b.form()==Form.GROUND&&nextGeneration&&nextRevision
                     &&a.expandAfter()==b.expandAfter()&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
+            case STRUCTURE_BLAST,STRUCTURE_EXIT_BLAST->blastMatches(op.intent(),op.before(),c);
             case "structure-break"->a.form()==Form.COMPACT&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&a.expandAfter()==b.expandAfter()&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             case "structure-admin_recover"->a.form()==Form.EXPANDED&&b.form()==Form.GROUND&&nextGeneration&&nextRevision&&op.intent().after().ground().deliveryOperation().equals(op.intent().id());
             default->false;
         };
+    }
+    public static boolean blastMatches(Intent intent,State state,Context context) {
+        try {
+            BlastImpact impact=BlastImpact.fromJournal(context.original().content());
+            Tower before=state.tower(),after=intent.after().tower();
+            Ground drop=intent.after().ground();
+            return context.kind().equals(intent.kind())&&impact.matches(state)
+                    &&context.anchor().world().equals(impact.world())&&context.anchor().chunkX()==(before.position().x()>>4)
+                    &&context.anchor().chunkZ()==(before.position().z()>>4)
+                    &&impact.expanded()==STRUCTURE_EXIT_BLAST.equals(intent.kind())
+                    &&impact.operation(before.id()).equals(intent.id())&&impact.remainingHp(before.hp())==after.hp()
+                    &&before.maximumHp()==after.maximumHp()&&before.light()==after.light()&&before.defence()==after.defence()
+                    &&impact.repairAfter(before)==after.repairAfter()&&before.expandAfter()==after.expandAfter()
+                    &&after.form()==Form.GROUND&&before.generation()!=Long.MAX_VALUE&&after.generation()==before.generation()+1
+                    &&before.deploymentRevision()!=Long.MAX_VALUE&&after.deploymentRevision()==before.deploymentRevision()+1
+                    &&drop.deliveryOperation().equals(intent.id())&&drop.world().equals(impact.world())
+                    &&drop.chunkX()==(before.position().x()>>4)&&drop.chunkZ()==(before.position().z()>>4);
+        }catch(IllegalArgumentException invalid){return false;}
     }
     private static Inventory inventory(Document original,boolean fixture,UUID delivery) {
         if(original.version()!=1)return null;

@@ -1,6 +1,9 @@
 package com.ninja6.infernolantern.catalog;
 
 import com.ninja6.infernolantern.repository.*;
+import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
+import com.ninja6.infernolantern.scheduling.WorldScheduler;
+import com.ninja6.infernolantern.structure.BlastImpact;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.*;
@@ -18,6 +21,32 @@ class CatalogServiceTest {
     CatalogService service(){return new CatalogService(repository,owner,d->{if(d.geometry().compactModel().equals("fixture:missing"))throw new IllegalArgumentException("Model unavailable");},snapshot->{reconciles.incrementAndGet();return CompletableFuture.completedFuture(null);});}
     @AfterEach void stop()throws Exception{service.close();get(repository.closeAsync());}
     CatalogService.Snapshot publish()throws Exception{return get(service.reload(config())).snapshot();}
+    @Test void managedBlastAdmissionBindsTheExactConfiguredRepairDuration()throws Exception{
+        var variant=variant();
+        variant.put("repair",Map.of("cooling-ms",500L,"resources",Map.of("minecraft:iron_ingot",10)));
+        var catalog=get(service.reload(config(Map.of("test",variant)))).snapshot();
+        TowerSnapshot before=placed(repository,Form.COMPACT);
+        long wrong=501;
+        assertThrows(ExecutionException.class,()->get(repository.beginStructureIntent(blastIntent(before,wrong),catalog.revision())));
+        assertEquals(before,get(repository.tower(before.state().tower().id())).orElseThrow());
+        Operation admitted=get(repository.beginStructureIntent(blastIntent(before,500),catalog.revision()));
+        assertEquals(65,admitted.intent().after().tower().hp());
+        assertEquals(1500,admitted.intent().after().tower().repairAfter());
+        assertEquals(before.state().tower().expandAfter(),admitted.intent().after().tower().expandAfter());
+    }
+    private static Intent blastIntent(TowerSnapshot before,long cooling){
+        Tower tower=before.state().tower();
+        var blast=BlastImpact.respectingProtection(UUID.randomUUID(),WORLD,Set.of("base"),10,1,false,1000,cooling);
+        UUID operation=blast.operation(tower.id());
+        var after=new Tower(tower.id(),tower.variantId(),blast.remainingHp(tower.hp()),tower.maximumHp(),Form.GROUND,
+                tower.generation()+1,tower.deploymentRevision()+1,null,null,tower.light(),tower.defence(),
+                tower.expandAfter(),blast.repairAfter(tower));
+        var staged=new Ground(UUID.randomUUID(),WORLD,0,0,operation,"active");
+        var evidence=RecoveryEnvelope.structure(STRUCTURE_BLAST,new WorldScheduler.Anchor(WORLD,0,0),
+                new Document(1,"fixture request\n"+blast.encode()+"\nfixture physical proof"),null);
+        return new Intent(operation,tower.id(),before.rowVersion(),tower.generation(),tower.deploymentRevision(),
+                STRUCTURE_BLAST,new State(after,staged,List.of()),evidence);
+    }
     @Test void invalidReloadAndWholeSqlFailureRetainPriorPublication()throws Exception{
         var prior=publish();var bad=variant();bad.put("maximum-hp",Double.NaN);assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",bad)))));assertEquals(prior,service.current().orElseThrow());
         var unavailable=variant();var geometry=new HashMap<>((Map<String,Object>)unavailable.get("geometry"));geometry.put("compact-model","fixture:missing");unavailable.put("geometry",geometry);assertThrows(ExecutionException.class,()->get(service.reload(config(Map.of("test",unavailable)))));
