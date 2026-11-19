@@ -14,6 +14,12 @@ public final class RepositoryRecords {
     public static boolean timedStructureExit(String kind) {
         return STRUCTURE_EXIT_COMPACT.equals(kind) || STRUCTURE_EXIT_RECOVER.equals(kind) || STRUCTURE_DEFEAT.equals(kind);
     }
+    /** A representable deadline for any accepted nonnegative repair cooling duration. */
+    public static long repairDeadline(long now,long cooling){
+        nonnegative(now);
+        nonnegative(cooling);
+        return cooling>Long.MAX_VALUE-now?Long.MAX_VALUE:now+cooling;
+    }
     public enum Form { PORTABLE, GROUND, COMPACT, EXPANDED, LOST }
     public enum VariantStatus { ACTIVE, RETIRED }
     public enum Phase { INTENT, EFFECTS_APPLIED, RECONCILING, COMPLETE, ROLLED_BACK }
@@ -108,6 +114,7 @@ public final class RepositoryRecords {
             if (bytes == null || bytes.length > MAX_PAYLOAD) throw new IllegalArgumentException("Resource snapshot size");
             this.bytes = bytes.clone();
         }
+        public int size() { return bytes.length; }
         public byte[] copy() { return bytes.clone(); }
         @Override public boolean equals(Object other) { return other instanceof ResourceBytes that && Arrays.equals(bytes, that.bytes); }
         @Override public int hashCode() { return Arrays.hashCode(bytes); }

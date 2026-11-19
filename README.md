@@ -50,3 +50,6 @@ checks and transaction boundaries for future native action routing.
 [Tower health](docs/TOWER_HEALTH.md) documents durable damage, system defeat compaction,
 maximum-HP changes, and the private target view. Native health routing and acceptance
 remain pending.
+
+[Resource repair](docs/RESOURCE_REPAIR.md) documents revision-bound quotes, durable
+payment and cooling. Native repair menus and acceptance remain pending.

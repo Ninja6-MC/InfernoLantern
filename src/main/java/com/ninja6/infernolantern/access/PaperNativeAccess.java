@@ -3,9 +3,11 @@ package com.ninja6.infernolantern.access;
 import com.ninja6.infernolantern.catalog.CatalogConfig;
 import com.ninja6.infernolantern.catalog.CatalogService;
 import com.ninja6.infernolantern.catalog.PaperWorldRef;
+import com.ninja6.infernolantern.repair.RepairService;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Form;
+import com.ninja6.infernolantern.repository.RepositoryRecords.Operation;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Position;
 import com.ninja6.infernolantern.repository.RepositoryRecords.State;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Tower;
@@ -20,6 +22,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
+import java.util.function.Supplier;
 
 /** Binds current native access to the owner callbacks of a single catalog and repository owner. */
 public final class PaperNativeAccess {
@@ -229,6 +232,32 @@ public final class PaperNativeAccess {
         Decision decision = decide(actor, settings, Action.REPAIR, row.state(), tower.position(), now, physical);
         hint(actor, decision);
         return decision;
+    }
+
+    /**
+     * Bind one repair quote and current combat proof to the exact addressed viewer. The router
+     * revokes the idle permit when a valid attack starts or the observed combat state changes.
+     */
+    public Optional<RepairService.Access> repairAccess(OverrideSessions.Session actor, CatalogService.Snapshot settings,
+            TowerSnapshot before, long now, PhysicalAccess physical, Supplier<CommitPermit> idleCombat) {
+        Decision initial = repair(actor, settings, before, before.state().tower().deploymentRevision(), now, physical);
+        if (!initial.allowed() || idleCombat.get() == null) return Optional.empty();
+        return Optional.of(new RepairService.Access() {
+            @Override public RepairService.Authorization authorize(TowerSnapshot observed, long currentTime) {
+                if (!before.equals(observed) || repair(actor, settings, observed,
+                        before.state().tower().deploymentRevision(), currentTime, physical) != initial) return null;
+                CommitPermit idle = idleCombat.get();
+                return idle == null ? null : new RepairService.Authorization(actor.actor(), actor.id(),
+                        CommitPermit.allOf(actor.commitPermit(initial.bypassed()), idle));
+            }
+
+            @Override public void committed(Operation receipt) {
+                if (initial.bypassed()) {
+                    audit.info("Lantern override applied: actor=" + actor.actor() + " tower=" + receipt.intent().towerId()
+                            + " action=" + Action.REPAIR + " operation=" + receipt.intent().id());
+                }
+            }
+        });
     }
 
     private void hint(OverrideSessions.Session actor, Decision decision) {

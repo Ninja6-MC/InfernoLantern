@@ -356,8 +356,8 @@ HP, the expansion threshold, accepted resources, conversion rates, and the amoun
 
 Provide a deposit slot and explicit repair feedback. Clamp health to maximum, never accept
 payment for an already full tower, and return unconsumed items when payment is rejected or the
-menu closes. Define rounding and the final resource item's treatment before implementation; show
-any partial final-item benefit before confirmation rather than silently wasting resources.
+menu closes. One final whole item may deliver a partial HP gain. Show the actual gain and item
+cost before confirmation, then revalidate the quote before payment.
 Reject invalid configurations, including non-positive maximum HP or repair rates and expansion
 thresholds outside the supported positive percentage range up to 100%.
 
@@ -772,7 +772,7 @@ verified before being advertised.
   activate bypass.
 - Defence damage, range, attack interval, eligible incoming damage sources, and maximum HP
   default.
-- Repair resources/rates, cooling duration, final-item rounding/payment behaviour, health
+- Repair resources/rates, cooling duration, health
   indicator presentation.
 - Expansion cooldown duration per variant.
 - Whether both editions remain functionally identical.

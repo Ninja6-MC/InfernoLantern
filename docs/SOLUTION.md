@@ -267,12 +267,13 @@ Menus bind actor, tower UUID, lifecycle/deployment revision and config revision.
 outlives compaction/re-expansion cannot submit against a newer revision. Revalidate HP, cooling,
 eligibility, selected resources and controller at commit.
 
-Proposed implementation uses a payment preview and explicit Repair action with an escrowed input
-slot. Consume only accepted configured items in whole units; compute HP using fixed-point units
-or another deterministic representation. Never accept more than the useful payment shown in
-preview. Final partial-item/rounding policy remains a product gate; do not silently consume an
-entire stack. Close/disconnect returns unconsumed escrow through a durable return record, never
-an untracked duplicate refund.
+Use a payment preview and explicit Repair action. The transaction port selects an
+exact inventory slot and consumes configured items in whole units after confirmation.
+One final item may restore less than its nominal rate. Show the actual gain and item
+cost before confirmation and revalidate both at payment. Unspent items remain in the
+selected slot. If an admitted debit must be restored, use the same exact slot and
+continuous authorization or retain the operation for review. See the
+[repair transaction contract](RESOURCE_REPAIR.md).
 
 Lock repair while a valid tower attack executes and until repair-after has elapsed since the
 most recent attack or positive incoming damage. No target acquisition or toggling alone counts
@@ -368,7 +369,7 @@ builds, client versions, model strategy and supported provider versions when tes
 | Supported server/client versions and command/permission names | Public runtime interface; repository and GPL-3.0 license are selected. |
 | Compact/expanded rendering, collision, damage target, real-light implementation and dimensions | Finishing G0; do not build final packs/reward logic first. |
 | World selector syntax, submerged detection, provider-specific blast precedence/exposure | World/fluid/blast implementation. |
-| Repair final-item rounding, cooling defaults, compact non-blast damage | Repair/damage modules and production config migration. |
+| Repair cooling defaults and compact non-blast damage | Damage and production configuration modules. |
 | Controller logout/eligibility loss behaviour, unreachable timeout and target arbitration | Combat lifecycle tests. Controller record persists until compaction; choose operational suspension separately. |
 | Dragon recipients, repeat policy, attribution and provider | Dragon adapter. |
 | Numeric balance, health indicator presentation, pack readiness for externally managed delivery | Playtest configuration and UI release. |
