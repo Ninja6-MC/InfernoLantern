@@ -3,6 +3,7 @@ package com.ninja6.infernolantern.access;
 import com.ninja6.infernolantern.catalog.CatalogConfig;
 import com.ninja6.infernolantern.catalog.CatalogService;
 import com.ninja6.infernolantern.catalog.PaperWorldRef;
+import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Form;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Position;
@@ -154,6 +155,10 @@ public final class PaperNativeAccess {
 
         public StructureLifecycle.Request request() { return request; }
         public UUID currentSession() { return sessions.currentSession(actor.player()); }
+        @Override public CommitPermit commitPermit() {
+            sessions.requireOwner();
+            return actor.commitPermit(decision.bypassed());
+        }
 
         @Override public boolean allowed(StructureLifecycle.Request candidate, State before) {
             sessions.requireOwner();
@@ -203,7 +208,7 @@ public final class PaperNativeAccess {
                                     + " action=" + nativeAction + " row=" + row.rowVersion());
                         }
                     }
-                });
+                }, actor.commitPermit(decision.bypassed()));
     }
 
     /** Repair routing supplies current payment, protection and physical checks separately. */

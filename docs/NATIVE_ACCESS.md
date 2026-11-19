@@ -46,9 +46,18 @@ and any required override activation. Pass that grant as `PaperStructureEffects.
 and use its session supplier. The adapter rechecks it at preparation, application,
 verification and activation. Once the verified effects are journaled, the service repeats
 owner authorization before submitting the durable completion. Managed structures also
-check the catalog revision inside the SQLite completion transaction. The owner callback
-is the permission decision point. A permission or session change after database
-completion can still prevent later activation and retain quarantine.
+check the catalog revision inside the SQLite completion transaction. The transaction also checks a revocable
+connection or override-activation permit before commit. The permit has no Paper access.
+Explicit off, quit, kick, reconnect, shutdown, and administrative permission revocation
+when observed on the owner can invalidate queued work. An unobserved provider change is
+checked at the next owner callback.
+
+The final permit read immediately before SQLite commit is the authorization admission
+point. A revocation that reaches the permit first aborts the transaction. On a confirmed
+structure rejection the rollback path rechecks ownership and restoration authorization
+before compensating. A revocation after admission can prevent later activation and retain
+quarantine. A switch committed before revocation keeps its saved preference and audit
+record. Bukkit permissions are read only on the Paper owner thread.
 
 The router must supply `PhysicalAccess` for the actual target and full action footprint.
 The callback evaluates current protections, fluid/reach, and independent conditions,

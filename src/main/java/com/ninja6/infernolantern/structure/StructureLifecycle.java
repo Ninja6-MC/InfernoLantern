@@ -37,6 +37,7 @@ public final class StructureLifecycle implements AutoCloseable {
     public interface WorldEffects {
         Preparation prepare(Request request,TowerSnapshot before);
         boolean validate(Claim claim);
+        default CommitPermit commitPermit() { return null; }
         boolean apply(Claim claim);
         boolean verify(Claim claim);
         /** Restore only provably owned effects and verify the original source/structure. */
@@ -101,22 +102,25 @@ public final class StructureLifecycle implements AutoCloseable {
                             .thenCompose(verified->verified?finish(claim,effects):rollback(claim,effects));
                 });
     }
+    private record CommitCheck(CommitPermit permit) {}
     private CompletableFuture<Result> finish(Claim claim,WorldEffects effects){
         Operation op=claim.operation();UUID id=op.intent().id();
         return repository.advanceOperation(id,op.rowVersion(),Phase.INTENT,Phase.EFFECTS_APPLIED,"Owner verified named structure effects; world/player saves remain independent")
                 .thenCompose(applied->variantReady(claim.request(),op.before().tower().variantId())
-                        .thenCompose(ready->scheduler.supply(claim.request().anchor(),()->!closed&&ready&&effects.validate(claim)))
-                        .handle((ok,failure)->failure==null&&Boolean.TRUE.equals(ok))
-                        .thenCompose(allowed->allowed?complete(claim,effects,applied):rollback(claim,effects,applied)))
+                        .thenCompose(ready->scheduler.supply(claim.request().anchor(),()->!closed&&ready&&effects.validate(claim)
+                                ?new CommitCheck(effects.commitPermit()):null))
+                        .handle((check,failure)->failure==null?check:null)
+                        .thenCompose(check->check==null?rollback(claim,effects,applied):complete(claim,effects,applied,check.permit())))
                 .exceptionallyCompose(failure->quarantineLatest(claim));
     }
-    private CompletableFuture<Result> complete(Claim claim,WorldEffects effects,Operation applied){
+    private CompletableFuture<Result> complete(Claim claim,WorldEffects effects,Operation applied,CommitPermit permit){
         UUID id=applied.intent().id();
-        return repository.completeStructureOperation(id,applied.rowVersion(),claim.request().policy().revision(),"Verified structure effects, not an atomic Minecraft save")
+        return repository.completeStructureOperation(id,applied.rowVersion(),claim.request().policy().revision(),"Verified structure effects, not an atomic Minecraft save",permit)
                 .<CompletableFuture<Result>>handle((committed,failure)->{
                     if(failure!=null){
                         Throwable cause=unwrap(failure);
-                        return cause instanceof RepositoryException.CatalogSuperseded&&cause.getSuppressed().length==0
+                        return (cause instanceof RepositoryException.CatalogSuperseded||cause instanceof RepositoryException.CommitRevoked)
+                                &&cause.getSuppressed().length==0
                                 ?rollback(claim,effects,applied):quarantineLatest(claim);
                     }
                     return repository.tower(applied.intent().towerId())

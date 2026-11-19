@@ -27,7 +27,9 @@ Each request binds operation/tower identity, expected row version, item generati
 Ordinary expanded breaking is rejected. A permission grant alone is never an enabled session override. Override does not waive HP, clearance, integrity, external protection or other unimplemented policies. Retired variants reject place/expand while permitting authorized compaction/recovery. The service checks variant status and owner authorization before applying, verifying and
 committing. [Native access](NATIVE_ACCESS.md) supplies the binding to current catalog,
 connection and override. Managed structure completion also checks the catalog revision
-inside the database transaction.
+inside the database transaction. The native adapter also passes its revocable session
+or override permit to the transaction. Revocation before commit admission rejects that
+completion and leaves any compensation subject to the guarded restoration checks.
 
 A stale menu/hit/action must pass the exact request revision, generation and row version, even if the same actor re-expanded the tower. An old component cannot be adopted into a newer deployment. HP, maximum HP, repair lock and light/defence preferences are copied from repository state, never from item lore or caller-provided cached HP.
 

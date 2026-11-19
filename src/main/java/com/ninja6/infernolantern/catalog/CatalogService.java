@@ -89,6 +89,10 @@ public final class CatalogService implements AutoCloseable {
     }
     /** No ownership or session inference: caller's owner-thread callback must prove both at each boundary. */
     public CompletableFuture<TowerSnapshot> switchPreference(UUID tower,long rowVersion,long deploymentRevision,Snapshot catalog,Action action,boolean value,SwitchAccess access){
+        return switchPreference(tower,rowVersion,deploymentRevision,catalog,action,value,access,null);
+    }
+    public CompletableFuture<TowerSnapshot> switchPreference(UUID tower,long rowVersion,long deploymentRevision,Snapshot catalog,Action action,
+            boolean value,SwitchAccess access,CommitPermit permit){
         if(!isPublished(catalog))return CompletableFuture.failedFuture(new RepositoryException.Conflict("Catalog is not currently published"));
         if(action!=Action.LIGHT&&action!=Action.DEFENCE)return CompletableFuture.failedFuture(new IllegalArgumentException("Player switch action required"));
         return repository.tower(tower).thenCompose(found->{
@@ -98,7 +102,7 @@ public final class CatalogService implements AutoCloseable {
             var anchor=new WorldScheduler.Anchor(t.position().world(),t.position().x()>>4,t.position().z()>>4);
             return scheduler.supply(anchor,()->isPublished(catalog)&&switchAllowed(access,before,definition,action,value)).thenCompose(allowed->{
                 if(!allowed)return CompletableFuture.failedFuture(new RepositoryException.Conflict("Switch access changed"));
-                return repository.saveSwitches(catalog.revision(),tower,rowVersion,deploymentRevision,action==Action.LIGHT?value:t.light(),action==Action.DEFENCE?value:t.defence());
+                return repository.saveSwitches(catalog.revision(),tower,rowVersion,deploymentRevision,action==Action.LIGHT?value:t.light(),action==Action.DEFENCE?value:t.defence(),permit);
             }).thenCompose(saved->{
                 access.committed(saved);
                 return scheduler.supply(anchor,()->{

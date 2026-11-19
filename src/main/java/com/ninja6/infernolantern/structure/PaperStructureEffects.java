@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.structure;
 
 import com.ninja6.infernolantern.item.*;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
+import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import org.bukkit.*;
 import org.bukkit.block.data.*;
@@ -36,6 +37,7 @@ public final class PaperStructureEffects implements WorldEffects {
     /** Must verify current config/variant, native/eligibility/world/protection/reach and explicit session override. */
     @FunctionalInterface public interface Access {
         boolean allowed(Request request,State before);
+        default CommitPermit commitPermit() { return null; }
         /** Current protection authorization for restoring only the adapter's exact owned changes. */
         default boolean mayRestore(Request request,State before) { return true; }
     }
@@ -199,6 +201,7 @@ public final class PaperStructureEffects implements WorldEffects {
         String evidence=physicalEvidence+";stagedVisuals="+stagedVisuals.stream().map(Entity::getUniqueId).toList()+";stagedGround="+(ground==null?"none":ground.entity());
         preparation=new Preparation(manifest,ground,RecoveryEnvelope.structure("structure-"+r.action().name().toLowerCase(Locale.ROOT),r.anchor(),new Document(1,evidence),inventory));return preparation;
     }
+    @Override public CommitPermit commitPermit(){owner();return access.commitPermit();}
     @Override public boolean validate(Claim claim){owner();return claim.preparation()==preparation&&session(claim.request())&&access.allowed(request,before.state());}
     private boolean stageExact(){
         if(stagedDrop==null)return true;

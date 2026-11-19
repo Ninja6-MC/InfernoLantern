@@ -1,5 +1,6 @@
 package com.ninja6.infernolantern.access;
 
+import com.ninja6.infernolantern.repository.CommitPermit;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -14,6 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /** Paper-thread connection identity and explicit administrative override. */
@@ -27,17 +29,30 @@ public final class OverrideSessions implements Listener, AutoCloseable {
         final Player player;
         final UUID actor;
         final UUID id = UUID.randomUUID();
-        UUID override;
+        final CommitPermit permit = new CommitPermit();
+        CommitPermit override;
 
         Connection(Player player) {
             this.player = player;
             this.actor = player.getUniqueId();
         }
+
+        void disableOverride() {
+            if (override != null) {
+                override.revoke();
+                override = null;
+            }
+        }
+
+        void close() {
+            permit.revoke();
+            disableOverride();
+        }
     }
 
     public static final class Session {
         private final Connection connection;
-        private final UUID override;
+        private final CommitPermit override;
 
         private Session(Connection connection) {
             this.connection = connection;
@@ -47,6 +62,9 @@ public final class OverrideSessions implements Listener, AutoCloseable {
         public UUID actor() { return connection.actor; }
         public UUID id() { return connection.id; }
         Player player() { return connection.player; }
+        CommitPermit commitPermit(boolean bypass) {
+            return bypass ? Objects.requireNonNull(override) : connection.permit;
+        }
     }
 
     private final Map<UUID, Connection> connections = new HashMap<>();
@@ -70,21 +88,31 @@ public final class OverrideSessions implements Listener, AutoCloseable {
 
     private void connect(Player player) {
         requireOwner();
-        if (!closed) connections.put(player.getUniqueId(), new Connection(player));
+        if (closed) return;
+        Connection previous = connections.get(player.getUniqueId());
+        if (previous != null) previous.close();
+        connections.put(player.getUniqueId(), new Connection(player));
     }
 
     private void disconnect(Player player) {
         requireOwner();
         Connection connection = connections.get(player.getUniqueId());
-        if (connection != null && connection.player == player) connections.remove(player.getUniqueId());
+        if (connection != null && connection.player == player) {
+            connection.close();
+            connections.remove(player.getUniqueId());
+        }
     }
 
     private Connection connection(Player player) {
         requireOwner();
-        if (closed || !player.isOnline()) return null;
+        if (closed) return null;
         Connection connection = connections.get(player.getUniqueId());
         if (connection == null || connection.player != player) return null;
-        if (!player.hasPermission(PERMISSION)) connection.override = null;
+        if (!player.isOnline()) {
+            disconnect(player);
+            return null;
+        }
+        if (!player.hasPermission(PERMISSION)) connection.disableOverride();
         return connection;
     }
 
@@ -104,7 +132,7 @@ public final class OverrideSessions implements Listener, AutoCloseable {
 
     boolean enabled(Session session) {
         Connection connection = connection(session.player());
-        return connection == session.connection && session.override != null && session.override.equals(connection.override);
+        return connection == session.connection && session.override != null && session.override == connection.override;
     }
 
     public boolean available(CommandSender sender) {
@@ -131,11 +159,11 @@ public final class OverrideSessions implements Listener, AutoCloseable {
         String action = args.length == 2 ? args[1].toLowerCase(Locale.ROOT) : "";
         switch (action) {
             case "on" -> {
-                if (connection.override == null) connection.override = UUID.randomUUID();
+                if (connection.override == null) connection.override = new CommitPermit();
                 player.sendMessage("Override enabled for this session. " + SCOPE);
             }
             case "off" -> {
-                connection.override = null;
+                connection.disableOverride();
                 player.sendMessage("Override disabled.");
             }
             case "status" -> player.sendMessage("Override is " + (connection.override == null ? "off" : "on") + ". " + SCOPE);
@@ -150,6 +178,7 @@ public final class OverrideSessions implements Listener, AutoCloseable {
     @Override public void close() {
         requireOwner();
         closed = true;
+        connections.values().forEach(Connection::close);
         connections.clear();
     }
 }

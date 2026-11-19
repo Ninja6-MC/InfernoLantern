@@ -2,8 +2,11 @@ package com.ninja6.infernolantern.access;
 
 import com.ninja6.infernolantern.catalog.CatalogConfig;
 import com.ninja6.infernolantern.catalog.CatalogService;
+import com.ninja6.infernolantern.repository.CommitPermit;
+import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.RepositoryRecords.Component;
 import com.ninja6.infernolantern.repository.SqliteRepository;
+import com.ninja6.infernolantern.repository.SqliteTestConnections;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import com.ninja6.infernolantern.structure.StructureLifecycle;
@@ -23,6 +26,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -261,6 +266,31 @@ final class PaperNativeAccessTest {
         assertFalse(effects.activated);
     }
 
+    @Test void turningOverrideOffDuringSqliteWaitRejectsStructureCompletionAndRestores() throws Exception {
+        var admin = new Client(true);
+        admin.enable();
+        TowerSnapshot before = persisted(Form.COMPACT, null, 700);
+        var grant = structure(admin, before, EXPAND, 100, SAFE).orElseThrow();
+        Effects effects = new Effects(grant);
+        var operation = structures.execute(grant.request(), effects);
+        owner.runNext();
+        owner.runNext();
+        owner.runNext();
+        owner.await();
+        try (Connection writer = pauseSqliteWriter()) {
+            owner.runNext();
+            sessions.command(admin.player, "ilantern", OFF);
+            admin.enable();
+            writer.setAutoCommit(true);
+        }
+        assertEquals(StructureLifecycle.Outcome.ROLLED_BACK, owner.drain(operation).outcome());
+        assertEquals(Phase.ROLLED_BACK, get(repository.operation(grant.request().operation())).orElseThrow().phase());
+        assertEquals(before.state(), stored(before).state());
+        assertTrue(effects.restored);
+        assertFalse(effects.activated);
+        assertTrue(log.isEmpty());
+    }
+
     @Test void completedStructureBindsControllerAndRecordsTheAppliedBypass() throws Exception {
         var admin = new Client(true);
         admin.enable();
@@ -272,6 +302,7 @@ final class PaperNativeAccessTest {
         String evidence = RecoveryEnvelope.original(operation.intent().effects()).content();
         assertTrue(evidence.contains("explicitOverride=true"));
         assertTrue(evidence.contains("actor=" + admin.actor));
+        sessions.command(admin.player, "ilantern", OFF);
         Tower tower = stored(row).state().tower();
         assertEquals(Form.EXPANDED, tower.form());
         assertEquals(admin.actor, tower.controller());
@@ -323,6 +354,58 @@ final class PaperNativeAccessTest {
         assertTrue(log.isEmpty());
     }
 
+    @Test void turningOverrideOffDuringSqliteWaitRejectsSwitchWithoutAudit() throws Exception {
+        var controller = new Client(false);
+        var admin = new Client(true);
+        admin.enable();
+        var before = persisted(Form.EXPANDED, controller.actor, 0);
+        var queued = switchLight(admin, before);
+        owner.await();
+        try (Connection writer = pauseSqliteWriter()) {
+            owner.runNext();
+            sessions.command(admin.player, "ilantern", OFF);
+            admin.enable();
+            writer.setAutoCommit(true);
+        }
+        ExecutionException failure = assertThrows(ExecutionException.class, () -> owner.drain(queued));
+        assertInstanceOf(RepositoryException.CommitRevoked.class, failure.getCause());
+        assertEquals(before, stored(before));
+        assertTrue(log.isEmpty());
+    }
+
+    @Test void reconnectDuringSqliteWaitRejectsOrdinarySwitch() throws Exception {
+        var controller = new Client(false);
+        var before = persisted(Form.EXPANDED, controller.actor, 0);
+        var queued = switchLight(controller, before);
+        owner.await();
+        try (Connection writer = pauseSqliteWriter()) {
+            owner.runNext();
+            sessions.quit(new PlayerQuitEvent(controller.player, (net.kyori.adventure.text.Component) null,
+                    PlayerQuitEvent.QuitReason.DISCONNECTED));
+            new Client(controller.actor, false);
+            writer.setAutoCommit(true);
+        }
+        ExecutionException failure = assertThrows(ExecutionException.class, () -> owner.drain(queued));
+        assertInstanceOf(RepositoryException.CommitRevoked.class, failure.getCause());
+        assertEquals(before, stored(before));
+        assertTrue(log.isEmpty());
+    }
+
+    @Test void revocationAfterDurableSwitchDoesNotErasePreferenceOrAudit() throws Exception {
+        var controller = new Client(false);
+        var admin = new Client(true);
+        admin.enable();
+        var before = persisted(Form.EXPANDED, controller.actor, 0);
+        var committed = switchLight(admin, before);
+        owner.runNext();
+        owner.await(); // The already-committed preference is waiting for effect handoff.
+        assertTrue(stored(before).state().tower().light());
+        sessions.command(admin.player, "ilantern", OFF);
+        assertThrows(ExecutionException.class, () -> owner.drain(committed));
+        assertTrue(stored(before).state().tower().light());
+        assertEquals(1, log.size());
+    }
+
     @Test void reloadAndUnavailableCapabilityRejectQueuedOrFreshSwitch() throws Exception {
         var controller = new Client(true);
         controller.enable();
@@ -367,6 +450,17 @@ final class PaperNativeAccessTest {
 
     private CompletableFuture<TowerSnapshot> switchLight(Client actor, TowerSnapshot row) {
         return access.switchPreference(actor.session(), settings, row, CatalogConfig.Action.LIGHT, true, SAFE);
+    }
+
+    private Connection pauseSqliteWriter() throws SQLException {
+        Connection writer = SqliteTestConnections.open(temp.resolve("native-access.db"));
+        try {
+            writer.setAutoCommit(false); // The private JDBC connection acquires an IMMEDIATE writer lock.
+            return writer;
+        } catch (SQLException failure) {
+            writer.close();
+            throw failure;
+        }
     }
 
     private TowerSnapshot stored(TowerSnapshot row) throws Exception {
@@ -432,6 +526,7 @@ final class PaperNativeAccessTest {
                     new Document(1, "synthetic world proof")) : null;
         }
         @Override public boolean validate(StructureLifecycle.Claim claim) { return grant.allowed(claim.request(), before); }
+        @Override public CommitPermit commitPermit() { return grant.commitPermit(); }
         @Override public boolean apply(StructureLifecycle.Claim claim) { return true; }
         @Override public boolean verify(StructureLifecycle.Claim claim) { return true; }
         @Override public boolean rollback(StructureLifecycle.Claim claim) { return restored = grant.mayRestore(claim.request(), before); }
