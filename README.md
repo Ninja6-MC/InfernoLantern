@@ -62,3 +62,6 @@ journaled damage and drop, and the pending native exposure and provider routing.
 
 [Fluid placement and cleanup](docs/FLUID_POLICIES.md) documents per-variant water and lava settings,
 supported terrain changes, and pending native acceptance.
+
+[Generic Java and Bedrock packs](docs/RESOURCE_PACKS.md) documents model identifiers,
+override packaging, delivery modes, and per-connection readiness.

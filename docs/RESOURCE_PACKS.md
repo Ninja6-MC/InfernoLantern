@@ -1,0 +1,121 @@
+# Generic Resource Packs
+
+The plugin JAR includes the generic Java and Bedrock packs, Geyser item mappings,
+a texture override example, and complete combined packs under `resource-packs/`.
+Build the same files locally with `./gradlew resourcePacks` and find them in
+`build/resource-packs/`. Use `SHA256SUMS` to verify the archives, mapping, and
+`pack-set.json`. The latter records the supported model pairs, archive identities,
+delivery order, Java download SHA-1 values, and Bedrock pack UUIDs and versions.
+Host Java downloads at administrator-selected HTTPS URLs for the exact checked
+archive bytes.
+
+## Identifiers
+
+The two default palettes reuse the committed model geometry and animation.
+Ember has the authored warm accents. Frost swaps red and blue while keeping
+the UVs and alpha. The Bedrock attachables sample the first glow frame; Java
+reads the included texture animation metadata. The original editable masters
+and the prototype archives retain their existing content.
+
+| Example | Catalog `compact-model` | Catalog `expanded-model` |
+| --- | --- | --- |
+| Ember | `infernolantern:generic_ember_compact` | `infernolantern:generic_ember_expanded` |
+| Frost | `infernolantern:generic_frost_compact` | `infernolantern:generic_frost_expanded` |
+
+For each identifier `infernolantern:<stem>`, the Java item definition lives in
+`assets/infernolantern/items/<stem>.json` and resolves to
+`assets/infernolantern/models/<stem>.json`. The renderer applies the item-model
+component to the `minecraft:carved_pumpkin` carrier. Geyser maps the same
+carrier and item-model pair to the same namespaced Bedrock identifier. The
+Bedrock pack supplies `attachables/<stem>.json` and the frame/glow geometry for
+that stage. Two visual stages can share their palette's inventory icon.
+The catalog supplies item names, lore, and reward text. These examples only
+supply assets; select an existing valid catalog definition to activate a variant.
+[Geyser custom item mappings](https://geysermc.org/wiki/geyser/custom-items/)
+
+## Delivery modes
+
+| Mode | Java | Bedrock through Geyser |
+| --- | --- | --- |
+| Default | Send `infernolantern-generic-java.zip`. | Serve `infernolantern-generic-bedrock.mcpack` alongside the mapping. |
+| Stacked | Send base and higher-priority override in that order in a single request. Wait for both to load. | Serve both packs with higher priority for the override and supply the mapping once. Verify the actual bridge order. |
+| Combined | Configure server-managed delivery of `infernolantern-combined-java.zip`. The plugin sends no duplicate request. | Serve only `infernolantern-combined-bedrock.mcpack` alongside the mapping. |
+
+For Geyser v2 custom items, enable `enable-custom-content`, put
+`infernolantern-generic-mappings.json` in the instance's `custom_mappings/`,
+and supply the Bedrock archives through its `packs/` folder or pack API.
+The same mapping applies to all three modes. An ordered Bedrock stack needs
+an integration using the Geyser resource-pack API. Combined mode can deliver
+both layers through one archive. The Java format range is
+`[97, 1]`, matching the existing Java 26.3 rendering target. The Bedrock pack
+declares engine version 1.21.0 and uses v2 Geyser custom item definitions.
+The actual Java, Bedrock, and bridge version combination requires live testing.
+[Paper resource pack delivery](https://docs.papermc.io/adventure/resource-pack/)
+[Geyser resource packs](https://geysermc.org/wiki/geyser/packs/)
+
+## Override example
+
+The override archive changes only Ember's glow texture. Keep these paths for
+a texture swap.
+
+- Java uses `assets/infernolantern/textures/generic/ember_glow.png`.
+- Bedrock uses `textures/infernolantern/generic/ember_glow.png`.
+
+Each edition also has `ember_frame.png`, `frost_frame.png`, and
+`frost_glow.png` beside that path. The frame and glow textures retain their
+original 64 × 64 or 64 × 512 dimensions and non-interlaced 8-bit RGBA layout.
+The generated Java override puts the original `.png.mcmeta` animation
+sidecar next to each overridden animated glow PNG. Java resolves the metadata
+at the winning texture pack's priority, so the sidecar must travel with
+that texture. The combined build includes every base file and overlays the
+replacement PNG and its sidecar.
+
+To prepare a texture override, put the desired replacement PNGs in the paths
+above in two archives. Then build a separate output directory.
+
+```sh
+python3 scripts/build_resource_packs.py --output build/local-resource-packs \
+  --java-override /path/to/java-override.zip \
+  --bedrock-override /path/to/bedrock-override.mcpack
+```
+
+The generator checks the existing target paths and supported PNG dimensions and
+adds the original Java animation sidecar where needed. An input archive may
+include the matching sidecar unchanged; a different sidecar or a sidecar by
+itself is rejected. The generator writes new checksums and content-derived
+Bedrock pack identities.
+Keep any branding artwork and its licensing with the administrator-managed
+pack. For model overrides, preserve the documented identifiers and verify each
+platform's complete reference set before publishing a new asset identity.
+
+## Readiness and client acceptance
+
+`PackPlan` describes a validated artifact set. The deployment binding verifies
+the actual archives, model pairs, download digests and bridge mapping before
+creating the plan. Its model coverage can validate catalog definitions.
+For Java default and stacked delivery, `PaperPackSessions` sends the ordered
+Paper request and accepts successful load reports for every request ID in
+the current connection. It gates model-dependent interaction and returns a
+revocable commit permit. A timeout or terminal refusal/failure leaves the
+permit unavailable. Required delivery kicks with a reason; optional delivery
+reports the failure privately and keeps custom interaction gated.
+
+Server-managed Java combined delivery and all Bedrock modes require explicit
+current-connection readiness for the complete configured identity. For
+Bedrock this includes the archive stack and the matching bridge mapping.
+The trusted integration reports load, refusal, failure, missing state, and
+replacement. Configuration saying packs are required does not establish
+readiness. A plan replacement starts a fresh attempt and revokes the previous
+permit before sending new packs. Disconnect and shutdown also revoke it.
+Callers should compose this permit with their existing native action fences.
+Java client responses describe what the client reports. They cannot prove that
+a modified client rendered the assets.
+
+The adapter is ready for integration with a deployment binding and is currently
+unregistered. Issue #23 remains open for live Java and Bedrock acceptance.
+Exercise both variants and both stages in all three delivery modes. Check that
+the override takes priority, the combined packs contain the unchanged visuals,
+and optional failure blocks model-dependent interaction. Exercise required
+refusal, failed download, changed pack identity and reconnect. Confirm the
+bridge's reported ready state for that exact .mcpack and mapping combination.
+The existing compact-model shimmer remains an artwork acceptance item.
