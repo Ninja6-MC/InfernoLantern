@@ -38,7 +38,7 @@ The maintainer approved the standalone registered root `/infernolantern`, declar
 
 ### Selected command tokens and permissions
 
-The maintainer approved the following command tokens and permission defaults on 2026-11-13. The plugin implements help, status, session override and the award command route. Award delivery requires the shared runtime binding. Reload remains planned.
+The maintainer approved the following command tokens and permission defaults on 2026-11-13. The plugin implements help, status, session override, catalog reload and the award command route. Award delivery requires the shared runtime and save-witness bindings.
 
 | Command token | Purpose | Permission |
 | :--- | :--- | :--- |

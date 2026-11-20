@@ -39,16 +39,18 @@ public final class CatalogService implements AutoCloseable {
         return snapshot.revision()>0&&snapshot.equals(observed)&&ready()&&observed==published.get();
     }
     /** Startup explicitly publishes current validated configuration, retiring omitted managed definitions. */
-    public CompletableFuture<Reload> reload(Map<String,?> values){Candidate candidate;
+    public CompletableFuture<Reload> reload(Map<String,?> values){return reload(values,null);}
+    private CompletableFuture<Reload> reload(Map<String,?> values,CommitPermit permit){Candidate candidate;
         try{candidate=CatalogConfig.parse(values);for(Definition d:candidate.variants().values())validator.validate(d);}catch(RuntimeException invalid){return CompletableFuture.failedFuture(invalid);}
-        return publish(candidate);
+        return publish(candidate,permit);
     }
-    public CompletableFuture<Reload> reloadYaml(String text){try{return reload(CatalogYaml.read(text));}catch(RuntimeException invalid){return CompletableFuture.failedFuture(invalid);}}
+    public CompletableFuture<Reload> reloadYaml(String text){return reloadYaml(text,null);}
+    public CompletableFuture<Reload> reloadYaml(String text,CommitPermit permit){try{return reload(CatalogYaml.read(text),permit);}catch(RuntimeException invalid){return CompletableFuture.failedFuture(invalid);}}
     public CompletableFuture<Snapshot> load(){
         if(closed||!busy.compareAndSet(false,true))return CompletableFuture.failedFuture(new IllegalStateException("Catalog closed or publication pending"));
         return repository.catalog().thenApply(CatalogService::decodeStored).thenApply(snapshot->{if(closed)throw new CompletionException(new IllegalStateException("Catalog closed"));return snapshot;}).whenComplete((value,error)->busy.set(false));
     }
-    private CompletableFuture<Reload> publish(Candidate candidate){
+    private CompletableFuture<Reload> publish(Candidate candidate,CommitPermit permit){
         if(closed||!busy.compareAndSet(false,true))return CompletableFuture.failedFuture(new IllegalStateException("Catalog closed or publication pending"));
         return repository.catalog().thenCompose(before->{
             // Validate durable last-good definitions before any publication; never adopt opaque legacy IDs.
@@ -58,7 +60,7 @@ public final class CatalogService implements AutoCloseable {
                 definitions.put(d.id(),CatalogCodec.definition(d));
             }
             if(closed)return CompletableFuture.failedFuture(new IllegalStateException("Catalog closed"));
-            return repository.publishCatalog(before,CatalogCodec.candidate(candidate),definitions,geometry);
+            return repository.publishCatalog(before,CatalogCodec.candidate(candidate),definitions,geometry,permit);
         }).thenCompose(committed->{
             Snapshot snapshot=decodeStored(committed);
             if(closed)return CompletableFuture.completedFuture(new Reload(true,false,snapshot));

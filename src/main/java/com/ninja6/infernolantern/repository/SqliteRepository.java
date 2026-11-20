@@ -7,6 +7,10 @@ import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.structure.BlastImpact;
 
 import java.nio.file.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -16,6 +20,7 @@ import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 /** Async storage only. A committed database intent is not a committed Minecraft effect. */
 public final class SqliteRepository {
+    private static final Set<Path> NATIVE_OWNERS=ConcurrentHashMap.newKeySet();
     private final ArrayBlockingQueue<Job<?>> queue;
     private final Object admission = new Object();
     private final Semaphore observationSlots;
@@ -28,11 +33,13 @@ public final class SqliteRepository {
     private Connection connection;
     private String validatedEngineVersion;
     private final Thread worker;
+    private final boolean catalogOnly;
     private record Job<T>(Callable<T> action, CompletableFuture<T> future) {
         void run() { try { future.complete(action.call()); } catch(Throwable e) { future.completeExceptionally(e); if(e instanceof Error error)throw error; } }
     }
-    private SqliteRepository(Path file,int capacity) {
+    private SqliteRepository(Path file,int capacity,boolean catalogOnly) {
         if(capacity<1||capacity>100_000)throw new IllegalArgumentException("Queue capacity");
+        this.catalogOnly=catalogOnly;
         queue=new ArrayBlockingQueue<>(capacity);
         observationSlots=new Semaphore(capacity);
         worker=new Thread(()->run(file),"infernolantern-repository");
@@ -40,20 +47,39 @@ public final class SqliteRepository {
         worker.start();
     }
     public static CompletableFuture<SqliteRepository> open(Path file,int queueCapacity) {
+        return open(file,queueCapacity,false);
+    }
+    /** Dedicated native store. Gameplay writes remain closed upstream until their routes are bound. */
+    public static CompletableFuture<SqliteRepository> openCatalogOnly(Path file,int queueCapacity) {
+        return open(file,queueCapacity,true);
+    }
+    private static CompletableFuture<SqliteRepository> open(Path file,int queueCapacity,boolean catalogOnly) {
         Objects.requireNonNull(file);
-        try { return new SqliteRepository(file.toAbsolutePath(),queueCapacity).ready; }
+        try { return new SqliteRepository(file.toAbsolutePath(),queueCapacity,catalogOnly).ready; }
         catch(RuntimeException e) { return CompletableFuture.failedFuture(e); }
     }
     private void run(Path file) {
         Throwable failure=null;
+        FileChannel nativeOwner=null;
+        Path registeredOwner=null;
         try {
-            Path parent=file.getParent();if(parent!=null)Files.createDirectories(parent);
+            Path parent=file.getParent();
+            if(catalogOnly)verifyNativeFile(file);
+            if(parent!=null)Files.createDirectories(parent);
+            if(catalogOnly){
+                Path owner=parent.toRealPath().resolve(file.getFileName()+".owner");
+                if(!NATIVE_OWNERS.add(owner))throw new IOException("Native storage already has an owner");
+                registeredOwner=owner;
+                nativeOwner=FileChannel.open(owner,StandardOpenOption.CREATE,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
+                if(nativeOwner.tryLock()==null)throw new IOException("Native storage already has an owner");
+                verifyNativeFile(file);
+            }
             connection=PrivateSqlite.open(file);
             try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT sqlite_version()")){
                 if(!rows.next())throw new SQLException("Missing validated SQLite version");
                 validatedEngineVersion=rows.getString(1);
             }
-            Schema.initialize(connection);
+            Schema.initialize(connection,catalogOnly?Schema.NATIVE_APPLICATION_ID:Schema.APPLICATION_ID);
             validateStoredRows();
             ready.complete(this);
             while(fatal==null) {
@@ -68,7 +94,35 @@ public final class SqliteRepository {
             observations.keySet().forEach(this::invalidateObservations);
             Job<?> job;while((job=queue.poll())!=null)job.future().completeExceptionally(failure==null?new RepositoryException("Repository closed"):failure);
             try {if(connection!=null)connection.close();}catch(SQLException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
+            try {if(nativeOwner!=null)nativeOwner.close();}catch(IOException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
+            if(registeredOwner!=null)NATIVE_OWNERS.remove(registeredOwner);
             if(failure==null)closed.complete(null);else closed.completeExceptionally(failure);
+        }
+    }
+    private static void verifyNativeFile(Path file)throws IOException {
+        Path parent=file.getParent();
+        if(Files.isSymbolicLink(parent))throw new IOException("Native storage directory must not be a symbolic link");
+        for(String suffix:List.of("", "-wal", "-shm", "-journal", ".owner")){
+            Path candidate=file.resolveSibling(file.getFileName()+suffix);
+            if(Files.notExists(candidate,LinkOption.NOFOLLOW_LINKS))continue;
+            if(!Files.isRegularFile(candidate,LinkOption.NOFOLLOW_LINKS))throw new IOException("Unexpected native storage path");
+            if(candidate.getFileSystem().supportedFileAttributeViews().contains("unix")
+                    && !Integer.valueOf(1).equals(Files.getAttribute(candidate,"unix:nlink",LinkOption.NOFOLLOW_LINKS)))
+                throw new IOException("Native storage must not share a hard link");
+        }
+        if(Files.notExists(file,LinkOption.NOFOLLOW_LINKS)){
+            for(String suffix:List.of("-wal","-shm","-journal"))
+                if(!Files.notExists(file.resolveSibling(file.getFileName()+suffix),LinkOption.NOFOLLOW_LINKS))
+                    throw new IOException("Native journal without its database");
+            return;
+        }
+        // A copied prototype or foreign store must be rejected before SQLite opens the file.
+        try(var input=Files.newInputStream(file,LinkOption.NOFOLLOW_LINKS)){
+            byte[] header=input.readNBytes(72);
+            if(header.length!=72||!Arrays.equals(Arrays.copyOf(header,16),"SQLite format 3\0".getBytes(StandardCharsets.US_ASCII))
+                    ||ByteBuffer.wrap(header).getInt(68)!=Schema.NATIVE_APPLICATION_ID
+                    ||ByteBuffer.wrap(header).getInt(60)!=Schema.VERSION)
+                throw new IOException("Unrecognized native database header");
         }
     }
     private <T> CompletableFuture<T> submit(Callable<T> action) {
@@ -97,6 +151,7 @@ public final class SqliteRepository {
         connection.setAutoCommit(false);
         try {
             T result=action.call();
+            if(catalogOnly)Schema.requireCatalogOnly(connection);
             // Revocation may win while the request waits for the SQLite writer or executes SQL.
             if(permit!=null)permit.requireValid();
             connection.commit();
@@ -171,6 +226,10 @@ public final class SqliteRepository {
     /** Only explicitly managed IDs participate. A caller cannot adopt an existing unmanaged row. */
     public CompletableFuture<CatalogSnapshot> publishCatalog(CatalogSnapshot expected,Document configuration,
             Map<String,Document> definitions,Set<String> geometryChanges){
+        return publishCatalog(expected,configuration,definitions,geometryChanges,null);
+    }
+    public CompletableFuture<CatalogSnapshot> publishCatalog(CatalogSnapshot expected,Document configuration,
+            Map<String,Document> definitions,Set<String> geometryChanges,CommitPermit permit){
         Objects.requireNonNull(expected);Objects.requireNonNull(configuration);
         Map<String,Document> wanted=Map.copyOf(definitions);Set<String> geometry=Set.copyOf(geometryChanges);
         var candidate=CatalogCodec.candidate(configuration);
@@ -216,7 +275,7 @@ public final class SqliteRepository {
             if(expected.revision()==0)update("INSERT INTO catalog_state VALUES(1,?,?,?)",revision,configuration.version(),configuration.content());
             else require(update("UPDATE catalog_state SET revision=?,payload_version=?,configuration=? WHERE singleton=1 AND revision=?",revision,configuration.version(),configuration.content(),expected.revision())==1,"Catalog CAS lost");
             return loadCatalog();
-        }));
+        },permit));
     }
     /** Clamp live rows only. The caller already owns the catalog publication transaction. */
     private void migrateMaximumHp(String id,double maximum)throws Exception{
