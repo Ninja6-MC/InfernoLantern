@@ -221,7 +221,7 @@ public final class SqliteRepository {
     /** Clamp live rows only. The caller already owns the catalog publication transaction. */
     private void migrateMaximumHp(String id,double maximum)throws Exception{
         require(!pendingRepresentation(id,false),"Pending maximum HP change needs resolution");
-        try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form<>'LOST' AND (active_operation IS NOT NULL OR (maximum_hp<>? AND row_version=9223372036854775807)) LIMIT 1",id,maximum);var rows=p.executeQuery()){
+        try(var p=statement("SELECT 1 FROM towers WHERE variant_id=? AND form<>'LOST' AND (active_operation IS NOT NULL OR (maximum_hp<>? AND (row_version=9223372036854775807 OR id IN (SELECT next_tower FROM campaign_progress)))) LIMIT 1",id,maximum);var rows=p.executeQuery()){
             require(!rows.next(),"Maximum HP migration blocked by tower ownership or exhausted revision");
         }
         update("UPDATE towers SET hp=MIN(hp,?),maximum_hp=?,row_version=row_version+1 WHERE variant_id=? AND form<>'LOST' AND maximum_hp<>?",maximum,maximum,id,maximum);
@@ -235,6 +235,7 @@ public final class SqliteRepository {
         return submit(()->transaction(()->{
             require(loadCatalog().revision()==catalogRevision,"Catalog changed before switch commit");
             TowerSnapshot old=ownedTower(tower,expectedVersion,null);Tower t=old.state().tower();
+            require(!campaignOwnsTower(tower),"Campaign delivery still owns the identity");
             require(t.deploymentRevision()==expectedDeploymentRevision,"Stale switch deployment");
             Tower changed=new Tower(t.id(),t.variantId(),t.hp(),t.maximumHp(),t.form(),t.generation(),t.deploymentRevision(),t.controller(),t.position(),light,defence,t.expandAfter(),t.repairAfter());
             State state=new State(changed,old.state().ground(),old.state().components());
@@ -866,13 +867,37 @@ public final class SqliteRepository {
         }));
     }
 
-    /** Acknowledges an exact owner activation. Never issues an item or touches the current tower. */
-    public CompletableFuture<CampaignProgress> acknowledgeCampaignDelivery(CampaignDelivery proof){
-        Objects.requireNonNull(proof);
+    /** Exact expectation for a trusted save witness; reading it grants no effect ownership. */
+    public CompletableFuture<Optional<CampaignDelivery.AwaitingSave>> awaitingCampaignSave(UUID award){
+        Objects.requireNonNull(award);
+        return submit(()->snapshot(()->Optional.ofNullable(awaitingCampaignSave(loadCampaign(award)))));
+    }
+
+    private CampaignDelivery.AwaitingSave awaitingCampaignSave(CampaignProgress progress)throws Exception{
+        if(progress==null||progress.operation()==null)return null;
+        Operation op=loadOperation(progress.operation());
+        if(op.phase()!=Phase.COMPLETE)return null;
+        long towerVersion=Math.addExact(op.intent().expectedRowVersion(),2);
+        TowerSnapshot tower=loadTower(progress.nextTower());
+        require(tower.equals(new TowerSnapshot(op.intent().after(),towerVersion,null)),
+                "Completed campaign tower changed before save confirmation");
+        return new CampaignDelivery.AwaitingSave(CampaignDelivery.decode(op.intent().effects()),op.rowVersion(),towerVersion);
+    }
+
+    /** Confirm an exact durable player-save witness. No owner inventory callback runs here. */
+    public CompletableFuture<CampaignProgress> acknowledgeSavedCampaignDelivery(CampaignDelivery.SaveEvidence evidence,CommitPermit witness){
+        Objects.requireNonNull(evidence);
+        Objects.requireNonNull(witness);
         return submit(()->transaction(()->{
+            CampaignDelivery proof=evidence.expected().delivery();
             CampaignProgress current=requireCampaignDelivery(proof);
-            Operation op=loadOperation(proof.operation());
-            require(op.phase()==Phase.COMPLETE&&op.intent().effects().equals(proof.encode()),"Missing delivery completion");
+            require(current.award().status()==AwardStatus.PENDING,"Campaign hold prevents acknowledgment");
+            require(evidence.matchesSlot()&&evidence.expected().equals(awaitingCampaignSave(current)),
+                    "Current matched inventory checkpoint required");
+            long version=evidence.expected().operationVersion();
+            require(update("UPDATE operations SET row_version=?,evidence=? WHERE id=? AND row_version=? AND phase='COMPLETE'",
+                    next(version),"Exact active item in matched player checkpoint "+evidence.checkpointSha256(),
+                    proof.operation(),version)==1,"Campaign save receipt changed");
             long delivered=next(current.delivered());
             Award award=current.award();
             AwardStatus status=delivered==award.quantity()?AwardStatus.DELIVERED:award.status();
@@ -880,9 +905,8 @@ public final class SqliteRepository {
                     delivered,proof.award(),proof.operation())==1,"Campaign acknowledgment lost");
             require(update("UPDATE awards SET status=?,row_version=? WHERE id=? AND row_version=?",
                     status.name(),next(award.rowVersion()),award.id(),award.rowVersion())==1,"Campaign receipt CAS lost");
-            if(status==AwardStatus.DELIVERED)update("DELETE FROM catalog_award_holds WHERE award_id=?",award.id());
             return loadCampaign(proof.award());
-        }));
+        },witness));
     }
 
     private CampaignProgress requireCampaignDelivery(CampaignDelivery proof)throws Exception{

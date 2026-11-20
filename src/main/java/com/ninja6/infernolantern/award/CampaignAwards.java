@@ -19,15 +19,12 @@ import java.util.function.Supplier;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
 public final class CampaignAwards implements AutoCloseable {
-    // One inventory-sized unit of work per request. Campaign quantity is independent of this bound.
-    private static final int MAX_DELIVERIES = 36;
-
     public record Campaign(String variant,long quantity) {
         public Campaign {
             if (!identifier(variant) || quantity < 1) throw new IllegalArgumentException("Campaign variant or quantity");
         }
     }
-    public enum Stop { DELIVERED, PENDING, PAUSED, REVIEW, UNAVAILABLE }
+    public enum Stop { DELIVERED, PENDING, PAUSED, AWAITING_SAVE, REVIEW, UNAVAILABLE }
     public record Result(Stop stop,CampaignProgress progress) {}
     public enum Stage { NO_WRITE, VERIFIED, UNCERTAIN }
 
@@ -84,12 +81,12 @@ public final class CampaignAwards implements AutoCloseable {
         Objects.requireNonNull(authority);
         if(closed||!identifier(campaign))return unavailable();
         return repository.campaignAward(campaign,recipient).thenCompose(existing->{
-            if(existing.isPresent())return deliver(existing.get(),MAX_DELIVERIES);
+            if(existing.isPresent())return deliver(existing.get());
             Campaign settings=campaigns.get(campaign);
             Snapshot current=catalog.current().orElse(null);
             if(settings==null||!published(current))return unavailable();
             return repository.recordCampaignAward(campaign,recipient,settings.variant(),settings.quantity(),current.revision(),
-                    CommitPermit.allOf(authority,lifetime)).thenCompose(progress->deliver(progress,MAX_DELIVERIES));
+                    CommitPermit.allOf(authority,lifetime)).thenCompose(this::deliver);
         });
     }
 
@@ -97,15 +94,20 @@ public final class CampaignAwards implements AutoCloseable {
     public CompletableFuture<Result> resume(UUID award) {
         if(closed)return unavailable();
         return repository.campaignAward(award).thenCompose(found->found.isPresent()
-                ?deliver(found.get(),MAX_DELIVERIES):unavailable());
+                ?deliver(found.get()):unavailable());
     }
 
-    private CompletableFuture<Result> deliver(CampaignProgress progress,int remaining) {
+    /** Explicit follow-up from an independently matched, still-current save witness. */
+    public CompletableFuture<CampaignProgress> acknowledgeSaved(CampaignDelivery.SaveEvidence evidence,CommitPermit witness){
+        return repository.acknowledgeSavedCampaignDelivery(evidence,CommitPermit.allOf(lifetime,witness));
+    }
+
+    private CompletableFuture<Result> deliver(CampaignProgress progress) {
         if(progress.operation()!=null)return done(Stop.REVIEW,progress);
         if(progress.award().status()==AwardStatus.DELIVERED)return done(Stop.DELIVERED,progress);
         if(progress.award().status()==AwardStatus.PAUSED)return done(Stop.PAUSED,progress);
         Snapshot snapshot=catalog.current().orElse(null);
-        if(remaining==0||!active(snapshot,progress))return done(Stop.PENDING,progress);
+        if(!active(snapshot,progress))return done(Stop.PENDING,progress);
         return onOwner(()->active(snapshot,progress)?inventory.prepare(progress,UUID.randomUUID()):null)
                 .thenCompose(prepared->{
                     if(prepared==null)return done(Stop.PENDING,progress);
@@ -113,7 +115,7 @@ public final class CampaignAwards implements AutoCloseable {
                     CommitPermit permit=CommitPermit.allOf(lifetime,prepared.permit());
                     return repository.beginCampaignDelivery(progress,proof,snapshot.revision(),permit)
                             .<CompletableFuture<Result>>handle((operation,error)->{
-                                if(error==null)return stage(progress,snapshot,operation,prepared,permit,remaining);
+                                if(error==null)return stage(progress,snapshot,operation,prepared,permit);
                                 if(knownRejection(error))return latest(progress);
                                 return failed(error);
                             }).thenCompose(action->action);
@@ -121,7 +123,7 @@ public final class CampaignAwards implements AutoCloseable {
     }
 
     private CompletableFuture<Result> stage(CampaignProgress progress,Snapshot snapshot,Operation operation,
-            Prepared prepared,CommitPermit permit,int remaining) {
+            Prepared prepared,CommitPermit permit) {
         CampaignDelivery proof=prepared.proof();
         return onOwner(()->{
             BooleanSupplier admission=()->active(snapshot,progress)&&authorized(permit);
@@ -133,9 +135,9 @@ public final class CampaignAwards implements AutoCloseable {
             case UNCERTAIN -> quarantine(progress,operation);
             case VERIFIED -> repository.completeCampaignDelivery(proof,snapshot.revision(),permit)
                     .thenCompose(committed->activate(progress,snapshot,committed,prepared))
-                    .thenCompose(activated->activated
-                            ?repository.acknowledgeCampaignDelivery(proof).thenCompose(current->deliver(current,remaining-1))
-                            :latest(progress));
+                    .thenCompose(activated->latest(progress).thenApply(result->
+                            activated&&proof.operation().equals(result.progress().operation())
+                                    ?new Result(Stop.AWAITING_SAVE,result.progress()):result));
         }).exceptionallyCompose(failure->quarantine(progress,operation));
     }
 

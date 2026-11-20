@@ -64,6 +64,7 @@ public final class CampaignAwardCommand {
                 case DELIVERED -> "Campaign award delivered.";
                 case PENDING -> "Campaign award pending. Retry the same campaign when the player has room.";
                 case PAUSED -> "Campaign award held while the variant is unavailable.";
+                case AWAITING_SAVE -> "One campaign item awaits confirmed player-save evidence.";
                 case REVIEW -> "Campaign delivery requires inspection. Preserve the journal and inventory evidence.";
                 case UNAVAILABLE -> "The campaign or award service is unavailable.";
             });

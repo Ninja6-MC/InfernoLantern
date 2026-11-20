@@ -44,17 +44,33 @@ The Paper inventory port writes a single unavailable item with its operation mar
 checks the exact stored bytes. Only the winning current-catalog transaction can commit
 generation one and authorize a fresh activation. The owner rechecks the connection,
 readiness, exact slot bytes and durable tower observation before replacing the stage with
-the prepared active item. Successful activation acknowledges receipt before continuing
-with the remaining quantity. Every new tower has zero HP and no controller. The existing
+the prepared active item. Every new tower has zero HP and no controller. The existing
 item identity codec supplies one non-stackable representation.
 
-A SQLite commit and a Minecraft player save are independent. If stage, commit, activation
-or acknowledgment is uncertain, the outstanding operation remains on the award and the
-normal retry returns inspection required. A terminal operation receipt alone does not
-authorize activation or a replacement. Standard item operations cannot take ownership
-while that delivery is unresolved. Preserve both saves and the exact journal evidence.
-The administrative campaign recipe requires reviewed disposition instead of automatic
-recovery, refund, or replay.
+Live activation leaves the receipt pending. It does not acknowledge a save or allocate the
+next item. A runtime binding must prove that its native fence protects each exact stage
+and active delivery from use, slot movement, transfer, death loss and dropping while the
+receipt remains unresolved. The binding must restore that protection from outstanding
+receipts before admitting interactions after reconnect or restart. A missing fence prevents
+stage and activation. An empty or changed slot cannot serve as proof of delivery. The
+repository also prevents ordinary item mutations and tower writes while the outstanding
+delivery owns the tower.
+
+A SQLite commit and a Minecraft player save are independent. The Paper inventory adapter
+supplies no durable witness. A live slot read, an operation receipt or a return from
+`Player.saveData` cannot prove that the exact item survived the save boundary. If the process
+stops after live activation, a retry retains the same outstanding item and requests
+inspection. Missing or mismatched save evidence never authorizes reissue.
+
+A trusted reconciliation binding can read the exact completed receipt and submit fresh
+matched evidence from an independently inspected durable player checkpoint. The
+checkpoint must cover the recipient's exact active item in the recorded slot and match
+the current operation and tower versions. The binding supplies the checkpoint hash and
+must revoke the proof if its coverage ceases to be current before commit. Setting the
+coverage value alone establishes no evidence. Acknowledgment changes only the durable
+receipt. It never activates or replays an item, does not lift a retirement hold, and
+does not automatically issue the next item. After acknowledgment, a new explicit
+opportunity may resume the remaining quantity.
 
 ## Schema and runtime boundary
 
@@ -67,6 +83,6 @@ The command, service and Paper inventory adapter are available for an explicit s
 runtime binding. The current plugin entry point reports awards unavailable until that
 binding. A production owner must supply the published catalog, known player sessions,
 authorized pending-resume scheduling, exact appearance and pack readiness, and the
-production item lifecycle and save reconciliation. The prototype remains separate.
+production item lifecycle, persistent interaction fence, and independent save reconciliation. The prototype remains separate.
 Local SQLite and Paper-adapter tests do not establish live crash recovery or client
 acceptance.

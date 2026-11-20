@@ -40,7 +40,7 @@ class PaperAwardInventoryTest {
     private Object prior;
     private Player player;
     private Stack slot;
-    private boolean ready=true,online=true;
+    private boolean ready=true,online=true,fenced=true;
     private int writes;
 
     @BeforeEach void setup() throws Exception {
@@ -117,9 +117,22 @@ class PaperAwardInventoryTest {
         assertEquals(0,writes);
     }
 
+    @Test void saveFenceIsRequiredAtBothPhysicalWrites() {
+        var prepared=prepare();
+        fenced=false;
+        assertEquals(CampaignAwards.Stage.NO_WRITE,prepared.stage(()->true));
+        assertEquals(0,writes);
+        fenced=true;
+        assertEquals(CampaignAwards.Stage.VERIFIED,prepared.stage(()->true));
+        fenced=false;
+        assertFalse(prepared.activate(()->true));
+        assertTrue(identity.read(slot).isEmpty());
+        assertEquals(1,writes);
+    }
+
     private CampaignAwards.Prepared prepare(){
         return new PaperAwardInventory(server,sessions,identity,id->new PaperAwardInventory.Appearance(new Stack(),
-                new GroundPolicy(true,true)),(p,id)->ready).prepare(progress,UUID.randomUUID());
+                new GroundPolicy(true,true)),(p,id)->ready,(p,proof)->fenced).prepare(progress,UUID.randomUUID());
     }
 
     private static final class Stack extends ItemStack {

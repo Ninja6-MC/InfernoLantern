@@ -27,19 +27,30 @@ public final class PaperAwardInventory implements CampaignAwards.Inventory {
         public Appearance {Objects.requireNonNull(item);Objects.requireNonNull(ground);}
     }
 
+    /**
+     * Trusted native admission fence. Protect both exact stage and activation from normal use,
+     * slot movement, transfer and drop until durable acknowledgment, including across reconnect.
+     * Return false unless this exact slot and operation are covered.
+     */
+    @FunctionalInterface public interface SaveFence {
+        boolean protect(Player player,CampaignDelivery delivery);
+    }
+
     private final Server server;
     private final OverrideSessions sessions;
     private final PaperItemIdentity identity;
     private final Function<String,Appearance> appearances;
     private final BiPredicate<Player,String> ready;
+    private final SaveFence saveFence;
 
     public PaperAwardInventory(Server server,OverrideSessions sessions,PaperItemIdentity identity,
-                               Function<String,Appearance> appearances,BiPredicate<Player,String> ready) {
+                               Function<String,Appearance> appearances,BiPredicate<Player,String> ready,SaveFence saveFence) {
         this.server=Objects.requireNonNull(server);
         this.sessions=Objects.requireNonNull(sessions);
         this.identity=Objects.requireNonNull(identity);
         this.appearances=Objects.requireNonNull(appearances);
         this.ready=Objects.requireNonNull(ready);
+        this.saveFence=Objects.requireNonNull(saveFence);
     }
 
     @Override public CampaignAwards.Prepared prepare(CampaignProgress progress,UUID operation) {
@@ -91,14 +102,15 @@ public final class PaperAwardInventory implements CampaignAwards.Inventory {
                     &&session.id().equals(sessions.currentSession(player));
         }
         @Override public CampaignAwards.Stage stage(BooleanSupplier admission){
-            if(!current()||!empty(player.getInventory().getItem(proof.slot()))||!admission.getAsBoolean())
+            if(!current()||!saveFence.protect(player,proof)||!current()
+                    ||!empty(player.getInventory().getItem(proof.slot()))||!admission.getAsBoolean())
                 return CampaignAwards.Stage.NO_WRITE;
             player.getInventory().setItem(proof.slot(),staged.clone());
             return exact(proof.staged())?CampaignAwards.Stage.VERIFIED:CampaignAwards.Stage.UNCERTAIN;
         }
         @Override public boolean verify(){return current()&&exact(proof.staged());}
         @Override public boolean activate(BooleanSupplier admission){
-            if(!verify()||!admission.getAsBoolean())return false;
+            if(!current()||!saveFence.protect(player,proof)||!verify()||!admission.getAsBoolean())return false;
             player.getInventory().setItem(proof.slot(),active.clone());
             return exact(proof.active())&&identity.read(player.getInventory().getItem(proof.slot())).filter(token::equals).isPresent();
         }

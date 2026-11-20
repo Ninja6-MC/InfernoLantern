@@ -1,5 +1,7 @@
 package com.ninja6.infernolantern.repository;
 
+import com.ninja6.infernolantern.recovery.ReconciliationService.Coverage;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Objects;
@@ -22,6 +24,34 @@ public record CampaignDelivery(UUID award, UUID tower, UUID operation, UUID reci
         if (slot < 0 || slot >= 36 || staged.size() == 0 || active.size() == 0 || staged.equals(active)
                 || (long) staged.size() + active.size() > MAX_PAYLOAD / 2)
             throw new IllegalArgumentException("Campaign slot evidence");
+    }
+
+    /** Read-only expectation; a terminal receipt provides no player-save proof. */
+    public record AwaitingSave(CampaignDelivery delivery,long operationVersion,long towerVersion) {
+        public AwaitingSave {
+            Objects.requireNonNull(delivery);
+            nonnegative(operationVersion);
+            nonnegative(towerVersion);
+        }
+    }
+
+    /** Exact slot bytes read from the independently matched durable player save. */
+    public record SaveEvidence(AwaitingSave expected,Coverage coverage,String checkpointSha256,
+                               UUID recipient,int slot,ResourceBytes savedItem) {
+        public SaveEvidence {
+            Objects.requireNonNull(expected);
+            Objects.requireNonNull(coverage);
+            Objects.requireNonNull(recipient);
+            Objects.requireNonNull(savedItem);
+            if(checkpointSha256==null||!checkpointSha256.matches("[0-9a-f]{64}")||slot<0||slot>=36)
+                throw new IllegalArgumentException("Campaign save evidence");
+        }
+
+        boolean matchesSlot(){
+            var delivery=expected.delivery();
+            return coverage==Coverage.MATCHED_COMPLETE&&recipient.equals(delivery.recipient())
+                    &&slot==delivery.slot()&&savedItem.equals(delivery.active());
+        }
     }
 
     public static String source(String campaign) {
