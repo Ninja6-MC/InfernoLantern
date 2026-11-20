@@ -317,6 +317,7 @@ public final class SqliteRepository {
     /** Only data within an unchanged representation can use direct CAS. Form/identity/manifest changes require a journal. */
     public CompletableFuture<TowerSnapshot> compareAndSetTower(long expected,Tower replacement){Objects.requireNonNull(replacement);return submit(()->transaction(()->{
         TowerSnapshot old=ownedTower(replacement.id(),expected,null);
+        require(!campaignOwnsTower(replacement.id()),"Campaign delivery still owns the identity");
         Tower before=old.state().tower();
         require(sameRepresentation(before,replacement),"Representation changes require durable intent");
         if(catalogManaged(before.variantId()))require(before.maximumHp()==replacement.maximumHp(),"Managed maximum HP changes require catalog publication");
@@ -376,6 +377,7 @@ public final class SqliteRepository {
     private CompletableFuture<Operation> beginIntent(Intent intent,boolean allowReceipt,long catalogRevision,boolean managedOnly){
         Objects.requireNonNull(intent);
         if(RepairPayment.KIND.equals(intent.kind()))throw new IllegalArgumentException("Use atomic repair admission");
+        if(CampaignDelivery.KIND.equals(intent.kind()))throw new IllegalArgumentException("Use atomic campaign admission");
         return submit(()->transaction(()->insertIntent(intent,allowReceipt,catalogRevision,managedOnly)));
     }
     private Operation insertIntent(Intent intent,boolean allowReceipt,long catalogRevision,boolean managedOnly)throws Exception{
@@ -383,6 +385,7 @@ public final class SqliteRepository {
         if(!managedOnly&&catalogRevision>=0)require(loadCatalog().revision()==catalogRevision,"Catalog changed before intent");
         Operation existing=loadOperation(intent.id());
         if(existing!=null){require(allowReceipt,"Operation is already admitted");require(existing.intent().equals(intent),"Operation identity reused with different intent");return existing;}
+        require(CampaignDelivery.KIND.equals(intent.kind())||!campaignOwnsTower(intent.towerId()),"Campaign delivery still owns the identity");
         TowerSnapshot tower=ownedTower(intent.towerId(),intent.expectedRowVersion(),null);Tower before=tower.state().tower(),after=intent.after().tower();
         boolean managed=catalogManaged(before.variantId());
         if(STRUCTURE_BLAST.equals(intent.kind())||STRUCTURE_EXIT_BLAST.equals(intent.kind())){
@@ -540,6 +543,7 @@ public final class SqliteRepository {
     }));}
     public CompletableFuture<Operation> advanceOperation(UUID id,long expected,Phase from,Phase to,String evidence){Objects.requireNonNull(from);Objects.requireNonNull(to);text(evidence,MAX_PAYLOAD);return submit(()->transaction(()->{
         Operation op=requireOperation(id,expected);require(op.phase()==from,"Stale operation phase");
+        if(CampaignDelivery.KIND.equals(op.intent().kind()))require(to==Phase.RECONCILING,"Use campaign delivery settlement");
         boolean allowed=(from==Phase.INTENT&&(to==Phase.EFFECTS_APPLIED||to==Phase.RECONCILING))||(from==Phase.EFFECTS_APPLIED&&to==Phase.RECONCILING)||(from==Phase.RECONCILING&&to==Phase.EFFECTS_APPLIED);
         require(allowed,"Invalid phase progression");ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),id);
         require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=? AND phase=?",to.name(),next(expected),evidence,id,expected,from.name())==1,"Operation CAS lost");return loadOperation(id);
@@ -574,7 +578,11 @@ public final class SqliteRepository {
     private CompletableFuture<Operation> finish(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
             boolean managedOnly,CommitPermit permit,LongSupplier exitClock){
         Objects.requireNonNull(id);
-        return submit(()->transaction(()->finishOperation(id,expected,evidence,rollback,allowReceipt,catalogRevision,managedOnly,exitClock),permit));
+        return submit(()->transaction(()->{
+            Operation op=loadOperation(id);
+            require(op==null||!CampaignDelivery.KIND.equals(op.intent().kind()),"Use campaign delivery settlement");
+            return finishOperation(id,expected,evidence,rollback,allowReceipt,catalogRevision,managedOnly,exitClock);
+        },permit));
     }
     private Operation finishOperation(UUID id,long expected,String evidence,boolean rollback,boolean allowReceipt,long catalogRevision,
             boolean managedOnly,LongSupplier exitClock)throws Exception{
@@ -640,6 +648,8 @@ public final class SqliteRepository {
     /** Award metadata never creates/delivers an item; quantity is not bounded by a gameplay tower count. */
     public CompletableFuture<Award> saveAward(Award award,long expected){Objects.requireNonNull(award);return submit(()->transaction(()->{
         Award old=loadAward(award.id());
+        require(!ownsCampaignAward(award.id())&&(old!=null||!CampaignDelivery.campaignSource(award.sourceKey())),
+                "Use campaign award registration");
         Variant variant=loadVariant(award.variantId());require(variant!=null,"Missing award variant");
         boolean managed;try(var p=statement("SELECT 1 FROM catalog_managed_variants WHERE variant_id=?",award.variantId());var rows=p.executeQuery()){managed=rows.next();}
         boolean held=managed&&variant.status()==VariantStatus.RETIRED&&award.status()==AwardStatus.PENDING;
@@ -664,6 +674,7 @@ public final class SqliteRepository {
         Map<UUID,Long> versions=Map.copyOf(towerVersions);page(versions.size());
         return submit(()->transaction(()->{
             Award award=loadAward(awardId);require(award!=null&&award.rowVersion()==expected&&award.status()==AwardStatus.PENDING,"Stale or paused/delivered award");
+            require(!ownsCampaignAward(award.id()),"Use campaign delivery admission");
             require(loadVariant(award.variantId()).status()==VariantStatus.ACTIVE,"Retired award cannot allocate identities");
             require(awardCount(awardId)<=award.quantity()-versions.size(),"Award quantity exceeded");
             for(var pair:versions.entrySet()){
@@ -691,6 +702,210 @@ public final class SqliteRepository {
             return award;
         }
     }
+    /** A campaign/recipient receipt remains valid across later configuration changes. */
+    public CompletableFuture<Optional<CampaignProgress>> campaignAward(String campaign,UUID recipient){
+        UUID id=CampaignDelivery.awardId(campaign,recipient);
+        return campaignAward(id);
+    }
+
+    public CompletableFuture<Optional<CampaignProgress>> campaignAward(UUID id){
+        Objects.requireNonNull(id);
+        return submit(()->snapshot(()->Optional.ofNullable(loadCampaign(id))));
+    }
+
+    public CompletableFuture<CampaignProgress> recordCampaignAward(String campaign,UUID recipient,String variantId,
+            long quantity,long catalogRevision,CommitPermit permit){
+        UUID id=CampaignDelivery.awardId(campaign,recipient);
+        String source=CampaignDelivery.source(campaign);
+        identifier(variantId);
+        if(quantity<1||catalogRevision<1)throw new IllegalArgumentException("Campaign configuration");
+        return submit(()->transaction(()->{
+            CampaignProgress existing=loadCampaign(id);
+            if(existing!=null){
+                require(existing.award().sourceKey().equals(source)&&existing.award().recipient().equals(recipient),
+                        "Campaign receipt identity mismatch");
+                return existing;
+            }
+            require(loadCatalog().revision()==catalogRevision,"Catalog changed before award registration");
+            Variant variant=loadVariant(variantId);
+            require(variant!=null&&catalogManaged(variantId),"Missing managed campaign variant");
+            try(var p=statement("SELECT 1 FROM awards WHERE source_key=? AND recipient=? LIMIT 1",source,recipient);
+                    var rows=p.executeQuery()){
+                require(!rows.next(),"Existing award provenance requires review");
+            }
+            AwardStatus status=variant.status()==VariantStatus.RETIRED?AwardStatus.PAUSED:AwardStatus.PENDING;
+            update("INSERT INTO awards VALUES(?,?,?,?,?,?,0,1)",id,source,recipient,variantId,quantity,status.name());
+            update("INSERT INTO campaign_progress VALUES(?,0,NULL,NULL)",id);
+            if(status==AwardStatus.PAUSED)update("INSERT INTO catalog_award_holds VALUES(?)",id);
+            return loadCampaign(id);
+        },Objects.requireNonNull(permit)));
+    }
+
+    /** Bounded recipient resume; held or completed receipts require no new delivery. */
+    public CompletableFuture<List<CampaignProgress>> pendingCampaignAwards(UUID recipient,UUID after,int limit){
+        Objects.requireNonNull(recipient);page(limit);
+        return submit(()->snapshot(()->{
+            var result=new ArrayList<CampaignProgress>();
+            for(UUID id:ids("SELECT a.id FROM awards a JOIN campaign_progress c ON c.award_id=a.id "+
+                    "WHERE a.recipient=? AND a.status='PENDING' AND a.id>? ORDER BY a.id LIMIT ?",
+                    recipient,after==null?"":after.toString(),limit))result.add(loadCampaign(id));
+            return List.copyOf(result);
+        }));
+    }
+
+    private CampaignProgress loadCampaign(UUID id)throws Exception{
+        try(var p=statement("SELECT * FROM campaign_progress WHERE award_id=?",id);var r=p.executeQuery()){
+            if(!r.next())return null;
+            Award award=loadAward(id);
+            long delivered=r.getLong("delivered");
+            UUID tower=uuid(r.getString("next_tower")),operation=uuid(r.getString("operation_id"));
+            require(award!=null&&CampaignDelivery.matches(award),"Campaign provenance mismatch");
+            require(awardCount(id)==Math.addExact(delivered,tower==null?0:1),"Campaign allocation mismatch");
+            if(tower!=null){
+                require(tower.equals(CampaignDelivery.towerId(id,delivered))&&ownsAwardTower(id,tower),"Campaign tower mismatch");
+                TowerSnapshot row=loadTower(tower);
+                if(operation==null){
+                    require(row.mutationReady()&&row.state().tower().form()==Form.LOST&&row.state().tower().generation()==0,
+                            "Unused campaign identity changed");
+                }else{
+                    Operation op=loadOperation(operation);
+                    require(op!=null&&CampaignDelivery.KIND.equals(op.intent().kind())&&op.intent().towerId().equals(tower)&&op.phase()!=Phase.ROLLED_BACK,
+                            "Campaign operation mismatch");
+                    CampaignDelivery proof=CampaignDelivery.decode(op.intent().effects());
+                    require(proof.award().equals(id)&&proof.operation().equals(operation)&&proof.tower().equals(tower)
+                            &&proof.recipient().equals(award.recipient()),"Campaign slot provenance mismatch");
+                    if(op.pending())require(operation.equals(row.activeOperation()),"Campaign operation lost ownership");
+                }
+            }
+            return new CampaignProgress(award,delivered,tower,operation);
+        }
+    }
+
+    private boolean ownsCampaignAward(UUID award)throws SQLException{
+        try(var p=statement("SELECT 1 FROM campaign_progress WHERE award_id=?",award);var rows=p.executeQuery()){
+            return rows.next();
+        }
+    }
+
+    private boolean campaignOwnsTower(UUID tower)throws SQLException{
+        try(var p=statement("SELECT 1 FROM campaign_progress WHERE next_tower=?",tower);var rows=p.executeQuery()){
+            return rows.next();
+        }
+    }
+
+    private boolean ownsAwardTower(UUID award,UUID tower)throws SQLException{
+        try(var p=statement("SELECT 1 FROM award_towers WHERE award_id=? AND tower_id=?",award,tower);var r=p.executeQuery()){
+            return r.next();
+        }
+    }
+
+    /** A fresh claim links the sole next identity and its exact slot intent atomically. */
+    public CompletableFuture<Operation> beginCampaignDelivery(CampaignProgress expected,CampaignDelivery proof,
+            long catalogRevision,CommitPermit permit){
+        Objects.requireNonNull(expected);Objects.requireNonNull(proof);
+        return submit(()->transaction(()->{
+            CampaignProgress current=loadCampaign(proof.award());
+            require(expected.equals(current)&&current.award().status()==AwardStatus.PENDING&&current.operation()==null
+                    &&current.award().recipient().equals(proof.recipient())&&current.plannedTower().equals(proof.tower()),
+                    "Stale campaign admission");
+            require(loadCatalog().revision()==catalogRevision,"Catalog changed before delivery");
+            Variant variant=loadVariant(current.award().variantId());
+            require(variant!=null&&catalogManaged(variant.id())&&variant.status()==VariantStatus.ACTIVE,"Unavailable campaign variant");
+            var definition=CatalogCodec.definition(variant.lastValidDefinition());
+            Tower dormant=new Tower(proof.tower(),variant.id(),0,definition.maximumHp(),Form.LOST,0,0,null,null,
+                    definition.defaultLight(),definition.defaultDefence(),0,0);
+            State initial=new State(dormant,null,List.of());
+            long version=0;
+            if(current.nextTower()==null){
+                writeTower(initial,0,null,true,0,null);
+                update("INSERT INTO award_towers VALUES(?,?)",proof.award(),proof.tower());
+            }else{
+                TowerSnapshot old=loadTower(proof.tower());
+                version=old.rowVersion();
+                if(!initial.equals(old.state())){
+                    version=next(version);
+                    writeTower(initial,version,null,false,old.rowVersion(),null);
+                }
+            }
+            Tower issued=new Tower(proof.tower(),variant.id(),0,definition.maximumHp(),Form.PORTABLE,1,0,null,null,
+                    dormant.light(),dormant.defence(),0,0);
+            Intent intent=new Intent(proof.operation(),proof.tower(),version,0,0,CampaignDelivery.KIND,
+                    new State(issued,null,List.of()),proof.encode());
+            Operation op=insertIntent(intent,false,catalogRevision,false);
+            require(update("UPDATE campaign_progress SET next_tower=?,operation_id=? WHERE award_id=? AND operation_id IS NULL",
+                    proof.tower(),proof.operation(),proof.award())==1,"Campaign allocation lost");
+            bumpCampaignAward(current);
+            return op;
+        },Objects.requireNonNull(permit)));
+    }
+
+    /** A verified stage grants the fresh caller one activation. A receipt grants none. */
+    public CompletableFuture<Operation> completeCampaignDelivery(CampaignDelivery proof,long catalogRevision,CommitPermit permit){
+        Objects.requireNonNull(proof);
+        return submit(()->transaction(()->{
+            CampaignProgress current=requireCampaignDelivery(proof);
+            require(current.award().status()==AwardStatus.PENDING&&loadCatalog().revision()==catalogRevision,
+                    "Campaign paused or catalog changed");
+            Operation op=campaignIntent(proof,Phase.EFFECTS_APPLIED,"Exact unavailable inventory item verified");
+            return finishOperation(proof.operation(),op.rowVersion(),"Database committed before slot activation",false,false,
+                    catalogRevision,false,null);
+        },Objects.requireNonNull(permit)));
+    }
+
+    /** Only the fresh native effect owner may report a known no-write outcome. */
+    public CompletableFuture<CampaignProgress> cancelCampaignDelivery(CampaignDelivery proof){
+        Objects.requireNonNull(proof);
+        return submit(()->transaction(()->{
+            CampaignProgress current=requireCampaignDelivery(proof);
+            Operation op=campaignIntent(proof,Phase.RECONCILING,"Owner proved no inventory write was attempted");
+            finishOperation(proof.operation(),op.rowVersion(),"Dormant award identity retained",true,false,-1,false,null);
+            require(update("UPDATE campaign_progress SET operation_id=NULL WHERE award_id=? AND operation_id=?",
+                    proof.award(),proof.operation())==1,"Campaign cancellation lost");
+            bumpCampaignAward(current);
+            return loadCampaign(proof.award());
+        }));
+    }
+
+    /** Acknowledges an exact owner activation. Never issues an item or touches the current tower. */
+    public CompletableFuture<CampaignProgress> acknowledgeCampaignDelivery(CampaignDelivery proof){
+        Objects.requireNonNull(proof);
+        return submit(()->transaction(()->{
+            CampaignProgress current=requireCampaignDelivery(proof);
+            Operation op=loadOperation(proof.operation());
+            require(op.phase()==Phase.COMPLETE&&op.intent().effects().equals(proof.encode()),"Missing delivery completion");
+            long delivered=next(current.delivered());
+            Award award=current.award();
+            AwardStatus status=delivered==award.quantity()?AwardStatus.DELIVERED:award.status();
+            require(update("UPDATE campaign_progress SET delivered=?,next_tower=NULL,operation_id=NULL WHERE award_id=? AND operation_id=?",
+                    delivered,proof.award(),proof.operation())==1,"Campaign acknowledgment lost");
+            require(update("UPDATE awards SET status=?,row_version=? WHERE id=? AND row_version=?",
+                    status.name(),next(award.rowVersion()),award.id(),award.rowVersion())==1,"Campaign receipt CAS lost");
+            if(status==AwardStatus.DELIVERED)update("DELETE FROM catalog_award_holds WHERE award_id=?",award.id());
+            return loadCampaign(proof.award());
+        }));
+    }
+
+    private CampaignProgress requireCampaignDelivery(CampaignDelivery proof)throws Exception{
+        CampaignProgress current=loadCampaign(proof.award());
+        require(current!=null&&proof.operation().equals(current.operation())&&proof.tower().equals(current.nextTower())
+                &&proof.recipient().equals(current.award().recipient()),"Stale campaign delivery");
+        return current;
+    }
+
+    private Operation campaignIntent(CampaignDelivery proof,Phase phase,String evidence)throws Exception{
+        Operation op=loadOperation(proof.operation());
+        require(op.phase()==Phase.INTENT&&op.intent().effects().equals(proof.encode()),"Stale campaign evidence");
+        require(update("UPDATE operations SET phase=?,row_version=?,evidence=? WHERE id=? AND row_version=?",
+                phase.name(),next(op.rowVersion()),evidence,proof.operation(),op.rowVersion())==1,"Campaign journal CAS lost");
+        return loadOperation(proof.operation());
+    }
+
+    private void bumpCampaignAward(CampaignProgress current)throws SQLException{
+        Award award=current.award();
+        require(update("UPDATE awards SET row_version=? WHERE id=? AND row_version=?",
+                next(award.rowVersion()),award.id(),award.rowVersion())==1,"Campaign receipt CAS lost");
+    }
+
     /** Exact resource bytes must be captured on the owning scheduler before this call. */
     public CompletableFuture<Escrow> saveEscrow(Escrow escrow,long expected,long operationVersion){Objects.requireNonNull(escrow);return submit(()->transaction(()->{
         Operation op=requireOperation(escrow.operation(),operationVersion);
@@ -728,13 +943,13 @@ public final class SqliteRepository {
     private void validateStoredRows()throws Exception{
         loadCatalog();
         try(var s=connection.createStatement();var r=s.executeQuery("PRAGMA foreign_key_check")){if(r.next())throw new SQLException("Database reference integrity failed");}
-        for(String table:List.of("variants","towers","operations","awards","repair_escrows")){
-            String column=table.equals("repair_escrows")?"operation_id":"id";String cursor="";
+        for(String table:List.of("variants","towers","operations","awards","repair_escrows","campaign_progress")){
+            String column=switch(table){case "repair_escrows"->"operation_id";case "campaign_progress"->"award_id";default->"id";};String cursor="";
             while(true){
                 var keys=new ArrayList<String>();try(var p=statement("SELECT "+column+" FROM "+table+" WHERE "+column+">? ORDER BY "+column+" LIMIT ?",cursor,MAX_PAGE);var r=p.executeQuery()){while(r.next())keys.add(r.getString(1));}
                 if(keys.isEmpty())break;
                 for(String key:keys){
-                    switch(table){case "variants"->loadVariant(key);case "towers"->{TowerSnapshot t=loadTower(uuid(key));validateCells(t);if(t.activeOperation()!=null){Operation op=loadOperation(t.activeOperation());require(op!=null&&op.pending()&&op.intent().towerId().equals(t.state().tower().id())&&t.rowVersion()==next(op.intent().expectedRowVersion()),"Invalid journal ownership");}}case "operations"->{Operation op=loadOperation(uuid(key));if(op.pending())ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),op.intent().id());}case "awards"->loadAward(uuid(key));case "repair_escrows"->loadEscrow(uuid(key));default->throw new IllegalStateException();}
+                    switch(table){case "variants"->loadVariant(key);case "towers"->{TowerSnapshot t=loadTower(uuid(key));validateCells(t);if(t.activeOperation()!=null){Operation op=loadOperation(t.activeOperation());require(op!=null&&op.pending()&&op.intent().towerId().equals(t.state().tower().id())&&t.rowVersion()==next(op.intent().expectedRowVersion()),"Invalid journal ownership");}}case "operations"->{Operation op=loadOperation(uuid(key));if(op.pending())ownedTower(op.intent().towerId(),next(op.intent().expectedRowVersion()),op.intent().id());}case "awards"->loadAward(uuid(key));case "repair_escrows"->loadEscrow(uuid(key));case "campaign_progress"->loadCampaign(uuid(key));default->throw new IllegalStateException();}
                 }
                 cursor=keys.getLast();
             }

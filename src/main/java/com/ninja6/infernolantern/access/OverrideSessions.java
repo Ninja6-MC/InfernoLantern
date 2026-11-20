@@ -62,6 +62,7 @@ public final class OverrideSessions implements Listener, AutoCloseable {
         public UUID actor() { return connection.actor; }
         public UUID id() { return connection.id; }
         Player player() { return connection.player; }
+        public CommitPermit connectionPermit() { return connection.permit; }
         CommitPermit commitPermit(boolean bypass) {
             return bypass ? Objects.requireNonNull(override) : connection.permit;
         }

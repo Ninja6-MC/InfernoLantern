@@ -8,7 +8,7 @@ import java.util.*;
 /** Migrations are validated before any persistent pragma or schema write. */
 final class Schema {
     static final int APPLICATION_ID=0x494C4442; // ILDB
-    static final int VERSION=4;
+    static final int VERSION=5;
     static final List<List<String>> MIGRATIONS=List.of(List.of(
         "CREATE TABLE variants(id TEXT PRIMARY KEY, definition_revision INTEGER NOT NULL CHECK(definition_revision>=0), status TEXT NOT NULL CHECK(status IN ('ACTIVE','RETIRED')), payload_version INTEGER NOT NULL CHECK(payload_version>0), definition TEXT NOT NULL, row_version INTEGER NOT NULL CHECK(row_version>=0))",
         "CREATE TABLE towers(id TEXT PRIMARY KEY, variant_id TEXT NOT NULL REFERENCES variants(id), hp REAL NOT NULL CHECK(hp>=0), maximum_hp REAL NOT NULL CHECK(maximum_hp>0 AND hp<=maximum_hp), form TEXT NOT NULL CHECK(form IN ('PORTABLE','GROUND','COMPACT','EXPANDED','LOST')), generation INTEGER NOT NULL CHECK(generation>=0), deployment_revision INTEGER NOT NULL CHECK(deployment_revision>=0), controller TEXT, world TEXT, x INTEGER, y INTEGER, z INTEGER, orientation TEXT, light INTEGER NOT NULL CHECK(light IN (0,1)), defence INTEGER NOT NULL CHECK(defence IN (0,1)), expand_after INTEGER NOT NULL CHECK(expand_after>=0), repair_after INTEGER NOT NULL CHECK(repair_after>=0), row_version INTEGER NOT NULL CHECK(row_version>=0), active_operation TEXT UNIQUE, CHECK((form='EXPANDED')=(controller IS NOT NULL)), CHECK((form IN ('COMPACT','EXPANDED'))=(world IS NOT NULL)), CHECK((world IS NULL AND x IS NULL AND y IS NULL AND z IS NULL AND orientation IS NULL) OR (world IS NOT NULL AND x IS NOT NULL AND y IS NOT NULL AND z IS NOT NULL AND orientation IS NOT NULL)))",
@@ -29,6 +29,8 @@ final class Schema {
         "CREATE TABLE catalog_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),revision INTEGER NOT NULL CHECK(revision>0),payload_version INTEGER NOT NULL CHECK(payload_version>0),configuration TEXT NOT NULL)",
         "CREATE TABLE catalog_managed_variants(variant_id TEXT PRIMARY KEY REFERENCES variants(id))",
         "CREATE TABLE catalog_award_holds(award_id TEXT PRIMARY KEY REFERENCES awards(id))"
+    ),List.of(
+        "CREATE TABLE campaign_progress(award_id TEXT PRIMARY KEY REFERENCES awards(id), delivered INTEGER NOT NULL CHECK(delivered>=0), next_tower TEXT UNIQUE REFERENCES towers(id), operation_id TEXT UNIQUE REFERENCES operations(id), CHECK(operation_id IS NULL OR next_tower IS NOT NULL))"
     ));
     private Schema(){}
     private static RepositoryRecords.State decode(byte[] bytes)throws SQLException{try{return SnapshotCodec.decode(bytes);}catch(java.io.IOException e){throw new SQLException("Invalid legacy operation snapshot",e);}}

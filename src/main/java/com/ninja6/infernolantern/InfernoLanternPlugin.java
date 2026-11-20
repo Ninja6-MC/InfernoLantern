@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern;
 
 import com.ninja6.infernolantern.access.OverrideSessions;
+import com.ninja6.infernolantern.award.CampaignAwardCommand;
 import com.ninja6.infernolantern.prototype.RenderingPrototype;
 import com.ninja6.infernolantern.prototype.ItemPrototype;
 import com.ninja6.infernolantern.item.GroundPolicy;
@@ -19,6 +20,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     private RenderingPrototype prototype;
     private ItemPrototype items;
     private OverrideSessions override;
+    private CampaignAwardCommand awards;
     private boolean itemCreationEnabled() { return getConfig().getBoolean("prototype.enabled") && getConfig().getBoolean("prototype.item-lifecycle.enabled"); }
 
     @Override
@@ -44,10 +46,12 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         override = new OverrideSessions();
         override.start(getServer().getOnlinePlayers());
         getServer().getPluginManager().registerEvents(override, this);
+        awards = new CampaignAwardCommand(getServer(), override, task -> getServer().getScheduler().runTask(this, task));
     }
 
     @Override
     public void onDisable() {
+        if (awards != null) awards.close();
         if (override != null) override.close();
         if (items != null) items.close();
         if (prototype != null) prototype.close();
@@ -61,6 +65,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
                 sender.sendMessage("/" + label + " help");
                 if (sender.hasPermission("infernolantern.admin.status")) sender.sendMessage("/" + label + " status");
                 override.help(sender, label);
+                awards.help(sender, label);
                 if (sender.isOp() && getConfig().getBoolean("prototype.enabled")) sender.sendMessage("/" + label + " prototype [place|remove|cleanup] - disposable rendering fixtures");
                 if (sender.isOp() && itemCreationEnabled()) sender.sendMessage("/" + label + " prototype item - one disposable item in an empty selected slot");
             }
@@ -70,6 +75,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
                         + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + prototype.combatStatus() + ". Runtime feasibility evidence pending. Item prototype: " + items.status() + ".");
             }
             case "override" -> override.command(sender, label, args);
+            case "award" -> awards.command(sender, label, args);
             case "prototype" -> {
                 if (!(sender instanceof Player player)) sender.sendMessage("Prototype fixtures require a player session.");
                 else if (args.length >= 2 && args[1].equalsIgnoreCase("item")) {
@@ -88,6 +94,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             var actions = new java.util.ArrayList<>(List.of("help"));
             if (sender.hasPermission("infernolantern.admin.status")) actions.add("status");
             if (override.available(sender)) actions.add("override");
+            if (awards.available(sender)) actions.add("award");
             if (sender.isOp() && getConfig().getBoolean("prototype.enabled")) actions.add("prototype");
             return actions.stream().filter(action -> action.startsWith(args[0].toLowerCase(Locale.ROOT))).toList();
         }

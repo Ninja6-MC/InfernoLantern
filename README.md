@@ -65,3 +65,6 @@ supported terrain changes, and pending native acceptance.
 
 [Generic Java and Bedrock packs](docs/RESOURCE_PACKS.md) documents model identifiers,
 override packaging, delivery modes, and per-connection readiness.
+
+[Administrative campaign awards](docs/CAMPAIGN_AWARDS.md) describes idempotent
+registration, pending delivery, the explicit runtime boundary, and recovery evidence.

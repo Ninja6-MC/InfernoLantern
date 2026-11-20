@@ -19,6 +19,6 @@ class CatalogMigrationTest {
         var repository=SqliteRepository.open(file,128).get(10,TimeUnit.SECONDS);
         try{var catalog=repository.catalog().get(10,TimeUnit.SECONDS);assertEquals(0,catalog.revision());assertTrue(catalog.variants().isEmpty());assertEquals("opaque legacy definition",repository.variant("legacy").get(10,TimeUnit.SECONDS).orElseThrow().lastValidDefinition().content());assertEquals("opaque fixture definition",repository.variant("prototype.item-fixture").get(10,TimeUnit.SECONDS).orElseThrow().lastValidDefinition().content());}
         finally{repository.closeAsync().get(10,TimeUnit.SECONDS);}
-        try(var c=SqliteTestConnections.open(file)){assertEquals(4,Schema.pragma(c,"user_version"));}
+        try(var c=SqliteTestConnections.open(file)){assertEquals(Schema.VERSION,Schema.pragma(c,"user_version"));}
     }
 }

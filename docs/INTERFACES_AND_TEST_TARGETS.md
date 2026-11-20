@@ -38,14 +38,14 @@ The maintainer approved the standalone registered root `/infernolantern`, declar
 
 ### Selected command tokens and permissions
 
-The maintainer approved the following command tokens and permission defaults on 2026-11-13. The plugin implements help, status and session override. Reload and award remain planned.
+The maintainer approved the following command tokens and permission defaults on 2026-11-13. The plugin implements help, status, session override and the award command route. Award delivery requires the shared runtime binding. Reload remains planned.
 
 | Command token | Purpose | Permission |
 | :--- | :--- | :--- |
 | `help` | Available usage, with unauthorized admin actions hidden | No permission for generic help; action details filtered by authorization. |
 | `status` | Administrative inspection of configuration/operation readiness without credentials or player inventories | `infernolantern.admin.status` |
 | `reload` | Validate and publish effective configuration without discarding last-good settings | `infernolantern.admin.reload` |
-| `award` | Trusted idempotent issuance; exact arguments and campaign-key contract deferred to #24 | `infernolantern.admin.award` |
+| `award` | `award <campaign> <player>` for trusted idempotent [campaign issuance](CAMPAIGN_AWARDS.md) | `infernolantern.admin.award` |
 | `override on\|off\|status` | Explicit actor/session override control; player session required | `infernolantern.admin.override` |
 
 The [native access contract](NATIVE_ACCESS.md) describes the implemented session override.

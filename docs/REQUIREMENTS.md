@@ -220,15 +220,13 @@ strength with distinct visuals; different strengths remain an implementation dec
 Keep eligibility, permission grants, and item issuance separate. Obtaining an item never grants
 permission, and permission to use an item never grants authority to create copies.
 
-The trusted award workflow should grant the appropriate variant eligibility and deliver the
-configured quantity. If permissions are managed externally, use an explicit integration or
-documented server workflow rather than assuming the lantern plugin owns the permission system.
+Trusted administrative awards deliver the configured quantity independently of variant
+eligibility. Administrators manage eligibility through their chosen permission workflow.
 
 Proposed distribution requirements:
 
-- Tester rewards are explicitly issued by trusted server administration or a connected reward
-  system. Define a batch/campaign identifier so retrying an award does not unintentionally issue
-  it twice.
+- Tester rewards are explicitly issued by trusted server administration. The campaign ID
+  and recipient UUID identify one [administrative award](CAMPAIGN_AWARDS.md).
 - Dragon rewards are automatic after a qualifying defeat. Define whether recipients are the
   killer, eligible damage contributors, or another configured participant group before
   implementation.

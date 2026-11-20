@@ -52,7 +52,7 @@ A stable tower snapshot may retain its pre-operation form while `active_operatio
 
 The partial [reconciliation service](RECONCILIATION.md) now adds fresh-only `finalizeReconciliation` for a winning evidence-backed recovery decision. Unlike a low-level idempotent receipt, a repeated finalizer rejects instead of granting publication/activation ownership. Current item/fixture/structure producers emit versioned recovery envelopes while retaining original caller evidence; old/unsupported pending evidence remains administrative. No startup coordinator or coverage proof is supplied by this storage layer, and no schema migration or existing journal rewrite is introduced by the envelope format.
 
-Award metadata cannot mutate tower state. Appending identities requires current unfrozen tower versions, matching variants and award-row CAS; source provenance and existing identity links are immutable. Repair escrow writes require the current pending operation version plus tower/deployment ownership. Operation completion/rollback rejects unsettled escrow phases. Award delivery is separate. [Resource repair](RESOURCE_REPAIR.md) uses fresh-only atomic intent/escrow admission and atomic HP/payment settlement above these storage guards.
+Award metadata cannot mutate tower state. Appending identities requires current unfrozen tower versions, matching variants and award-row CAS; source provenance and existing identity links are immutable. Repair escrow writes require the current pending operation version plus tower/deployment ownership. Operation completion/rollback rejects unsettled escrow phases. [Campaign award delivery](CAMPAIGN_AWARDS.md) links one dormant identity and attempt atomically, then requires exact owner activation and acknowledgment. [Resource repair](RESOURCE_REPAIR.md) uses fresh-only atomic intent/escrow admission and atomic HP/payment settlement above these storage guards.
 
 ## Threading, Bounds and Shutdown
 
@@ -104,3 +104,6 @@ SQLite is selected as the initial local backend for this bounded foundation. The
 - [SQLite online backup API](https://sqlite.org/backup.html)
 
 Schema 4 adds explicit catalog-managed IDs, durable catalog publication revisions and catalog-owned award holds. Migration is active on repository open, but adopts no legacy/prototype variants. See [Configuration Catalog](CONFIGURATION_CATALOG.md) for publication, readiness, geometry/HP deferral and native integration boundaries. Older candidates reject schema 4; no downgrade or deployment into preserved evidence is authorized.
+
+Schema 5 adds campaign progress on repository open. Earlier award metadata is preserved.
+The separate campaign disposition rules are documented in [Campaign Awards](CAMPAIGN_AWARDS.md).
