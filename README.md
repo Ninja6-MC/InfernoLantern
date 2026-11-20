@@ -68,3 +68,6 @@ override packaging, delivery modes, and per-connection readiness.
 
 [Administrative campaign awards](docs/CAMPAIGN_AWARDS.md) describes idempotent
 registration, pending delivery, the explicit runtime boundary, and recovery evidence.
+
+[Native catalog startup](docs/CORE_RUNTIME.md) covers the opt-in catalog owner,
+reload, and outstanding native routes.
