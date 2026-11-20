@@ -111,6 +111,17 @@ public final class RepositoryRecords {
             if (quantity < 1) throw new IllegalArgumentException("Award quantity");
         }
     }
+    /** One immutable receipt with at most one in-progress physical delivery. */
+    public record CampaignProgress(Award award, long delivered, UUID nextTower, UUID operation) {
+        public CampaignProgress {
+            Objects.requireNonNull(award);
+            nonnegative(delivered);
+            if (delivered > award.quantity() || (delivered == award.quantity()) != (award.status() == AwardStatus.DELIVERED)
+                    || (delivered == award.quantity() && nextTower != null) || (operation != null && nextTower == null))
+                throw new IllegalArgumentException("Invalid campaign progress");
+        }
+        public UUID plannedTower() { return nextTower == null ? CampaignDelivery.towerId(award.id(), delivered) : nextTower; }
+    }
     public static final class ResourceBytes {
         private final byte[] bytes;
         public ResourceBytes(byte[] bytes) {
