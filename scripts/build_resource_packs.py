@@ -159,6 +159,7 @@ def generic_assets():
 def overlay_assets(path, base, metadata):
     """Consume an explicitly supplied texture-only archive without extracting it."""
     files = {}
+    supplied_sidecars = set()
     with zipfile.ZipFile(path) as overlay:
         seen = set()
         for entry in overlay.infolist():
@@ -167,12 +168,20 @@ def overlay_assets(path, base, metadata):
             seen.add(entry.filename)
             if entry.filename == metadata:
                 continue
+            if entry.filename.endswith(".png.mcmeta") and entry.filename in base:
+                expected = base[entry.filename]
+                if entry.file_size != len(expected) or overlay.read(entry) != expected:
+                    raise ValueError(f"Animation metadata changed for {entry.filename}")
+                supplied_sidecars.add(entry.filename)
+                continue
             if entry.filename not in base or not entry.filename.endswith(".png") or entry.file_size > 1024 * 1024:
                 raise ValueError(f"Unsupported override entry {entry.filename}")
             texture = overlay.read(entry)
             if rgba_png(texture)[0] != rgba_png(base[entry.filename])[0]:
                 raise ValueError(f"Override dimensions changed for {entry.filename}")
             files[entry.filename] = texture
+    if any(path.removesuffix(".mcmeta") not in files for path in supplied_sidecars):
+        raise ValueError("Animation metadata needs its matching override texture")
     if not files:
         raise ValueError("An override must replace at least one generic texture")
     return files
@@ -207,6 +216,12 @@ def build(destination, java_override=None, bedrock_override=None):
     else:
         java_overlay = overlay_assets(java_override, java, "pack.mcmeta")
         bedrock_overlay = overlay_assets(bedrock_override, bedrock, "manifest.json")
+    # Java looks up texture metadata within the winning pack priority and above.
+    # Supply each original sidecar again next to its replaced PNG in the override.
+    for path in list(java_overlay):
+        sidecar = path + ".mcmeta"
+        if sidecar in java:
+            java_overlay[sidecar] = java[sidecar]
     destination.mkdir(parents=True, exist_ok=True)
     packs = {"java": {}, "bedrock": {}}
     for edition, base, overlay in (("java", java, java_overlay), ("bedrock", bedrock, bedrock_overlay)):

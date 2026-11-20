@@ -87,10 +87,19 @@ class ResourcePackTests(unittest.TestCase):
             base, override, combined = (self.contents(edition, name) for name in ("generic", "override", "combined"))
             for files in (base, override, combined):
                 del files[metadata]
-            self.assertEqual(1, len(override))
             self.assertTrue(override.keys() <= base.keys())
-            for path, content in override.items():
-                self.assertNotEqual(packs.rgba_png(base[path])[1], packs.rgba_png(content)[1])
+            textures = [path for path in override if path.endswith(".png")]
+            self.assertEqual(1, len(textures))
+            texture = textures[0]
+            self.assertNotEqual(packs.rgba_png(base[texture])[1], packs.rgba_png(override[texture])[1])
+            if edition == "java":
+                sidecar = texture + ".mcmeta"
+                self.assertEqual({texture, sidecar}, override.keys())
+                # This sidecar must come from the overlay itself. The client does not
+                # fall through to lower-priority metadata for an overridden texture.
+                animation = json.loads(override[sidecar])["animation"]
+                self.assertEqual(json.loads(base[sidecar])["animation"], animation)
+                self.assertEqual(override[sidecar], combined[sidecar])
             self.assertEqual(base | override, combined)
         uuids = {pack["uuid"] for pack in self.manifest["packs"]["bedrock"].values()}
         self.assertEqual(3, len(uuids))
@@ -108,3 +117,23 @@ class ResourcePackTests(unittest.TestCase):
             packs.build(local, invalid, bedrock)
         with self.assertRaisesRegex(ValueError, "Supply both"):
             packs.build(local, java)
+
+    def test_texture_only_input_keeps_animation_and_rejects_mismatched_sidecars(self):
+        local = self.output / "local"
+        local.mkdir()
+        texture = "assets/infernolantern/textures/generic/ember_glow.png"
+        sidecar = texture + ".mcmeta"
+        override = self.contents("java", "override")
+        java = local / "texture-only.zip"
+        bedrock = self.output / self.manifest["packs"]["bedrock"]["override"]["file"]
+        packs.archive(java, {texture: override[texture]})
+        packs.build(local, java, bedrock)
+        rebuilt = read_files(local / self.manifest["packs"]["java"]["override"]["file"])
+        self.assertEqual(override, rebuilt)
+
+        packs.archive(java, {texture: override[texture], sidecar: b"{}"})
+        with self.assertRaisesRegex(ValueError, "Animation metadata changed"):
+            packs.build(local, java, bedrock)
+        packs.archive(java, {sidecar: override[sidecar]})
+        with self.assertRaisesRegex(ValueError, "Animation metadata needs its matching override texture"):
+            packs.build(local, java, bedrock)

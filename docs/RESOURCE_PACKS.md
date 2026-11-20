@@ -64,8 +64,11 @@ a texture swap.
 Each edition also has `ember_frame.png`, `frost_frame.png`, and
 `frost_glow.png` beside that path. The frame and glow textures retain their
 original 64 × 64 or 64 × 512 dimensions and non-interlaced 8-bit RGBA layout.
-Java retains the base glow strip's animation metadata. The combined build
-includes every base file and overlays only the replaced paths.
+The generated Java override puts the original `.png.mcmeta` animation
+sidecar next to each overridden animated glow PNG. Java resolves the metadata
+at the winning texture pack's priority, so the sidecar must travel with
+that texture. The combined build includes every base file and overlays the
+replacement PNG and its sidecar.
 
 To prepare a texture override, put the desired replacement PNGs in the paths
 above in two archives. Then build a separate output directory.
@@ -77,7 +80,10 @@ python3 scripts/build_resource_packs.py --output build/local-resource-packs \
 ```
 
 The generator checks the existing target paths and supported PNG dimensions and
-metadata. It writes new checksums and content-derived Bedrock pack identities.
+adds the original Java animation sidecar where needed. An input archive may
+include the matching sidecar unchanged; a different sidecar or a sidecar by
+itself is rejected. The generator writes new checksums and content-derived
+Bedrock pack identities.
 Keep any branding artwork and its licensing with the administrator-managed
 pack. For model overrides, preserve the documented identifiers and verify each
 platform's complete reference set before publishing a new asset identity.
