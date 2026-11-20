@@ -24,7 +24,7 @@ def archive(path, files):
             output.writestr(entry, content)
 
 
-def bedrock_geometry(shape, material):
+def bedrock_geometry(shape, material, identifier=None):
     """Derive material-separated, ground-centered head attachables from the masters."""
     master = json.loads((ASSETS / f"models/{shape}_lantern.bbmodel").read_text())
     glow_texture = 1 if shape == "compact" else master["textures"][1]["uuid"]
@@ -52,11 +52,29 @@ def bedrock_geometry(shape, material):
     if len(cubes) != (8 if material == "glow" else len(master["elements"]) - 8):
         raise ValueError("Unexpected material cube count")
     return {"format_version": "1.16.0", "minecraft:geometry": [{"description": {
-        "identifier": f"geometry.infernolantern.prototype_{shape}_{material}",
+        "identifier": identifier or f"geometry.infernolantern.prototype_{shape}_{material}",
         "texture_width": 64, "texture_height": 64, "visible_bounds_width": 4,
         "visible_bounds_height": 8, "visible_bounds_offset": [0, 1, 0]},
         "bones": [{"name": "prototype_head", "pivot": [0, 23, 0],
                    "binding": "q.item_slot_to_bone_name(context.item_slot)", "cubes": cubes}]}]}
+
+
+def java_head_model(shape):
+    model = json.loads((ASSETS / f"models/block/{shape}_lantern.json").read_text())
+    # ItemTransform clamps scale to four. Expand a derived copy by 1.2
+    # (still legal: Y <= 19.2), then apply 4 * 0.625 = 2.5 in the head slot.
+    scale = 1.6 if shape == "compact" else 4.0
+    if shape == "expanded":
+        for element in model["elements"]:
+            vectors = [element["from"], element["to"]]
+            if "rotation" in element:
+                vectors.append(element["rotation"]["origin"])
+            for vector in vectors:
+                vector[:] = [round(8 + (vector[0] - 8) * 1.2, 6),
+                             round(vector[1] * 1.2, 6), round(8 + (vector[2] - 8) * 1.2, 6)]
+    translation_y = round(16 * (scale * .625 / 2 - 1.6885) / .625, 6)
+    model["display"] = {"head": {"rotation": [0, 180, 0], "translation": [0, translation_y, 0], "scale": [scale] * 3}}
+    return model
 
 
 def build(destination):
@@ -70,20 +88,7 @@ def build(destination):
     controllers = {}
     for shape in ("compact", "expanded"):
         identifier = f"infernolantern:prototype_{shape}"
-        model = json.loads((ASSETS / f"models/block/{shape}_lantern.json").read_text())
-        # ItemTransform clamps scale to four. Expand a derived copy by 1.2
-        # (still legal: Y <= 19.2), then apply 4 * 0.625 = 2.5 in the head slot.
-        scale = 1.6 if shape == "compact" else 4.0
-        if shape == "expanded":
-            for element in model["elements"]:
-                vectors = [element["from"], element["to"]]
-                if "rotation" in element:
-                    vectors.append(element["rotation"]["origin"])
-                for vector in vectors:
-                    vector[:] = [round(8 + (vector[0] - 8) * 1.2, 6),
-                                 round(vector[1] * 1.2, 6), round(8 + (vector[2] - 8) * 1.2, 6)]
-        translation_y = round(16 * (scale * .625 / 2 - 1.6885) / .625, 6)
-        model["display"] = {"head": {"rotation": [0, 180, 0], "translation": [0, translation_y, 0], "scale": [scale] * 3}}
+        model = java_head_model(shape)
         java[f"assets/infernolantern/models/prototype_{shape}.json"] = encoded(model)
         java[f"assets/infernolantern/items/prototype_{shape}.json"] = encoded({"model": {"type": "minecraft:model", "model": identifier}})
         definitions.append({"type": "definition", "model": identifier, "bedrock_identifier": identifier,

@@ -106,6 +106,27 @@ val prototypePacks = tasks.register<Exec>("prototypePacks") {
 }
 
 
+val resourcePackDirectory = layout.buildDirectory.dir("resource-packs")
+val resourcePacks = tasks.register<Exec>("resourcePacks") {
+    group = "build"
+    description = "Builds the generic, override and combined resource pack sets."
+    inputs.files("scripts/build_resource_packs.py", "scripts/build_prototype_packs.py")
+    inputs.dir("src/main/resources/assets/infernolantern")
+    outputs.dir(resourcePackDirectory)
+    commandLine(python.get(), "scripts/build_resource_packs.py",
+        "--output", resourcePackDirectory.get().asFile.absolutePath)
+}
+
+tasks.processResources {
+    from(resourcePacks) {
+        into("resource-packs")
+        include("infernolantern-generic-java.zip", "infernolantern-generic-bedrock.mcpack",
+            "infernolantern-override-java.zip", "infernolantern-override-bedrock.mcpack",
+            "infernolantern-combined-java.zip", "infernolantern-combined-bedrock.mcpack",
+            "infernolantern-generic-mappings.json", "pack-set.json", "SHA256SUMS")
+    }
+}
+
 tasks.register<JavaExec>("repositoryBenchmark") {
     group = "verification"
     description = "Runs a synthetic local SQLite workload; not a server load test."
