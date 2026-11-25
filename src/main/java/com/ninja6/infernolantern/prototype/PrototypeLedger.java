@@ -7,6 +7,22 @@ import java.util.*;
 
 /** A disposable-fixture cleanup manifest; not the production tower repository. */
 public final class PrototypeLedger {
+    static final String FILENAME = "prototype-cleanup.bin";
+    private static final int MAGIC = 0x494C5031;
+
+    /** Native admission may inspect the empty header without loading fixture coordinates. */
+    public static boolean cleanupComplete(Path directory) throws IOException {
+        Path manifest = directory.resolve(FILENAME);
+        Path staged = manifest.resolveSibling(FILENAME + ".tmp");
+        if (!Files.notExists(staged, LinkOption.NOFOLLOW_LINKS)) return false;
+        if (Files.notExists(manifest, LinkOption.NOFOLLOW_LINKS)) return true;
+        if (!Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) return false;
+        try (var input = new DataInputStream(Files.newInputStream(manifest, LinkOption.NOFOLLOW_LINKS))) {
+            return input.readInt() == MAGIC && input.readInt() == 0 && input.read() == -1;
+        } catch (EOFException truncated) {
+            return false;
+        }
+    }
     public record Cell(UUID world, int x, int y, int z) {
         public Cell above(int dy) { return new Cell(world, x, y + dy, z); }
     }
@@ -27,7 +43,7 @@ public final class PrototypeLedger {
         this.blocks = blocks;
         if (Files.exists(file)) {
             try (var input = new DataInputStream(Files.newInputStream(file))) {
-                if (input.readInt() != 0x494C5031) throw new IOException("Unknown prototype manifest format");
+                if (input.readInt() != MAGIC) throw new IOException("Unknown prototype manifest format");
                 int count = input.readInt();
                 if (count < 0 || count > 10000) throw new IOException("Invalid prototype manifest size");
                 for (int i = 0; i < count; i++) {
@@ -92,7 +108,7 @@ public final class PrototypeLedger {
         Files.createDirectories(file.getParent());
         Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
         try (var output = new DataOutputStream(Files.newOutputStream(temporary))) {
-            output.writeInt(0x494C5031);
+            output.writeInt(MAGIC);
             output.writeInt(data.size());
             for (var pair : data.entrySet()) {
                 Cell cell = pair.getKey();

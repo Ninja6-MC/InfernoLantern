@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.runtime;
 
 import com.ninja6.infernolantern.catalog.CatalogService;
+import com.ninja6.infernolantern.prototype.PrototypeLedger;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.SqliteRepository;
@@ -23,7 +24,7 @@ import java.util.function.Supplier;
 /** Owns one catalog-only native store and serializes startup and reload. */
 public final class NativeCatalogRuntime implements AutoCloseable {
     public enum Result { PUBLISHED, REJECTED, UNAVAILABLE, BUSY }
-    private enum State { OPENING, UNAVAILABLE, UNPUBLISHED, PUBLISHED, CLOSED }
+    private enum State { OPENING, CLEANUP_BLOCKED, UNAVAILABLE, UNPUBLISHED, PUBLISHED, CLOSED }
     private static final int MAX_CATALOG_BYTES = 1_048_576;
     private static final int QUEUE_CAPACITY = 64;
 
@@ -45,7 +46,14 @@ public final class NativeCatalogRuntime implements AutoCloseable {
             Supplier<CatalogService.DefinitionValidator> models, Supplier<CompletableFuture<SqliteRepository>> open) {
         config = Objects.requireNonNull(directory).resolve("catalog.yml");
         this.io = Objects.requireNonNull(io);
-        CompletableFuture<CatalogService.DefinitionValidator> validation = CompletableFuture.supplyAsync(models, io);
+        CompletableFuture<CatalogService.DefinitionValidator> validation = CompletableFuture.supplyAsync(() -> {
+            lifetime.requireValid();
+            if (!cleanupComplete(directory)) {
+                setState(State.CLEANUP_BLOCKED);
+                throw new IllegalStateException("Prototype cleanup is incomplete or unknown");
+            }
+            return models.get();
+        }, io);
         opening = validation.thenCompose(validator -> {
             lifetime.requireValid();
             return open.get();
@@ -55,7 +63,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         startup = service.handle((catalog, failure) -> {
             if (state == State.CLOSED) return CompletableFuture.completedFuture(Result.UNAVAILABLE);
             if (failure != null) {
-                setState(State.UNAVAILABLE);
+                if (state != State.CLEANUP_BLOCKED) setState(State.UNAVAILABLE);
                 return CompletableFuture.completedFuture(Result.UNAVAILABLE);
             }
             return publish(lifetime, () -> CompletableFuture.completedFuture(true));
@@ -65,7 +73,9 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     public CompletableFuture<Result> startup() { return startup; }
 
     public CompletableFuture<Result> reload(CommitPermit authority, Supplier<CompletableFuture<Boolean>> recheck) {
-        if (state == State.CLOSED || state == State.UNAVAILABLE) return CompletableFuture.completedFuture(Result.UNAVAILABLE);
+        if (state == State.CLOSED || state == State.UNAVAILABLE || state == State.CLEANUP_BLOCKED) {
+            return CompletableFuture.completedFuture(Result.UNAVAILABLE);
+        }
         if (state == State.OPENING || !busy.compareAndSet(false, true)) return CompletableFuture.completedFuture(Result.BUSY);
         return publish(CommitPermit.allOf(lifetime, authority), recheck);
     }
@@ -93,6 +103,14 @@ public final class NativeCatalogRuntime implements AutoCloseable {
                         busy.set(false);
                     }
                 });
+    }
+
+    private static boolean cleanupComplete(Path directory) {
+        try {
+            return PrototypeLedger.cleanupComplete(directory);
+        } catch (IOException failure) {
+            return false;
+        }
     }
 
     private static boolean storageFailure(Throwable failure) {
@@ -127,6 +145,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     public String status() {
         return switch (state) {
             case OPENING -> "opening";
+            case CLEANUP_BLOCKED -> "blocked by prototype cleanup evidence; return to prototype mode to review it";
             case UNAVAILABLE -> "storage or bundled assets unavailable";
             case UNPUBLISHED -> "no published catalog for this startup";
             case PUBLISHED -> "catalog published";

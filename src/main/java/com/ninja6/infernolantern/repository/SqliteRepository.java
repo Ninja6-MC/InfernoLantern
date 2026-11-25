@@ -7,10 +7,8 @@ import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.structure.BlastImpact;
 
 import java.nio.file.*;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -64,15 +62,19 @@ public final class SqliteRepository {
         Path registeredOwner=null;
         try {
             Path parent=file.getParent();
-            if(catalogOnly)verifyNativeFile(file);
+            if(catalogOnly)NativeStoreFiles.checkPaths(file);
             if(parent!=null)Files.createDirectories(parent);
             if(catalogOnly){
                 Path owner=parent.toRealPath().resolve(file.getFileName()+".owner");
                 if(!NATIVE_OWNERS.add(owner))throw new IOException("Native storage already has an owner");
                 registeredOwner=owner;
-                nativeOwner=FileChannel.open(owner,StandardOpenOption.CREATE,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
+                nativeOwner=FileChannel.open(owner,StandardOpenOption.CREATE,StandardOpenOption.READ,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
                 if(nativeOwner.tryLock()==null)throw new IOException("Native storage already has an owner");
-                verifyNativeFile(file);
+                NativeStoreFiles.prepare(file,nativeOwner,candidate->{
+                    try(var initialized=PrivateSqlite.open(candidate)){
+                        Schema.initialize(initialized,Schema.NATIVE_APPLICATION_ID);
+                    }
+                });
             }
             connection=PrivateSqlite.open(file);
             try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT sqlite_version()")){
@@ -97,32 +99,6 @@ public final class SqliteRepository {
             try {if(nativeOwner!=null)nativeOwner.close();}catch(IOException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
             if(registeredOwner!=null)NATIVE_OWNERS.remove(registeredOwner);
             if(failure==null)closed.complete(null);else closed.completeExceptionally(failure);
-        }
-    }
-    private static void verifyNativeFile(Path file)throws IOException {
-        Path parent=file.getParent();
-        if(Files.isSymbolicLink(parent))throw new IOException("Native storage directory must not be a symbolic link");
-        for(String suffix:List.of("", "-wal", "-shm", "-journal", ".owner")){
-            Path candidate=file.resolveSibling(file.getFileName()+suffix);
-            if(Files.notExists(candidate,LinkOption.NOFOLLOW_LINKS))continue;
-            if(!Files.isRegularFile(candidate,LinkOption.NOFOLLOW_LINKS))throw new IOException("Unexpected native storage path");
-            if(candidate.getFileSystem().supportedFileAttributeViews().contains("unix")
-                    && !Integer.valueOf(1).equals(Files.getAttribute(candidate,"unix:nlink",LinkOption.NOFOLLOW_LINKS)))
-                throw new IOException("Native storage must not share a hard link");
-        }
-        if(Files.notExists(file,LinkOption.NOFOLLOW_LINKS)){
-            for(String suffix:List.of("-wal","-shm","-journal"))
-                if(!Files.notExists(file.resolveSibling(file.getFileName()+suffix),LinkOption.NOFOLLOW_LINKS))
-                    throw new IOException("Native journal without its database");
-            return;
-        }
-        // A copied prototype or foreign store must be rejected before SQLite opens the file.
-        try(var input=Files.newInputStream(file,LinkOption.NOFOLLOW_LINKS)){
-            byte[] header=input.readNBytes(72);
-            if(header.length!=72||!Arrays.equals(Arrays.copyOf(header,16),"SQLite format 3\0".getBytes(StandardCharsets.US_ASCII))
-                    ||ByteBuffer.wrap(header).getInt(68)!=Schema.NATIVE_APPLICATION_ID
-                    ||ByteBuffer.wrap(header).getInt(60)!=Schema.VERSION)
-                throw new IOException("Unrecognized native database header");
         }
     }
     private <T> CompletableFuture<T> submit(Callable<T> action) {

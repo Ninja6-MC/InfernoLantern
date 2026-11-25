@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
@@ -106,6 +107,45 @@ class NativeCatalogRuntimeTest {
             assertTrue(get(repository.catalog()).variants().isEmpty());
         } finally {
             get(repository.closeAsync());
+        }
+    }
+
+    @Test void pendingInvalidAndStagedPrototypeCleanupBlockNativeAdmission() throws Exception {
+        Path manifest = data.resolve("prototype-cleanup.bin");
+        for (byte[] evidence : new byte[][]{
+                ByteBuffer.allocate(8).putInt(0x494C5031).putInt(1).array(),
+                new byte[]{1, 2, 3},
+                ByteBuffer.allocate(9).putInt(0x494C5031).putInt(0).put((byte) 1).array()
+        }) {
+            Files.write(manifest, evidence);
+            assertCleanupBlocked();
+            assertArrayEquals(evidence, Files.readAllBytes(manifest));
+        }
+
+        byte[] empty = ByteBuffer.allocate(8).putInt(0x494C5031).putInt(0).array();
+        Files.write(manifest, empty);
+        Path staged = Files.writeString(data.resolve("prototype-cleanup.bin.tmp"), "held evidence");
+        assertCleanupBlocked();
+        assertEquals("held evidence", Files.readString(staged));
+        Files.delete(staged);
+        var runtime = start(VALID);
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            assertArrayEquals(empty, Files.readAllBytes(manifest));
+        } finally {
+            get(runtime.stop());
+        }
+    }
+
+    private void assertCleanupBlocked() throws Exception {
+        var runtime = start(VALID);
+        try {
+            assertEquals(UNAVAILABLE, get(runtime.startup()));
+            assertEquals(UNAVAILABLE, get(reload(runtime)));
+            assertTrue(runtime.status().startsWith("blocked by prototype cleanup evidence"));
+            assertFalse(Files.exists(database()));
+        } finally {
+            get(runtime.stop());
         }
     }
 

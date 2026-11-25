@@ -13,6 +13,12 @@ prototype lifecycle. A failed catalog-mode startup keeps that startup in catalog
 with marked items protected and prototype commands unavailable. To return to prototype
 mode, set the flag to false and restart.
 
+Catalog mode requires an absent or valid empty rendering cleanup manifest and an absent
+manifest staging file. Startup checks only the fixed header and record count. Nonempty,
+malformed, or inaccessible evidence blocks startup before the native database opens.
+Catalog mode does not open or clean legacy fixture cells. For a cleanup-blocked startup,
+preserve the evidence and review it in the established prototype mode.
+
 `/infernolantern status` reports catalog publication and gameplay availability
 separately. The existing `infernolantern.admin.reload` permission controls
 `/infernolantern reload` and its alias. Reload reads `catalog.yml`, validates it and
@@ -60,6 +66,14 @@ owner lock. Existing prototype storage and cleanup evidence remain separate.
 Aliases through symbolic links, hard links on supported filesystems, copied
 prototype databases and journals without their database are rejected. Preserve
 the database and sidecars together if a native startup reports unavailable.
+
+First creation initializes SQLite in a uniquely owned staging directory beside the
+database. It closes and syncs the completed candidate before publishing with an atomic
+hard link that cannot replace an existing file. Native storage requires filesystem
+hard-link support. The owner file records the exact candidate name before the link. An
+interruption after linking can safely finish unlinking that candidate. An interruption
+before linking leaves the fixed database path absent, and the next startup initializes
+a separate candidate. Unrecognized files, journals, and abandoned stages stay preserved.
 
 Catalog-only startup rejects existing gameplay records and unmanaged definitions.
 Native storage also checks this restriction before transaction commit. This

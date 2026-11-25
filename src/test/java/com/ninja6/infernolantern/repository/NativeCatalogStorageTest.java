@@ -3,8 +3,11 @@ package com.ninja6.infernolantern.repository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -93,6 +96,87 @@ class NativeCatalogStorageTest {
         assertThrows(ExecutionException.class, () -> get(SqliteRepository.openCatalogOnly(data.resolve("absent.db"), 8)));
         assertEquals("held journal", Files.readString(journal));
         assertFalse(Files.exists(data.resolve("absent.db")));
+    }
+
+    @Test void interruptedFirstOpenLeavesOnlyAnIsolatedStageAndCanRetry() throws Exception {
+        var file = data.resolve("lanterns.db");
+        var log = data.resolve("halt.log");
+        String compiledTests = Path.of(InterruptedInitializer.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
+        String classPath = System.getProperty("pluginJar") + java.io.File.pathSeparator + compiledTests;
+        var process = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "--class-path", classPath, InterruptedInitializer.class.getName(), file.toString())
+                .redirectErrorStream(true)
+                .redirectOutput(log.toFile())
+                .start();
+        boolean finished = process.waitFor(20, TimeUnit.SECONDS);
+        if (!finished) process.destroyForcibly();
+        assertTrue(finished);
+        assertEquals(23, process.exitValue(), Files.readString(log));
+        assertFalse(Files.exists(file));
+        Path abandoned;
+        try (var children = Files.list(data)) {
+            abandoned = children.filter(Files::isDirectory).findFirst().orElseThrow().resolve(file.getFileName());
+        }
+        byte[] evidence = Files.readAllBytes(abandoned);
+        var runtime = get(SqliteRepository.openCatalogOnly(file, 8));
+        try {
+            assertEquals(0, get(runtime.catalog()).revision());
+        } finally {
+            get(runtime.closeAsync());
+        }
+        assertArrayEquals(evidence, Files.readAllBytes(abandoned));
+    }
+
+    @Test void interruptedPublicationFinishesOnlyTheExactStageLink() throws Exception {
+        var file = data.resolve("lanterns.db");
+        var stage = UUID.randomUUID();
+        var stageDir = Files.createDirectory(data.resolve("lanterns.db.initializing-" + stage));
+        var stageFile = stageDir.resolve(file.getFileName());
+        try (var connection = PrivateSqlite.open(stageFile)) {
+            Schema.initialize(connection, Schema.NATIVE_APPLICATION_ID);
+        }
+        var other = Files.writeString(stageDir.resolve("evidence"), "preserve this evidence");
+        Files.writeString(data.resolve("lanterns.db.owner"), "native-stage-v1:" + stage);
+        Files.createLink(file, stageFile);
+        var runtime = get(SqliteRepository.openCatalogOnly(file, 8));
+        try {
+            assertEquals(0, get(runtime.catalog()).revision());
+            assertFalse(Files.exists(stageFile));
+            assertEquals("preserve this evidence", Files.readString(other));
+        } finally {
+            get(runtime.closeAsync());
+        }
+    }
+
+    @Test void newPublishCannotReplaceAnUnexpectedDestination() throws Exception {
+        var file = data.resolve("lanterns.db");
+        var ownerFile = data.resolve("lanterns.db.owner");
+        try (var owner = FileChannel.open(ownerFile, StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
+                StandardOpenOption.WRITE); var lock = owner.lock()) {
+            assertThrows(java.nio.file.FileAlreadyExistsException.class, () -> NativeStoreFiles.prepare(file, owner, candidate -> {
+                try (var connection = PrivateSqlite.open(candidate)) {
+                    Schema.initialize(connection, Schema.NATIVE_APPLICATION_ID);
+                }
+                Files.createFile(file);
+            }));
+        }
+        assertEquals(0, Files.size(file));
+        assertThrows(ExecutionException.class, () -> get(SqliteRepository.openCatalogOnly(file, 8)));
+        assertEquals(0, Files.size(file));
+    }
+
+    public static final class InterruptedInitializer {
+        public static void main(String[] args) throws Exception {
+            Path file = Path.of(args[0]);
+            try (var owner = FileChannel.open(file.resolveSibling("lanterns.db.owner"), StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.READ, StandardOpenOption.WRITE); var lock = owner.lock()) {
+                NativeStoreFiles.prepare(file, owner, candidate -> {
+                    try (var connection = PrivateSqlite.open(candidate)) {
+                        Runtime.getRuntime().halt(23);
+                    }
+                });
+            }
+        }
     }
 
     private static Variant legacyVariant() {

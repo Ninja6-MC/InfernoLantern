@@ -48,7 +48,7 @@ public final class RenderingPrototype implements Listener {
 
     public RenderingPrototype(JavaPlugin plugin) throws IOException {
         this.plugin = plugin;
-        ledger = new PrototypeLedger(plugin.getDataFolder().toPath().resolve("prototype-cleanup.bin"), new PrototypeLedger.Blocks() {
+        ledger = new PrototypeLedger(plugin.getDataFolder().toPath().resolve(PrototypeLedger.FILENAME), new PrototypeLedger.Blocks() {
             public boolean loaded(Cell cell) {
                 World world = Bukkit.getWorld(cell.world());
                 return world != null && world.isChunkLoaded(cell.x() >> 4, cell.z() >> 4);
