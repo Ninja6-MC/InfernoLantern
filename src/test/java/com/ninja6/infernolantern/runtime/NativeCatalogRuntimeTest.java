@@ -1,5 +1,6 @@
 package com.ninja6.infernolantern.runtime;
 
+import com.ninja6.infernolantern.prototype.PrototypeLedger;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.repository.SqliteTestConnections;
@@ -196,7 +197,7 @@ class NativeCatalogRuntimeTest {
     @Test void stoppedDuringOpeningClosesTheLateRepository() throws Exception {
         write(VALID);
         var opening = new CompletableFuture<SqliteRepository>();
-        var runtime = new NativeCatalogRuntime(data, Runnable::run, NO_WORLD, BundledModels::load, () -> opening);
+        var runtime = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD, BundledModels::load, () -> opening);
         var closing = runtime.stop();
         assertFalse(closing.isDone());
         opening.complete(get(SqliteRepository.openCatalogOnly(database(), 4)));
@@ -212,7 +213,7 @@ class NativeCatalogRuntimeTest {
 
     @Test void alteredEmbeddedPackCannotAuthorizeOpening() throws Exception {
         write(VALID);
-        var runtime = new NativeCatalogRuntime(data, Runnable::run, NO_WORLD,
+        var runtime = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD,
                 () -> BundledModels.load(name -> name.endsWith("-java.zip")
                         ? new ByteArrayInputStream(new byte[]{1, 2, 3})
                         : BundledModels.class.getResourceAsStream(name)),
@@ -234,7 +235,7 @@ class NativeCatalogRuntimeTest {
 
     private NativeCatalogRuntime start(String text) throws Exception {
         write(text);
-        return new NativeCatalogRuntime(data, Runnable::run, NO_WORLD);
+        return new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD);
     }
 
     private void write(String text) throws Exception {

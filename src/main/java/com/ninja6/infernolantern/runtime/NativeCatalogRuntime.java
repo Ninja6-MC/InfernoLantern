@@ -1,7 +1,7 @@
 package com.ninja6.infernolantern.runtime;
 
 import com.ninja6.infernolantern.catalog.CatalogService;
-import com.ninja6.infernolantern.prototype.PrototypeLedger;
+import com.ninja6.infernolantern.prototype.PrototypeLedger.CleanupInspection;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
 import com.ninja6.infernolantern.repository.SqliteRepository;
@@ -29,6 +29,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     private static final int QUEUE_CAPACITY = 64;
 
     private final Path config;
+    private final CleanupInspection cleanup;
     private final Executor io;
     private final CommitPermit lifetime = new CommitPermit();
     private final AtomicBoolean busy = new AtomicBoolean(true);
@@ -37,18 +38,19 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     private final CompletableFuture<Result> startup;
     private volatile State state = State.OPENING;
 
-    public NativeCatalogRuntime(Path directory, Executor io, WorldScheduler scheduler) {
-        this(directory, io, scheduler, BundledModels::load,
+    public NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler) {
+        this(directory, cleanup, io, scheduler, BundledModels::load,
                 () -> SqliteRepository.openCatalogOnly(directory.resolve("native-runtime/lanterns.db"), QUEUE_CAPACITY));
     }
 
-    NativeCatalogRuntime(Path directory, Executor io, WorldScheduler scheduler,
+    NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
             Supplier<CatalogService.DefinitionValidator> models, Supplier<CompletableFuture<SqliteRepository>> open) {
         config = Objects.requireNonNull(directory).resolve("catalog.yml");
+        this.cleanup = Objects.requireNonNull(cleanup);
         this.io = Objects.requireNonNull(io);
         CompletableFuture<CatalogService.DefinitionValidator> validation = CompletableFuture.supplyAsync(() -> {
             lifetime.requireValid();
-            if (!cleanupComplete(directory)) {
+            if (!cleanup.complete()) {
                 setState(State.CLEANUP_BLOCKED);
                 throw new IllegalStateException("Prototype cleanup is incomplete or unknown");
             }
@@ -105,14 +107,6 @@ public final class NativeCatalogRuntime implements AutoCloseable {
                 });
     }
 
-    private static boolean cleanupComplete(Path directory) {
-        try {
-            return PrototypeLedger.cleanupComplete(directory);
-        } catch (IOException failure) {
-            return false;
-        }
-    }
-
     private static boolean storageFailure(Throwable failure) {
         while (failure instanceof CompletionException && failure.getCause() != null) {
             failure = failure.getCause();
@@ -145,12 +139,20 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     public String status() {
         return switch (state) {
             case OPENING -> "opening";
-            case CLEANUP_BLOCKED -> "blocked by prototype cleanup evidence; return to prototype mode to review it";
+            case CLEANUP_BLOCKED -> cleanupStatus();
             case UNAVAILABLE -> "storage or bundled assets unavailable";
             case UNPUBLISHED -> "no published catalog for this startup";
             case PUBLISHED -> "catalog published";
             case CLOSED -> "closed";
         } + "; native gameplay unavailable";
+    }
+
+    private String cleanupStatus() {
+        if (!cleanup.cellsKnown()) {
+            return "blocked by prototype cleanup evidence; cells could not be identified safely";
+        }
+        if (cleanup.cells().isEmpty()) return "blocked by prototype cleanup evidence; staged manifest retained";
+        return "blocked by prototype cleanup evidence; recorded cells remain guarded";
     }
 
     private synchronized boolean setState(State next) {

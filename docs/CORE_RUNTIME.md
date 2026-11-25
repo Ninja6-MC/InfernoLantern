@@ -14,10 +14,13 @@ with marked items protected and prototype commands unavailable. To return to pro
 mode, set the flag to false and restart.
 
 Catalog mode requires an absent or valid empty rendering cleanup manifest and an absent
-manifest staging file. Startup checks only the fixed header and record count. Nonempty,
-malformed, or inaccessible evidence blocks startup before the native database opens.
-Catalog mode does not open or clean legacy fixture cells. For a cleanup-blocked startup,
-preserve the evidence and review it in the established prototype mode.
+manifest staging file. Nonempty, malformed, inaccessible, or oversized evidence blocks
+startup before the native database opens. A bounded read of the committed manifest
+extracts exact cell coordinates without loading their worlds or chunks. While
+startup is blocked, existing block and bucket protection applies to those recorded
+cells, including when their chunks load again. A staged file never supplies trusted
+coordinates. If the committed manifest cannot be read safely, status reports unknown
+cells. Fixture recovery remains in prototype mode.
 
 `/infernolantern status` reports catalog publication and gameplay availability
 separately. The existing `infernolantern.admin.reload` permission controls

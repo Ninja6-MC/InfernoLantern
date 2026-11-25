@@ -3,6 +3,9 @@ package com.ninja6.infernolantern;
 import com.ninja6.infernolantern.access.OverrideSessions;
 import com.ninja6.infernolantern.award.CampaignAwardCommand;
 import com.ninja6.infernolantern.prototype.RenderingPrototype;
+import com.ninja6.infernolantern.prototype.PrototypeBucketGuard;
+import com.ninja6.infernolantern.prototype.PrototypeCellGuard;
+import com.ninja6.infernolantern.prototype.PrototypeLedger;
 import com.ninja6.infernolantern.prototype.ItemPrototype;
 import com.ninja6.infernolantern.item.GroundPolicy;
 import com.ninja6.infernolantern.item.PaperItemFreeze;
@@ -14,9 +17,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -62,7 +67,8 @@ public final class InfernoLanternPlugin extends JavaPlugin {
 
     private void startNativeCatalog(PaperItemFreeze freeze) {
         nativeFreeze = freeze;
-        getServer().getPluginManager().registerEvents(nativeFreeze, this);
+        Path directory = getDataFolder().toPath();
+        var cleanup = installNativePreservation(directory, freeze, listener -> getServer().getPluginManager().registerEvents(listener, this));
         nativeScheduler = new PaperWorldScheduler(this);
         catalogIo = Executors.newSingleThreadExecutor(task -> {
             Thread worker = new Thread(task, "infernolantern-catalog-io");
@@ -74,13 +80,25 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             else getServer().getScheduler().runTask(this, task);
         });
         catalogDispatch = dispatch;
-        nativeCatalog = new NativeCatalogRuntime(getDataFolder().toPath(), catalogIo, nativeScheduler);
+        nativeCatalog = new NativeCatalogRuntime(directory, cleanup, catalogIo, nativeScheduler);
         nativeCatalog.startup().thenAccept(result -> {
             if (result != NativeCatalogRuntime.Result.PUBLISHED) dispatch.check(() -> {
                 getLogger().warning("Native catalog startup did not publish. Check the catalog and storage status.");
                 return true;
             });
         });
+    }
+
+    static PrototypeLedger.CleanupInspection installNativePreservation(Path directory, PaperItemFreeze freeze,
+            Consumer<Listener> register) {
+        register.accept(freeze);
+        var cleanup = PrototypeLedger.inspectCleanup(directory);
+        if (!cleanup.cells().isEmpty()) {
+            var guard = new PrototypeCellGuard(cleanup.cells()::contains);
+            register.accept(guard);
+            register.accept(new PrototypeBucketGuard(guard::recorded));
+        }
+        return cleanup;
     }
 
     private boolean startPrototypes() {
