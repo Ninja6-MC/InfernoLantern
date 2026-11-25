@@ -4,7 +4,7 @@ import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.entity.*;
 import org.bukkit.event.*;
-import org.bukkit.event.block.*;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.*;
@@ -48,7 +48,7 @@ public final class RenderingPrototype implements Listener {
 
     public RenderingPrototype(JavaPlugin plugin) throws IOException {
         this.plugin = plugin;
-        ledger = new PrototypeLedger(plugin.getDataFolder().toPath().resolve("prototype-cleanup.bin"), new PrototypeLedger.Blocks() {
+        ledger = new PrototypeLedger(plugin.getDataFolder().toPath().resolve(PrototypeLedger.FILENAME), new PrototypeLedger.Blocks() {
             public boolean loaded(Cell cell) {
                 World world = Bukkit.getWorld(cell.world());
                 return world != null && world.isChunkLoaded(cell.x() >> 4, cell.z() >> 4);
@@ -61,7 +61,9 @@ public final class RenderingPrototype implements Listener {
         recover(ledger.cells());
         for (World world : Bukkit.getWorlds()) for (Entity entity : world.getEntities()) removeStale(entity);
         Bukkit.getPluginManager().registerEvents(this, plugin);
-        Bukkit.getPluginManager().registerEvents(new PrototypeBucketGuard(block -> ledger.cells().contains(cell(block))), plugin);
+        var guard = new PrototypeCellGuard(ledger::contains);
+        Bukkit.getPluginManager().registerEvents(guard, plugin);
+        Bukkit.getPluginManager().registerEvents(new PrototypeBucketGuard(guard::recorded), plugin);
     }
 
     public String combatStatus() { return combat.status(); }
@@ -242,18 +244,6 @@ public final class RenderingPrototype implements Listener {
     }
     @EventHandler public void damage(EntityDamageEvent event) { if (event.getEntity().getScoreboardTags().contains(TAG)) event.setCancelled(true); }
     @EventHandler public void manipulate(PlayerArmorStandManipulateEvent event) { if (event.getRightClicked().getScoreboardTags().contains(TAG)) event.setCancelled(true); }
-    @EventHandler public void breakBlock(BlockBreakEvent event) { if (ledger.cells().contains(cell(event.getBlock()))) event.setCancelled(true); }
-    @EventHandler public void placeBlock(BlockPlaceEvent event) { if (ledger.cells().contains(cell(event.getBlock()))) event.setCancelled(true); }
-    @EventHandler public void flow(BlockFromToEvent event) { if (ledger.cells().contains(cell(event.getToBlock()))) event.setCancelled(true); }
-    @EventHandler public void entityBlock(EntityChangeBlockEvent event) { if (ledger.cells().contains(cell(event.getBlock()))) event.setCancelled(true); }
-    @EventHandler public void explode(EntityExplodeEvent event) { event.blockList().removeIf(block -> ledger.cells().contains(cell(block))); }
-    @EventHandler public void explode(BlockExplodeEvent event) { event.blockList().removeIf(block -> ledger.cells().contains(cell(block))); }
-    @EventHandler public void piston(BlockPistonExtendEvent event) {
-        if (event.getBlocks().stream().anyMatch(block -> ledger.cells().contains(cell(block)) || ledger.cells().contains(cell(block.getRelative(event.getDirection()))))) event.setCancelled(true);
-    }
-    @EventHandler public void piston(BlockPistonRetractEvent event) {
-        if (event.getBlocks().stream().anyMatch(block -> ledger.cells().contains(cell(block)) || ledger.cells().contains(cell(block.getRelative(event.getDirection()))))) event.setCancelled(true);
-    }
     @EventHandler public void unload(ChunkUnloadEvent event) {
         for (Fixture fixture : new ArrayList<>(fixtures.values())) if (inChunk(fixture.base, event.getChunk())) {
             try { remove(fixture); } catch (IOException failure) { plugin.getLogger().severe("Prototype chunk cleanup failed; retained manifest will recover on chunk load."); }

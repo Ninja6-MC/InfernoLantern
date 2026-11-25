@@ -4,9 +4,41 @@ import java.io.*;
 import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.util.*;
+import java.util.function.UnaryOperator;
 
 /** A disposable-fixture cleanup manifest; not the production tower repository. */
 public final class PrototypeLedger {
+    static final String FILENAME = "prototype-cleanup.bin";
+    private static final int MAGIC = 0x494C5031;
+
+    private static final int MAX_INSPECTION_BYTES = 8 * 1024 * 1024;
+
+    public record CleanupInspection(boolean complete, boolean cellsKnown, Set<Cell> cells) {
+        public CleanupInspection { cells = Set.copyOf(cells); }
+    }
+
+    /** Read the committed fixture manifest without touching worlds or using staged records. */
+    public static CleanupInspection inspectCleanup(Path directory) {
+        Path manifest = directory.resolve(FILENAME);
+        boolean staged = !Files.notExists(manifest.resolveSibling(FILENAME + ".tmp"), LinkOption.NOFOLLOW_LINKS);
+        if (Files.notExists(manifest, LinkOption.NOFOLLOW_LINKS)) {
+            return new CleanupInspection(!staged, !staged, Set.of());
+        }
+        if (!Files.isRegularFile(manifest, LinkOption.NOFOLLOW_LINKS)) {
+            return new CleanupInspection(false, false, Set.of());
+        }
+        try (var stream = Files.newInputStream(manifest, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = stream.readNBytes(MAX_INSPECTION_BYTES + 1);
+            if (bytes.length > MAX_INSPECTION_BYTES) return new CleanupInspection(false, false, Set.of());
+            try (var input = new DataInputStream(new ByteArrayInputStream(bytes))) {
+                Set<Cell> cells = read(input, UnaryOperator.identity()).keySet();
+                return new CleanupInspection(!staged && cells.isEmpty(), true, cells);
+            }
+        } catch (IOException | SecurityException failure) {
+            return new CleanupInspection(false, false, Set.of());
+        }
+    }
+
     public record Cell(UUID world, int x, int y, int z) {
         public Cell above(int dy) { return new Cell(world, x, y + dy, z); }
     }
@@ -27,24 +59,31 @@ public final class PrototypeLedger {
         this.blocks = blocks;
         if (Files.exists(file)) {
             try (var input = new DataInputStream(Files.newInputStream(file))) {
-                if (input.readInt() != 0x494C5031) throw new IOException("Unknown prototype manifest format");
-                int count = input.readInt();
-                if (count < 0 || count > 10000) throw new IOException("Invalid prototype manifest size");
-                for (int i = 0; i < count; i++) {
-                    Cell cell = new Cell(new UUID(input.readLong(), input.readLong()), input.readInt(), input.readInt(), input.readInt());
-                    String original = blocks.canonical(input.readUTF()), expected = blocks.canonical(input.readUTF());
-                    int states = input.readInt();
-                    if (states < 1 || states > 16) throw new IOException("Invalid prototype state count");
-                    Set<String> owned = new HashSet<>();
-                    for (int j = 0; j < states; j++) owned.add(blocks.canonical(input.readUTF()));
-                    if (entries.put(cell, new Entry(original, expected, owned)) != null) throw new IOException("Duplicate prototype cell");
-                }
-                if (input.read() != -1) throw new IOException("Trailing prototype manifest data");
+                entries.putAll(read(input, blocks::canonical));
             }
         }
     }
 
+    private static Map<Cell, Entry> read(DataInputStream input, UnaryOperator<String> canonical) throws IOException {
+        if (input.readInt() != MAGIC) throw new IOException("Unknown prototype manifest format");
+        int count = input.readInt();
+        if (count < 0 || count > 10000) throw new IOException("Invalid prototype manifest size");
+        Map<Cell, Entry> records = new LinkedHashMap<>();
+        for (int i = 0; i < count; i++) {
+            Cell cell = new Cell(new UUID(input.readLong(), input.readLong()), input.readInt(), input.readInt(), input.readInt());
+            String original = canonical.apply(input.readUTF()), expected = canonical.apply(input.readUTF());
+            int states = input.readInt();
+            if (states < 1 || states > 16) throw new IOException("Invalid prototype state count");
+            Set<String> owned = new HashSet<>();
+            for (int j = 0; j < states; j++) owned.add(canonical.apply(input.readUTF()));
+            if (records.put(cell, new Entry(original, expected, owned)) != null) throw new IOException("Duplicate prototype cell");
+        }
+        if (input.read() != -1) throw new IOException("Trailing prototype manifest data");
+        return records;
+    }
+
     public Set<Cell> cells() { return Set.copyOf(entries.keySet()); }
+    public boolean contains(Cell cell) { return entries.containsKey(cell); }
 
     /** Record every possible write before touching the world. All callers run on the server thread. */
     public void apply(Map<Cell, String> changes) throws IOException {
@@ -92,7 +131,7 @@ public final class PrototypeLedger {
         Files.createDirectories(file.getParent());
         Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
         try (var output = new DataOutputStream(Files.newOutputStream(temporary))) {
-            output.writeInt(0x494C5031);
+            output.writeInt(MAGIC);
             output.writeInt(data.size());
             for (var pair : data.entrySet()) {
                 Cell cell = pair.getKey();

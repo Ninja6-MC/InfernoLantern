@@ -8,6 +8,7 @@ import java.util.*;
 /** Migrations are validated before any persistent pragma or schema write. */
 final class Schema {
     static final int APPLICATION_ID=0x494C4442; // ILDB
+    static final int NATIVE_APPLICATION_ID=0x494C4E44; // ILND
     static final int VERSION=5;
     static final List<List<String>> MIGRATIONS=List.of(List.of(
         "CREATE TABLE variants(id TEXT PRIMARY KEY, definition_revision INTEGER NOT NULL CHECK(definition_revision>=0), status TEXT NOT NULL CHECK(status IN ('ACTIVE','RETIRED')), payload_version INTEGER NOT NULL CHECK(payload_version>0), definition TEXT NOT NULL, row_version INTEGER NOT NULL CHECK(row_version>=0))",
@@ -37,10 +38,13 @@ final class Schema {
     static int pragma(Connection c,String key)throws SQLException{try(var s=c.createStatement();var r=s.executeQuery("PRAGMA "+key)){if(!r.next())throw new SQLException("Missing pragma "+key);return r.getInt(1);}}
     static String checksum(int version){try{byte[] bytes=String.join("\n",MIGRATIONS.get(version-1)).getBytes(StandardCharsets.UTF_8);return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));}catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
     static void initialize(Connection c)throws SQLException{
+        initialize(c,APPLICATION_ID);
+    }
+    static void initialize(Connection c,int applicationId)throws SQLException{
         int app=pragma(c,"application_id"),version=pragma(c,"user_version");
         boolean empty;
         try(var s=c.createStatement();var r=s.executeQuery("SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")){empty=r.next()&&r.getInt(1)==0;}
-        if((app!=APPLICATION_ID && !(app==0&&version==0&&empty)) || version<0 || version>VERSION)throw new SQLException("Unrecognized or future database schema; preserve database");
+        if((app!=applicationId && !(app==0&&version==0&&empty)) || version<0 || version>VERSION)throw new SQLException("Unrecognized or future database schema; preserve database");
         try(var s=c.createStatement();var r=s.executeQuery("PRAGMA quick_check")){if(!r.next()||!"ok".equals(r.getString(1))||r.next())throw new SQLException("Database integrity check failed");}
         if(version>0){
             try(var s=c.createStatement();var r=s.executeQuery("SELECT version,checksum FROM schema_migrations ORDER BY version")){
@@ -49,7 +53,8 @@ final class Schema {
                 if(expected!=version+1)throw new SQLException("Missing migration history");
             }
             verifyTables(c,version);
-        } else if(app==APPLICATION_ID&&!empty)throw new SQLException("Missing migration metadata");
+            if(applicationId==NATIVE_APPLICATION_ID)requireCatalogOnly(c);
+        } else if(app==applicationId&&!empty)throw new SQLException("Missing migration metadata");
         c.setAutoCommit(false);
         try(var s=c.createStatement()){
             if(version==0)s.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,checksum TEXT NOT NULL)");
@@ -67,13 +72,21 @@ final class Schema {
                 try(var insert=c.prepareStatement("INSERT INTO schema_migrations VALUES(?,?)")){insert.setInt(1,next);insert.setString(2,checksum(next));insert.executeUpdate();}
                 s.execute("PRAGMA user_version="+next);
             }
-            s.execute("PRAGMA application_id="+APPLICATION_ID);
+            s.execute("PRAGMA application_id="+applicationId);
             c.commit();
         }catch(SQLException|RuntimeException e){c.rollback();throw e;}finally{c.setAutoCommit(true);}
         try(var s=c.createStatement();var r=s.executeQuery("PRAGMA journal_mode=WAL")){if(!r.next()||!"wal".equalsIgnoreCase(r.getString(1)))throw new SQLException("WAL unavailable");}
         try(var s=c.createStatement()) {s.execute("PRAGMA synchronous=FULL");s.execute("PRAGMA foreign_keys=ON");s.execute("PRAGMA busy_timeout=5000");s.execute("PRAGMA wal_autocheckpoint=1000");}
         if(pragma(c,"synchronous")!=2||pragma(c,"foreign_keys")!=1||pragma(c,"busy_timeout")!=5000||pragma(c,"wal_autocheckpoint")!=1000)throw new SQLException("Required durability pragmas unavailable");
         verifyTables(c,VERSION);
+    }
+    static void requireCatalogOnly(Connection c)throws SQLException{
+        String sql="SELECT EXISTS(SELECT 1 FROM towers) OR EXISTS(SELECT 1 FROM operations) "
+                +"OR EXISTS(SELECT 1 FROM awards) OR EXISTS(SELECT 1 FROM variants "
+                +"WHERE NOT EXISTS(SELECT 1 FROM catalog_managed_variants WHERE variant_id=variants.id))";
+        try(var s=c.createStatement();var rows=s.executeQuery(sql)){
+            if(!rows.next()||rows.getBoolean(1))throw new SQLException("Native gameplay evidence needs integration review");
+        }
     }
     private static void verifyTables(Connection c,int version)throws SQLException{
         var expected=new HashSet<String>();

@@ -1,4 +1,8 @@
-# Disposable rendering fixtures only. Production gameplay is not implemented.
+# Select this mode at startup. It publishes catalog.yml and keeps gameplay unavailable.
+native-catalog:
+  enabled: false
+
+# Disposable rendering fixtures.
 prototype:
   enabled: false
   # Experimental shared vertical calibration; client parity still requires live tests.
