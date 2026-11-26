@@ -8,8 +8,10 @@ native-catalog:
     required: false
     # Host the exact bundled infernolantern-generic-java.zip archive over HTTPS.
     url: ""
-    # Stacked mode also needs the exact bundled infernolantern-override-java.zip over HTTPS.
+    # Serve the exact stacked override archive over HTTPS.
     override-url: ""
+    # In stacked mode, use the generated java-override.zip in this plugin's data directory.
+    local-override: false
 
 # Disposable rendering fixtures.
 prototype:

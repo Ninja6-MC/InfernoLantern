@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
@@ -20,7 +21,7 @@ import java.util.Set;
 import java.util.function.Function;
 
 /** The bundled generic archives and mapping share one build-generated model inventory. */
-record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive javaOverride)
+record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive javaOverride, boolean localOverride)
         implements DefinitionValidator {
     private static final String PREFIX = "/resource-packs/";
     private static final int MAX_ASSET_BYTES = 32 * 1024 * 1024;
@@ -28,17 +29,25 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
     record JavaArchive(PackPlan.Archive archive, String sha1) {
         PackPlan.Download download(URI url) {
             if (!"https".equalsIgnoreCase(url.getScheme())) {
-                throw new IllegalArgumentException("Bundled Java pack requires HTTPS");
+                throw new IllegalArgumentException("Java pack requires HTTPS");
             }
             return new PackPlan.Download(archive, url, sha1);
         }
     }
 
     static BundledModels load() {
-        return load(BundledModels.class::getResourceAsStream);
+        return load(null, BundledModels.class::getResourceAsStream);
+    }
+
+    static BundledModels load(Path override) {
+        return load(override, BundledModels.class::getResourceAsStream);
     }
 
     static BundledModels load(Function<String, InputStream> resources) {
+        return load(null, resources);
+    }
+
+    private static BundledModels load(Path override, Function<String, InputStream> resources) {
         byte[] inventory = read(resources, "pack-set.json", 1_048_576);
         String checksums = new String(read(resources, "SHA256SUMS", 4_096), StandardCharsets.US_ASCII);
         String expectedInventory = digest("SHA-256", inventory) + "  pack-set.json";
@@ -51,15 +60,24 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
         }
         var packs = object(manifest.get("packs"));
         var javaPacks = object(packs.get("java"));
-        var javaBase = javaArchive(resources, javaPacks.get("generic"), "infernolantern-generic-java.zip", PackPlan.Slot.BASE);
+        var base = object(javaPacks.get("generic"));
+        byte[] baseBytes = check(resources, base, "infernolantern-generic-java.zip");
+        var javaBase = javaArchive(base, baseBytes, PackPlan.Slot.BASE);
         JavaArchive javaOverride;
         try {
-            javaOverride = javaArchive(resources, javaPacks.get("override"), "infernolantern-override-java.zip", PackPlan.Slot.OVERRIDE);
-            if (javaOverride.archive().sha256().equals(javaBase.archive().sha256())) {
-                throw new IllegalArgumentException("The bundled Java override must differ from the base archive");
+            if (override == null) {
+                var bundled = object(javaPacks.get("override"));
+                javaOverride = javaArchive(bundled, check(resources, bundled, "infernolantern-override-java.zip"), PackPlan.Slot.OVERRIDE);
+            } else {
+                byte[] bytes = JavaTextureOverride.read(override, baseBytes);
+                javaOverride = new JavaArchive(new PackPlan.Archive(PackPlan.Slot.OVERRIDE, digest("SHA-256", bytes)),
+                        digest("SHA-1", bytes));
             }
-        } catch (IllegalArgumentException invalidOverride) {
-            // A missing or invalid optional archive does not invalidate the base catalog.
+            if (javaOverride.archive().sha256().equals(javaBase.archive().sha256())) {
+                throw new IllegalArgumentException("The Java override must differ from the base archive");
+            }
+        } catch (IOException | IllegalArgumentException invalidOverride) {
+            // The catalog can publish, but stacked delivery requires the selected override.
             javaOverride = null;
         }
         check(resources, object(object(packs.get("bedrock")).get("generic")), "infernolantern-generic-bedrock.mcpack");
@@ -74,7 +92,7 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
             }
         }
         if (pairs.isEmpty()) throw new IllegalArgumentException("Missing bundled model pairs");
-        return new BundledModels(Set.copyOf(pairs), javaBase, javaOverride);
+        return new BundledModels(Set.copyOf(pairs), javaBase, javaOverride, override != null);
     }
 
     @Override
@@ -94,10 +112,7 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
         return new PackPlan(identity, coverage, downloads, required);
     }
 
-    private static JavaArchive javaArchive(Function<String, InputStream> resources, Object entry,
-            String name, PackPlan.Slot slot) {
-        var artifact = object(entry);
-        byte[] bytes = check(resources, artifact, name);
+    private static JavaArchive javaArchive(Map<?, ?> artifact, byte[] bytes, PackPlan.Slot slot) {
         String sha1 = digest("SHA-1", bytes);
         if (!sha1.equals(artifact.get("sha1"))) {
             throw new IllegalArgumentException("Bundled Java pack download digest mismatch");

@@ -87,7 +87,8 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             else getServer().getScheduler().runTask(this, task);
         });
         catalogDispatch = dispatch;
-        nativeCatalog = new NativeCatalogRuntime(directory, cleanup, catalogIo, nativeScheduler);
+        nativeCatalog = new NativeCatalogRuntime(directory, cleanup, catalogIo, nativeScheduler,
+                javaPackConfig != null && javaPackConfig.localOverride());
         nativeCatalog.startup().thenAccept(result -> dispatch.check(() -> {
             updateJavaPacks(result);
             if (result != NativeCatalogRuntime.Result.PUBLISHED) {
@@ -104,24 +105,28 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         try {
             javaPackConfig = parseJavaPackConfig(getConfig().get(JAVA_PACK_CONFIG + "url"),
                     getConfig().get(JAVA_PACK_CONFIG + "mode"), getConfig().get(JAVA_PACK_CONFIG + "override-url"),
-                    getConfig().get(JAVA_PACK_CONFIG + "required"));
+                    getConfig().get(JAVA_PACK_CONFIG + "required"), getConfig().get(JAVA_PACK_CONFIG + "local-override"));
             javaPackStatus = "waiting for catalog publication";
         } catch (IllegalArgumentException invalid) {
             javaPackStatus = "configuration rejected";
-            getLogger().warning("Bundled Java pack delivery configuration rejected. Check the mode, HTTPS URLs and required flag.");
+            getLogger().warning("Java pack delivery configuration rejected. Check the mode, HTTPS URLs, and pack flags.");
         }
     }
 
-    record JavaPackConfig(URI url, URI overrideUrl, boolean required) {}
+    record JavaPackConfig(URI url, URI overrideUrl, boolean required, boolean localOverride) {}
 
-    static JavaPackConfig parseJavaPackConfig(Object url, Object mode, Object overrideUrl, Object required) {
+    static JavaPackConfig parseJavaPackConfig(Object url, Object mode, Object overrideUrl, Object required, Object localOverride) {
         if (required != null && !(required instanceof Boolean)) {
             throw new IllegalArgumentException("Java pack required flag must be a boolean");
         }
+        if (localOverride != null && !(localOverride instanceof Boolean)) {
+            throw new IllegalArgumentException("Local Java override flag must be a boolean");
+        }
+        boolean local = Boolean.TRUE.equals(localOverride);
         URI override;
         if (mode == null || "default".equals(mode)) {
-            if (overrideUrl != null && !"".equals(overrideUrl)) {
-                throw new IllegalArgumentException("A Java pack override URL requires stacked mode");
+            if (local || (overrideUrl != null && !"".equals(overrideUrl))) {
+                throw new IllegalArgumentException("A Java pack override requires stacked mode");
             }
             override = null;
         } else if ("stacked".equals(mode)) {
@@ -131,7 +136,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         }
         URI base = parseJavaPackUrl(url);
         if (base.equals(override)) throw new IllegalArgumentException("Stacked pack URLs must be distinct");
-        return new JavaPackConfig(base, override, Boolean.TRUE.equals(required));
+        return new JavaPackConfig(base, override, Boolean.TRUE.equals(required), local);
     }
 
     static URI parseJavaPackUrl(Object raw) {
@@ -152,7 +157,9 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         } else if (result == NativeCatalogRuntime.Result.PUBLISHED && javaPacks == null) {
             var pack = nativeCatalog.javaPack(javaPackConfig.url(), javaPackConfig.overrideUrl(), javaPackConfig.required());
             if (pack == null) {
-                javaPackStatus = "verified bundled pack plan unavailable";
+                javaPackStatus = javaPackConfig.localOverride()
+                        ? "local override unavailable or rejected; check the generated archive and restart"
+                        : "verified bundled pack plan unavailable";
                 return;
             }
             javaPacks = new NativeJavaPackDelivery(getServer(), pack,

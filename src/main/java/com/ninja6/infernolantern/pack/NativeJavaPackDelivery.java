@@ -18,7 +18,7 @@ import java.util.Locale;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-/** Owns bundled Java pack delivery on the Paper thread for a direct Java-only server. */
+/** Owns Java pack delivery on the Paper thread for a direct Java-only server. */
 public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     private static final long TIMEOUT_TICKS = 1_200;
 
@@ -94,6 +94,7 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
         if (!sessions.admitDelivery()) return blocked ? "blocked by a detected bridge or proxy" : "unavailable";
         String policy = pack.plan().required() ? "required" : "optional";
         String shape = pack.plan().identity().mode() == PackPlan.Mode.STACKED ? "pack stack" : "pack";
+        if (pack.localOverride()) return "offering the " + policy + " pack stack with a local override";
         return "offering the " + policy + " bundled " + shape;
     }
 

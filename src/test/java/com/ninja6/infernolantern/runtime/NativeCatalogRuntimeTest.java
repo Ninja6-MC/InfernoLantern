@@ -277,6 +277,48 @@ class NativeCatalogRuntimeTest {
         }
     }
 
+    @Test void localOverrideBindsTheStartupSnapshotAndRejectedArchiveCannotFallBack() throws Exception {
+        write(VALID);
+        byte[] archive = JavaTextureOverrideTest.alternateTextureArchive();
+        Path local = Files.write(data.resolve(JavaTextureOverride.FILE), archive);
+        var runtime = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD, true);
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            var pack = runtime.javaPack(PACK_URL, OVERRIDE_URL, true);
+            assertTrue(pack.localOverride());
+            assertTrue(pack.plan().required());
+            assertDownloadDigests(BASE_PACK, pack.plan().downloads().getFirst());
+            var download = pack.plan().downloads().getLast();
+            assertEquals(OVERRIDE_URL, download.uri());
+            assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(archive)),
+                    download.archive().sha256());
+            assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(archive)), download.sha1());
+            Files.write(local, new byte[]{1, 2, 3});
+            assertEquals(PUBLISHED, get(reload(runtime)));
+            assertEquals(pack.plan(), runtime.javaPack(PACK_URL, OVERRIDE_URL, true).plan());
+        } finally {
+            get(runtime.stop());
+        }
+
+        var restarted = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD, true);
+        try {
+            assertEquals(PUBLISHED, get(restarted.startup()));
+            assertNull(restarted.javaPack(PACK_URL, OVERRIDE_URL, true));
+        } finally {
+            get(restarted.stop());
+        }
+
+        var bundled = start(VALID);
+        try {
+            assertEquals(PUBLISHED, get(bundled.startup()));
+            var pack = bundled.javaPack(PACK_URL, OVERRIDE_URL, true);
+            assertFalse(pack.localOverride());
+            assertDownloadDigests(OVERRIDE_PACK, pack.plan().downloads().getLast());
+        } finally {
+            get(bundled.stop());
+        }
+    }
+
     private static void assertDownloadDigests(String filename, PackPlan.Download download) throws Exception {
         try (var input = BundledModels.class.getResourceAsStream("/resource-packs/" + filename)) {
             byte[] bytes = input.readAllBytes();

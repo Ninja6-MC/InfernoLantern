@@ -27,7 +27,11 @@ import java.util.function.Supplier;
 public final class NativeCatalogRuntime implements AutoCloseable {
     public enum Result { PUBLISHED, REJECTED, UNAVAILABLE, BUSY }
 
-    public record JavaPack(PackPlan plan, CommitPermit availability) {}
+    public record JavaPack(PackPlan plan, CommitPermit availability, boolean localOverride) {
+        public JavaPack(PackPlan plan, CommitPermit availability) {
+            this(plan, availability, false);
+        }
+    }
     private enum State { OPENING, CLEANUP_BLOCKED, UNAVAILABLE, UNPUBLISHED, PUBLISHED, CLOSED }
     private static final int MAX_CATALOG_BYTES = 1_048_576;
     private static final int QUEUE_CAPACITY = 64;
@@ -44,7 +48,13 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     private volatile State state = State.OPENING;
 
     public NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler) {
-        this(directory, cleanup, io, scheduler, BundledModels::load,
+        this(directory, cleanup, io, scheduler, false);
+    }
+
+    public NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
+            boolean localJavaOverride) {
+        this(directory, cleanup, io, scheduler,
+                () -> BundledModels.load(localJavaOverride ? directory.resolve(JavaTextureOverride.FILE) : null),
                 () -> SqliteRepository.openCatalogOnly(directory.resolve("native-runtime/lanterns.db"), QUEUE_CAPACITY));
     }
 
@@ -82,8 +92,9 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     /** After publication, reuse the verified bytes and model inventory without filesystem work. */
     public synchronized JavaPack javaPack(URI url, URI overrideUrl, boolean required) {
         if (state != State.PUBLISHED) return null;
-        var plan = validation.join().javaPlan(url, overrideUrl, required);
-        return plan == null ? null : new JavaPack(plan, CommitPermit.allOf(lifetime));
+        var packs = validation.join();
+        var plan = packs.javaPlan(url, overrideUrl, required);
+        return plan == null ? null : new JavaPack(plan, CommitPermit.allOf(lifetime), overrideUrl != null && packs.localOverride());
     }
 
     public CompletableFuture<Result> reload(CommitPermit authority, Supplier<CompletableFuture<Boolean>> recheck) {

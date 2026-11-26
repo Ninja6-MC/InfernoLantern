@@ -108,8 +108,7 @@ the client with a button that disconnects it locally. Catalog reload
 retains the mode, policy and pack identity. Restart to change the delivery
 configuration.
 
-This binding uses the two bundled Java archives. Operator-authored archives,
-combined session readiness, Geyser, and native gameplay are separate
+Combined session readiness, Geyser, and native gameplay are separate
 integration work.
 
 ## Override example
@@ -146,6 +145,25 @@ adds the original Java animation sidecar where needed. An input archive may
 include the matching sidecar unchanged; a different sidecar or a sidecar by
 itself is rejected. The generator writes new checksums and content-derived
 Bedrock pack identities.
+
+To deliver a generated Java texture override in stacked mode:
+
+1. Verify the generated `infernolantern-override-java.zip` against the output
+   `SHA256SUMS`. Copy the ZIP unchanged to `java-override.zip` in the plugin data
+   directory, next to `catalog.yml`.
+2. Set `native-catalog.java-pack.local-override: true`. Set `override-url` to the
+   HTTPS URL serving the exact same ZIP bytes. Keep the base URL pointed at
+   the generic archive from the installed plugin JAR.
+3. Restart. The server checks the local ZIP and derives both hashes from its
+   bytes. The client uses the resulting SHA-1 to verify its download.
+
+The archive must be a regular file (up to 5 MiB) with generator pack metadata,
+at least one supported texture, and the original animation sidecar for each
+glow texture. An invalid or missing local archive prevents stacked delivery.
+Omit `local-override` or leave it false to select the bundled override example.
+Replace the local and hosted copies together and restart to publish a new
+identity.
+
 Keep any branding artwork and its licensing with the administrator-managed
 pack. For model overrides, preserve the documented identifiers and verify each
 platform's complete reference set before publishing a new asset identity.
