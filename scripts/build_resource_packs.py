@@ -92,6 +92,7 @@ def swap_channels(data, left, right):
 
 def generic_assets():
     java = {}
+    java_atlas_sources = []
     bedrock = {}
     catalog = {}
     definitions = []
@@ -115,6 +116,7 @@ def generic_assets():
             if variant == "frost":
                 data = swap_channels(data, 0, 2)
             java[f"assets/infernolantern/textures/{path}.png"] = data
+            java_atlas_sources.append({"type": "minecraft:single", "resource": f"{NAMESPACE}:{path}"})
             bedrock[f"{bedrock_textures[material]}.png"] = data
             if material == "glow":
                 java[f"assets/infernolantern/textures/{path}.png.mcmeta"] = (
@@ -126,6 +128,7 @@ def generic_assets():
             model = java_head_model(stage)
             model["textures"] = {key: f"{NAMESPACE}:{textures[value.rsplit('_', 1)[1]]}"
                                  for key, value in model["textures"].items()}
+            model["textures"].setdefault("particle", f"{NAMESPACE}:{textures['frame']}")
             java[f"assets/infernolantern/models/{stem}.json"] = encoded(model)
             java[f"assets/infernolantern/items/{stem}.json"] = encoded({
                 "model": {"type": "minecraft:model", "model": identifier}})
@@ -144,6 +147,8 @@ def generic_assets():
                 }}})
             definitions.append({"type": "definition", "model": identifier, "bedrock_identifier": identifier,
                                 "bedrock_options": {"icon": icon, "allow_offhand": False}})
+    # The vanilla block-model atlas does not discover the generic texture directory.
+    java["assets/minecraft/atlases/blocks.json"] = encoded({"sources": java_atlas_sources})
     bedrock["animations/generic_head.animation.json"] = encoded({"format_version": "1.8.0", "animations": {
         "animation.infernolantern.generic_head": {"loop": True, "bones": {
             "prototype_head": {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": 1}}}}})
