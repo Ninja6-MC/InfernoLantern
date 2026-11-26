@@ -100,9 +100,13 @@ mode uses only `url`; leave `override-url` empty or omit it.
 
 Both modes default to optional delivery. Refusal, failure, or 1,200 ticks
 without a successful load leaves the connection unready and gives private
-feedback. Set `required: true` to disconnect a client that declines, fails,
-or times out on an offered pack. Catalog reload retains the mode, policy
-and pack identity. Restart to change the delivery configuration.
+feedback. With `required: true`, the server disconnects a client that
+declines, fails, or times out while its offer is active. The client still
+uses the standard optional-pack screen and decline button. The prompt
+explains the server's required policy so a withdrawn offer cannot leave
+the client with a button that disconnects it locally. Catalog reload
+retains the mode, policy and pack identity. Restart to change the delivery
+configuration.
 
 This binding uses the two bundled Java archives. Operator-authored archives,
 combined session readiness, Geyser, and native gameplay are separate
@@ -155,8 +159,9 @@ For Java default and stacked delivery, `PaperPackSessions` sends the ordered
 Paper request and accepts successful load reports for every request ID in
 the current connection. It gates model-dependent interaction and returns a
 revocable commit permit. A timeout or terminal refusal/failure leaves the
-permit unavailable. Required delivery kicks with a reason; optional delivery
-reports the failure privately and keeps custom interaction gated.
+permit unavailable. The server enforces required delivery with a kick reason
+while the offer is active. Optional delivery reports the failure privately and
+keeps custom interaction gated.
 
 Server-managed Java combined delivery and all Bedrock modes require explicit
 current-connection readiness for the complete configured identity. For

@@ -105,7 +105,9 @@ final class PaperPackSessionsTest {
         PackPlan plan = pluginPlan(true, true);
         owner.open(client.player, plan);
         assertEquals(1, client.requests.size());
-        assertTrue(client.last().required());
+        assertFalse(client.last().required());
+        assertEquals(Component.text("InfernoLantern requires these packs. Declining or failing to load them "
+                + "disconnects you while this offer is active."), client.last().prompt());
         assertFalse(client.last().replace());
         assertEquals(plan.downloads().stream().map(PackPlan.Download::uri).toList(),
                 client.last().packs().stream().map(ResourcePackInfo::uri).toList());
@@ -315,24 +317,34 @@ final class PaperPackSessionsTest {
                 Client client = new Client();
                 delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
                 var request = client.last();
-                assertTrue(request.required());
+                assertFalse(request.required());
                 assertEquals(plan.downloads().stream().map(PackPlan.Download::uri).toList(),
                         request.packs().stream().map(ResourcePackInfo::uri).toList());
                 listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getFirst().id(),
                         SUCCESSFULLY_LOADED));
                 assertNull(delivery.readiness(client.player, EMBER));
                 listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getLast().id(), status));
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getLast().id(), status));
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getFirst().id(), FAILED_DOWNLOAD));
                 assertEquals(1, client.kicks.size());
+                assertNull(delivery.readiness(client.player, EMBER));
                 assertTrue(client.messages.isEmpty());
             }
+
+            Client timedOut = new Client();
+            delivery.join(new PlayerJoinEvent(timedOut.player, Component.empty()));
+            timeouts.getLast().run();
+            timeouts.getLast().run();
+            assertEquals(1, timedOut.kicks.size());
 
             Client late = new Client();
             delivery.join(new PlayerJoinEvent(late.player, Component.empty()));
             Client pending = new Client();
             delivery.join(new PlayerJoinEvent(pending.player, Component.empty()));
             availability.revoke();
-            listener.status(new PlayerResourcePackStatusEvent(late.player, late.last().packs().getLast().id(),
-                    FAILED_DOWNLOAD));
+            var refusal = new PlayerResourcePackStatusEvent(late.player, late.last().packs().getLast().id(), DECLINED);
+            listener.status(refusal);
+            listener.status(refusal);
             timeouts.getLast().run();
             assertTrue(late.kicks.isEmpty());
             assertTrue(pending.kicks.isEmpty());

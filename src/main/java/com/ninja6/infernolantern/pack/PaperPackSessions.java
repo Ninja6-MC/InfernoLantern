@@ -25,6 +25,8 @@ import java.util.function.BooleanSupplier;
 /** Java pack delivery and server-managed readiness on Paper's primary thread. */
 public final class PaperPackSessions implements Listener, AutoCloseable {
     private static final Component PROMPT = Component.text("Load the resource packs to use InfernoLantern.");
+    private static final Component REQUIRED_PROMPT = Component.text(
+            "InfernoLantern requires these packs. Declining or failing to load them disconnects you while this offer is active.");
     public enum Status { LOADED, REFUSED, FAILED, MISSING }
 
     /** Captured by the trusted delivery owner and returned with its external observations. */
@@ -89,8 +91,10 @@ public final class PaperPackSessions implements Listener, AutoCloseable {
                     session.sent.add(requestId);
                     return ResourcePackInfo.resourcePackInfo(requestId, download.uri(), download.sha1());
                 }).toList();
+                // A protocol-required prompt can disconnect the client after the server withdraws the offer.
+                // Keep the wire prompt cancellable and enforce the policy against the current request IDs.
                 player.sendResourcePacks(ResourcePackRequest.resourcePackRequest().packs(packs)
-                        .replace(false).required(plan.required()).prompt(PROMPT).build());
+                        .replace(false).required(false).prompt(plan.required() ? REQUIRED_PROMPT : PROMPT).build());
             }
         } catch (RuntimeException deliveryFailure) {
             if (current(player) == session) apply(session, Status.FAILED);
