@@ -79,7 +79,7 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void kick(PlayerKickEvent event) {
-        if (combined != null && !event.isCancelled()) combined.disconnected(event.getPlayer());
+        if (combined != null && !event.isCancelled()) combined.kicking(event.getPlayer());
     }
 
     @EventHandler(priority = EventPriority.MONITOR)

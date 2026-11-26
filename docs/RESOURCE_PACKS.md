@@ -202,6 +202,8 @@ request. The expected identity supplied to the method helps select the request;
 the owner must establish the actual identity from the loaded delivery. Keep
 the receipt permit stable and revoke it before withdrawal, replacement,
 disconnect, or provider shutdown. A fresh request needs a fresh permit.
+The connection must stay active through observation. An accepted kick fences
+that connection before the quit event.
 
 Paper's `server.properties` pack and generic player pack status can deliver or
 describe a pack, but lack the exact request receipt needed here. An owner can

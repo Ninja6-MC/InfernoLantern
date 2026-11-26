@@ -12,6 +12,7 @@ import org.bukkit.Server;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerResourcePackStatusEvent;
 import org.bukkit.event.server.PluginDisableEvent;
@@ -558,6 +559,99 @@ final class PaperPackSessionsTest {
         }
     }
 
+    @Test void nativeCombinedCannotReadmitAQuitConnectionStillInTheOnlineRegistry() {
+        var client = new Client();
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var observations = new java.util.concurrent.atomic.AtomicInteger();
+        var receipt = new CombinedJavaPackProvider.Receipt(client.player, plan.identity(), PaperPackSessions.Status.LOADED,
+                new CommitPermit());
+        services = List.of(registration(ownerPlugin, (player, expected) -> {
+            observations.incrementAndGet();
+            return receipt;
+        }));
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var grant = delivery.readiness(client.player, EMBER);
+            assertNotNull(grant);
+
+            client.connected = false;
+            delivery.quit(new PlayerQuitEvent(client.player, Component.empty(), PlayerQuitEvent.QuitReason.DISCONNECTED));
+            assertThrows(RepositoryException.CommitRevoked.class, grant::requireValid);
+            assertTrue(client.player.isOnline());
+            assertSame(client.player, Bukkit.getServer().getPlayer(client.id));
+            assertEquals("observing the server-managed combined pack (0/1 checked connections ready)", delivery.status());
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertEquals(1, observations.get());
+        }
+    }
+
+    @Test void nativeCombinedRejectsReceiptWhenTheConnectionClosesDuringObservation() {
+        var client = new Client();
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var receipts = new java.util.concurrent.atomic.AtomicInteger();
+        var receipt = new CombinedJavaPackProvider.Receipt(client.player, plan.identity(), PaperPackSessions.Status.LOADED,
+                new CommitPermit());
+        services = List.of(registration(ownerPlugin, (player, expected) -> {
+            if (receipts.incrementAndGet() == 2) client.connected = false;
+            return receipt;
+        }));
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var beforeClose = delivery.readiness(client.player, EMBER);
+            assertNotNull(beforeClose);
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertThrows(RepositoryException.CommitRevoked.class, beforeClose::requireValid);
+            assertTrue(client.player.isOnline());
+        }
+    }
+
+    @Test void nativeCombinedOnlyFencesTheExactConnectionOfAnAcceptedKick() {
+        var client = new Client();
+        var rejoined = new Client(client.id);
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var oldPermit = new CommitPermit();
+        var newPermit = new CommitPermit();
+        services = List.of(registration(ownerPlugin, (player, expected) -> new CombinedJavaPackProvider.Receipt(
+                player, expected, PaperPackSessions.Status.LOADED, player == client.player ? oldPermit : newPermit)));
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var grant = delivery.readiness(client.player, EMBER);
+            assertNotNull(grant);
+            var event = new PlayerKickEvent(client.player, Component.empty(), Component.empty(), PlayerKickEvent.Cause.UNKNOWN);
+            event.setCancelled(true);
+            delivery.kick(event);
+            grant.requireValid();
+            assertSame(grant, delivery.readiness(client.player, EMBER));
+
+            event.setCancelled(false);
+            delivery.kick(event);
+            assertThrows(RepositoryException.CommitRevoked.class, grant::requireValid);
+            assertTrue(client.player.isConnected());
+            assertNull(delivery.readiness(client.player, EMBER));
+
+            online = List.of(rejoined.player);
+            delivery.join(new PlayerJoinEvent(rejoined.player, Component.empty()));
+            var rejoinedGrant = delivery.readiness(rejoined.player, EMBER);
+            assertNotNull(rejoinedGrant);
+            client.connected = false;
+            delivery.quit(new PlayerQuitEvent(client.player, Component.empty(), PlayerQuitEvent.QuitReason.KICKED));
+            rejoinedGrant.requireValid();
+            assertSame(rejoinedGrant, delivery.readiness(rejoined.player, EMBER));
+        }
+    }
+
     @Test void nativeCombinedDiscardsObservationIfProviderUnregistersDuringCallback() {
         var client = new Client();
         online = List.of(client.player);
@@ -613,6 +707,7 @@ final class PaperPackSessionsTest {
         final List<Component> messages = new ArrayList<>();
         final List<List<?>> removed = new ArrayList<>();
         final Player player;
+        boolean connected = true;
 
         Client() {
             this(UUID.randomUUID());
@@ -624,6 +719,7 @@ final class PaperPackSessionsTest {
                     (proxy, method, arguments) -> switch (method.getName()) {
                         case "getUniqueId" -> id;
                         case "isOnline" -> true;
+                        case "isConnected" -> connected;
                         case "sendResourcePacks" -> {
                             requests.add((ResourcePackRequest) arguments[0]);
                             yield null;

@@ -22,6 +22,7 @@ final class CombinedJavaPackReadiness {
     private final PackPlan plan;
     private final String providerName;
     private final Map<UUID, Grant> grants = new HashMap<>();
+    private final Map<UUID, Player> pendingKicks = new HashMap<>();
     private RegisteredServiceProvider<CombinedJavaPackProvider> provider;
     private Plugin disabling;
     private long generation;
@@ -52,7 +53,7 @@ final class CombinedJavaPackReadiness {
             observing = false;
         }
         refreshProvider();
-        if (!current(player, id) || !admit.getAsBoolean() || observedGeneration != generation) return null;
+        if (!admit.getAsBoolean() || !current(player, id) || observedGeneration != generation) return null;
 
         if (receipt == null || receipt.player() != player || !plan.identity().equals(receipt.identity())
                 || receipt.status() != PaperPackSessions.Status.LOADED) {
@@ -98,13 +99,31 @@ final class CombinedJavaPackReadiness {
     void joined(Player player) {
         generation++;
         UUID id = player.getUniqueId();
+        if (pendingKicks.get(id) != player) pendingKicks.remove(id);
         Grant existing = grants.get(id);
         if (existing != null && existing.player() != player) discard(id);
     }
 
-    void disconnected(Player player) {
-        generation++;
+    void kicking(Player player) {
+        if (closed) return;
         UUID id = player.getUniqueId();
+        // Paper fires the kick event before closing the connection.
+        if (server.getPlayer(id) == player) pendingKicks.put(id, player);
+        revokeConnection(player, id);
+    }
+
+    void disconnected(Player player) {
+        UUID id = player.getUniqueId();
+        if (pendingKicks.get(id) == player) pendingKicks.remove(id);
+        revokeConnection(player, id);
+    }
+
+    private void revokeConnection(Player player, UUID id) {
+        generation++;
+        discardConnectionGrant(player, id);
+    }
+
+    private void discardConnectionGrant(Player player, UUID id) {
         Grant existing = grants.get(id);
         if (existing != null && existing.player() == player) discard(id);
     }
@@ -127,11 +146,16 @@ final class CombinedJavaPackReadiness {
 
     void close() {
         closed = true;
+        pendingKicks.clear();
         replaceProvider(null);
     }
 
     private boolean current(Player player, UUID id) {
-        return !closed && player.isOnline() && server.getPlayer(id) == player;
+        // Paper's online registry still includes the departing Player during the quit event.
+        if (!closed && pendingKicks.get(id) != player && player.isOnline() && server.getPlayer(id) == player
+                && player.isConnected()) return true;
+        discardConnectionGrant(player, id);
+        return false;
     }
 
     private void refreshProvider() {
