@@ -19,14 +19,14 @@ import java.util.Locale;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-/** Owns optional default Java pack delivery on the Paper thread for a direct Java-only server. */
+/** Owns bundled Java pack delivery on the Paper thread for a direct Java-only server. */
 public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     private static final long TIMEOUT_TICKS = 1_200;
 
     private final Server server;
     private final JavaPack pack;
     private final BiConsumer<Runnable, Long> schedule;
-    private final PaperPackSessions sessions = new PaperPackSessions();
+    private final PaperPackSessions sessions = new PaperPackSessions(this::active);
     private boolean started;
     private boolean blocked;
     private boolean closed;
@@ -96,8 +96,10 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     }
 
     public String status() {
-        if (blocked) return "blocked by a detected bridge or proxy";
-        return active() ? "offering the optional bundled pack" : "unavailable";
+        if (!active()) return blocked ? "blocked by a detected bridge or proxy" : "unavailable";
+        String policy = pack.plan().required() ? "required" : "optional";
+        String shape = pack.plan().identity().mode() == PackPlan.Mode.STACKED ? "pack stack" : "pack";
+        return "offering the " + policy + " bundled " + shape;
     }
 
     private void block() {

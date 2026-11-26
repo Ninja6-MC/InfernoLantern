@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 
 /** Java pack delivery and server-managed readiness on Paper's primary thread. */
 public final class PaperPackSessions implements Listener, AutoCloseable {
@@ -54,7 +55,16 @@ public final class PaperPackSessions implements Listener, AutoCloseable {
     }
 
     private final Map<UUID, Session> players = new HashMap<>();
+    private final BooleanSupplier available;
     private boolean closed;
+
+    public PaperPackSessions() {
+        this(() -> true);
+    }
+
+    PaperPackSessions(BooleanSupplier available) {
+        this.available = available;
+    }
 
     /**
      * Call for the current connection after the owner has resolved the verified plan.
@@ -151,6 +161,10 @@ public final class PaperPackSessions implements Listener, AutoCloseable {
 
     private void apply(Session session, Status status) {
         if (session.failed) return;
+        if (!available.getAsBoolean()) {
+            session.revoke();
+            return;
+        }
         if (status == Status.LOADED) {
             session.ready = true;
             return;

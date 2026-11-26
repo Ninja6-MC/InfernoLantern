@@ -4,8 +4,12 @@ native-catalog:
   java-pack:
     # Enable only on a direct Java-only server with no bridge or proxy, including a remote one.
     direct-java-only: false
+    mode: default
+    required: false
     # Host the exact bundled infernolantern-generic-java.zip archive over HTTPS.
     url: ""
+    # Stacked mode also needs the exact bundled infernolantern-override-java.zip over HTTPS.
+    override-url: ""
 
 # Disposable rendering fixtures.
 prototype:

@@ -46,7 +46,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     private CampaignAwardCommand awards;
     private NativeCatalogRuntime nativeCatalog;
     private PaperItemFreeze nativeFreeze;
-    private URI javaPackUrl;
+    private JavaPackConfig javaPackConfig;
     private String javaPackStatus = "disabled";
     private NativeJavaPackDelivery javaPacks;
     private PaperWorldScheduler nativeScheduler;
@@ -98,16 +98,40 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     }
 
     private void configureJavaPack() {
-        javaPackUrl = null;
+        javaPackConfig = null;
         javaPackStatus = "disabled";
         if (!getConfig().getBoolean(JAVA_PACK_CONFIG + "direct-java-only")) return;
         try {
-            javaPackUrl = parseJavaPackUrl(getConfig().get(JAVA_PACK_CONFIG + "url"));
+            javaPackConfig = parseJavaPackConfig(getConfig().get(JAVA_PACK_CONFIG + "url"),
+                    getConfig().get(JAVA_PACK_CONFIG + "mode"), getConfig().get(JAVA_PACK_CONFIG + "override-url"),
+                    getConfig().get(JAVA_PACK_CONFIG + "required"));
             javaPackStatus = "waiting for catalog publication";
         } catch (IllegalArgumentException invalid) {
             javaPackStatus = "configuration rejected";
-            getLogger().warning("Bundled Java pack delivery requires a valid HTTPS URL. Check the startup configuration.");
+            getLogger().warning("Bundled Java pack delivery configuration rejected. Check the mode, HTTPS URLs and required flag.");
         }
+    }
+
+    record JavaPackConfig(URI url, URI overrideUrl, boolean required) {}
+
+    static JavaPackConfig parseJavaPackConfig(Object url, Object mode, Object overrideUrl, Object required) {
+        if (required != null && !(required instanceof Boolean)) {
+            throw new IllegalArgumentException("Java pack required flag must be a boolean");
+        }
+        URI override;
+        if (mode == null || "default".equals(mode)) {
+            if (overrideUrl != null && !"".equals(overrideUrl)) {
+                throw new IllegalArgumentException("A Java pack override URL requires stacked mode");
+            }
+            override = null;
+        } else if ("stacked".equals(mode)) {
+            override = parseJavaPackUrl(overrideUrl);
+        } else {
+            throw new IllegalArgumentException("Unsupported bundled Java pack mode");
+        }
+        URI base = parseJavaPackUrl(url);
+        if (base.equals(override)) throw new IllegalArgumentException("Stacked pack URLs must be distinct");
+        return new JavaPackConfig(base, override, Boolean.TRUE.equals(required));
     }
 
     static URI parseJavaPackUrl(Object raw) {
@@ -121,13 +145,16 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     }
 
     private void updateJavaPacks(NativeCatalogRuntime.Result result) {
-        if (javaPackUrl == null) return;
+        if (javaPackConfig == null) return;
         if (result == NativeCatalogRuntime.Result.UNAVAILABLE) {
             javaPackStatus = "catalog unavailable";
             stopJavaPacks();
         } else if (result == NativeCatalogRuntime.Result.PUBLISHED && javaPacks == null) {
-            var pack = nativeCatalog.javaPack(javaPackUrl);
-            if (pack == null) return;
+            var pack = nativeCatalog.javaPack(javaPackConfig.url(), javaPackConfig.overrideUrl(), javaPackConfig.required());
+            if (pack == null) {
+                javaPackStatus = "verified bundled pack plan unavailable";
+                return;
+            }
             javaPacks = new NativeJavaPackDelivery(getServer(), pack,
                     (task, delay) -> getServer().getScheduler().runTaskLater(this, task, delay));
             try {

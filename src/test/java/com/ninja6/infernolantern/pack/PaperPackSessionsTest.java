@@ -300,6 +300,47 @@ final class PaperPackSessionsTest {
         }
     }
 
+    @Test void requiredNativeStackKicksForFailureOnlyWhileDeliveryIsAvailable() {
+        var registered = new ArrayList<Listener>();
+        var timeouts = new ArrayList<Runnable>();
+        var availability = new CommitPermit();
+        PackPlan plan = pluginPlan(true, true);
+        var verified = new JavaPack(plan, availability);
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified, (task, delay) -> timeouts.add(task))) {
+            delivery.start(registered::add);
+            assertEquals("offering the required bundled pack stack", delivery.status());
+            var listener = assertInstanceOf(PaperPackSessions.class, registered.getFirst());
+
+            for (var status : List.of(DECLINED, FAILED_DOWNLOAD)) {
+                Client client = new Client();
+                delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
+                var request = client.last();
+                assertTrue(request.required());
+                assertEquals(plan.downloads().stream().map(PackPlan.Download::uri).toList(),
+                        request.packs().stream().map(ResourcePackInfo::uri).toList());
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getFirst().id(),
+                        SUCCESSFULLY_LOADED));
+                assertNull(delivery.readiness(client.player, EMBER));
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getLast().id(), status));
+                assertEquals(1, client.kicks.size());
+                assertTrue(client.messages.isEmpty());
+            }
+
+            Client late = new Client();
+            delivery.join(new PlayerJoinEvent(late.player, Component.empty()));
+            Client pending = new Client();
+            delivery.join(new PlayerJoinEvent(pending.player, Component.empty()));
+            availability.revoke();
+            listener.status(new PlayerResourcePackStatusEvent(late.player, late.last().packs().getLast().id(),
+                    FAILED_DOWNLOAD));
+            timeouts.getLast().run();
+            assertTrue(late.kicks.isEmpty());
+            assertTrue(pending.kicks.isEmpty());
+            assertNull(delivery.readiness(late.player, EMBER));
+            assertNull(delivery.readiness(pending.player, EMBER));
+        }
+    }
+
     @Test void nativeDeliveryBlocksKnownBridgesAndPaperProxyMode() {
         Client client = new Client();
         online = List.of(client.player);
@@ -313,7 +354,7 @@ final class PaperPackSessionsTest {
     }
 
     private void assertNativeDeliveryBlocked(Client client) {
-        var verified = new JavaPack(pluginPlan(false, false), new CommitPermit());
+        var verified = new JavaPack(pluginPlan(true, true), new CommitPermit());
         try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified,
                 (task, delay) -> fail("Blocked topology cannot schedule a pack timeout"))) {
             delivery.start(listener -> fail("Blocked topology cannot register delivery"));
@@ -321,6 +362,7 @@ final class PaperPackSessionsTest {
             assertEquals("blocked by a detected bridge or proxy", delivery.status());
             assertNull(delivery.readiness(client.player, EMBER));
             assertTrue(client.requests.isEmpty());
+            assertTrue(client.kicks.isEmpty());
         }
     }
 
