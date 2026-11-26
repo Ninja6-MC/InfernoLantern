@@ -259,6 +259,50 @@ class NativeCatalogRuntimeTest {
         }
     }
 
+    @Test void combinedJavaPlanIsBoundToTheVerifiedArchiveWithoutDelivery() throws Exception {
+        var runtime = start(VALID);
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            var verified = runtime.javaCombinedPack();
+            var plan = verified.plan();
+            assertEquals(PackPlan.Edition.JAVA, plan.identity().edition());
+            assertEquals(PackPlan.Mode.COMBINED, plan.identity().mode());
+            assertFalse(plan.identity().pluginDelivered());
+            assertFalse(plan.required());
+            assertTrue(plan.downloads().isEmpty());
+            assertEquals(2, plan.models().size());
+            byte[] archive;
+            try (var input = BundledModels.class.getResourceAsStream("/resource-packs/infernolantern-combined-java.zip")) {
+                archive = input.readAllBytes();
+            }
+            assertEquals(List.of(new PackPlan.Archive(PackPlan.Slot.COMBINED,
+                    HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(archive)))), plan.identity().packs());
+            assertEquals(PUBLISHED, get(reload(runtime)));
+            assertEquals(plan, runtime.javaCombinedPack().plan());
+            get(runtime.stop());
+            assertThrows(CommitRevoked.class, verified.availability()::requireValid);
+            assertNull(runtime.javaCombinedPack());
+        } finally {
+            get(runtime.stop());
+        }
+    }
+
+    @Test void aCorruptCombinedArchiveLeavesCombinedReadinessUnavailable() throws Exception {
+        write(VALID);
+        var runtime = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD,
+                () -> BundledModels.load(name -> name.endsWith("infernolantern-combined-java.zip")
+                        ? new ByteArrayInputStream(new byte[]{1, 2, 3})
+                        : BundledModels.class.getResourceAsStream(name)),
+                () -> SqliteRepository.openCatalogOnly(database(), 4));
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            assertNull(runtime.javaCombinedPack());
+            assertNotNull(runtime.javaPack(PACK_URL, null, false));
+        } finally {
+            get(runtime.stop());
+        }
+    }
+
     @Test void tamperedOverrideCanNeverFallBackToRequiredBaseDelivery() throws Exception {
         write(VALID);
         var runtime = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD,

@@ -97,6 +97,12 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         return plan == null ? null : new JavaPack(plan, CommitPermit.allOf(lifetime), overrideUrl != null && packs.localOverride());
     }
 
+    public synchronized JavaPack javaCombinedPack() {
+        if (state != State.PUBLISHED) return null;
+        var plan = validation.join().javaCombinedPlan();
+        return plan == null ? null : new JavaPack(plan, CommitPermit.allOf(lifetime));
+    }
+
     public CompletableFuture<Result> reload(CommitPermit authority, Supplier<CompletableFuture<Boolean>> recheck) {
         if (state == State.CLOSED || state == State.UNAVAILABLE || state == State.CLEANUP_BLOCKED) {
             return CompletableFuture.completedFuture(Result.UNAVAILABLE);

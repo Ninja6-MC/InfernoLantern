@@ -21,7 +21,8 @@ import java.util.Set;
 import java.util.function.Function;
 
 /** The bundled generic archives and mapping share one build-generated model inventory. */
-record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive javaOverride, boolean localOverride)
+record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive javaOverride, JavaArchive javaCombined,
+        boolean localOverride)
         implements DefinitionValidator {
     private static final String PREFIX = "/resource-packs/";
     private static final int MAX_ASSET_BYTES = 32 * 1024 * 1024;
@@ -80,6 +81,14 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
             // The catalog can publish, but stacked delivery requires the selected override.
             javaOverride = null;
         }
+        JavaArchive javaCombined;
+        try {
+            var bundled = object(javaPacks.get("combined"));
+            javaCombined = javaArchive(bundled, check(resources, bundled, "infernolantern-combined-java.zip"), PackPlan.Slot.COMBINED);
+        } catch (IllegalArgumentException invalidCombined) {
+            // Combined readiness requires this archive. The other Java modes use separate assets.
+            javaCombined = null;
+        }
         check(resources, object(object(packs.get("bedrock")).get("generic")), "infernolantern-generic-bedrock.mcpack");
         check(resources, object(manifest.get("mappings")), "infernolantern-generic-mappings.json");
 
@@ -92,7 +101,7 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
             }
         }
         if (pairs.isEmpty()) throw new IllegalArgumentException("Missing bundled model pairs");
-        return new BundledModels(Set.copyOf(pairs), javaBase, javaOverride, override != null);
+        return new BundledModels(Set.copyOf(pairs), javaBase, javaOverride, javaCombined, override != null);
     }
 
     @Override
@@ -110,6 +119,13 @@ record BundledModels(Set<Models> coverage, JavaArchive javaBase, JavaArchive jav
         var identity = new PackPlan.Identity(PackPlan.Edition.JAVA, mode,
                 downloads.stream().map(PackPlan.Download::archive).toList(), null);
         return new PackPlan(identity, coverage, downloads, required);
+    }
+
+    PackPlan javaCombinedPlan() {
+        if (javaCombined == null) return null;
+        var identity = new PackPlan.Identity(PackPlan.Edition.JAVA, PackPlan.Mode.COMBINED,
+                List.of(javaCombined.archive()), null);
+        return new PackPlan(identity, coverage, List.of(), false);
     }
 
     private static JavaArchive javaArchive(Map<?, ?> artifact, byte[] bytes, PackPlan.Slot slot) {

@@ -12,6 +12,8 @@ native-catalog:
     override-url: ""
     # In stacked mode, use the generated java-override.zip in this plugin's data directory.
     local-override: false
+    # In combined mode, a named external plugin owns delivery and reports exact receipts.
+    combined-provider: ""
 
 # Disposable rendering fixtures.
 prototype:

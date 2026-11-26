@@ -41,7 +41,8 @@ generic Java and Bedrock archives and Geyser mapping. It accepts only compact an
 expanded model pairs from that verified bundled inventory. See
 [Enable bundled Java delivery](RESOURCE_PACKS.md#enable-bundled-java-delivery)
 for default and stacked Java pack delivery, local texture overrides, and the
-optional required policy. Custom model sets and Geyser session readiness
+optional required policy. [Server-managed combined Java readiness](RESOURCE_PACKS.md#enable-server-managed-combined-java-readiness)
+uses an exact receipt from a configured delivery owner. Custom model sets and Geyser session readiness
 require their runtime bindings.
 
 This example exercises publication with the bundled Ember models. The values are
@@ -98,7 +99,7 @@ never waits on the Paper thread for SQL or reload authorization.
 | Item lifecycle, placement and recovery | Requires the native token admission, world/provider checks, and matched durable evidence from their respective owners. |
 | Switches, lighting, combat, blasts and pistons | Requires loaded component, protection-provider and owner registration. |
 | Repair, health view and campaign awards | Requires native menu/session routing and the inventory, protection and save witness bindings. |
-| Resource packs | Default and stacked Java delivery, local texture overrides, and per-connection readiness are wired for direct Java-only servers. Combined readiness, Geyser and full live acceptance remain open. |
+| Resource packs | Default and stacked Java delivery, local texture overrides, and per-connection readiness are wired for direct Java-only servers. Combined Java can consume exact receipts from a configured external owner. Geyser and full live acceptance remain open. |
 | Core release acceptance | Requires exact Paper/Geyser/Java/Bedrock tests, isolated matched saves and load measurements under #27. |
 
 The local suite uses temporary SQLite files and Paper API doubles. Its results
