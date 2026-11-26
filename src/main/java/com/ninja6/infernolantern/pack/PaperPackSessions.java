@@ -88,6 +88,11 @@ public final class PaperPackSessions implements Listener, AutoCloseable {
         return session.attempt;
     }
 
+    boolean hasAttempt(Player player) {
+        requireOwner();
+        return current(player) != null;
+    }
+
     /** The native caller must also revalidate its independent access, lifecycle and protection rules. */
     public CommitPermit readiness(Player player, PackPlan expected, PackPlan.Models models) {
         requireOwner();

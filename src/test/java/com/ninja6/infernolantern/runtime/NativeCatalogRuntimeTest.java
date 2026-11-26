@@ -1,7 +1,9 @@
 package com.ninja6.infernolantern.runtime;
 
 import com.ninja6.infernolantern.prototype.PrototypeLedger;
+import com.ninja6.infernolantern.pack.PackPlan;
 import com.ninja6.infernolantern.repository.CommitPermit;
+import com.ninja6.infernolantern.repository.RepositoryException.CommitRevoked;
 import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.repository.SqliteTestConnections;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
@@ -9,9 +11,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -21,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class NativeCatalogRuntimeTest {
     @TempDir Path data;
+
+    private static final URI PACK_URL = URI.create("https://assets.example.invalid/infernolantern-generic-java.zip");
 
     private static final WorldScheduler NO_WORLD = new WorldScheduler() {
         @Override
@@ -78,6 +85,7 @@ class NativeCatalogRuntimeTest {
         try {
             assertEquals(REJECTED, get(runtime.startup()));
             assertEquals("no published catalog for this startup; native gameplay unavailable", runtime.status());
+            assertNull(runtime.javaPack(PACK_URL));
             assertFalse(Files.exists(data.resolve("item-prototype.db")));
             write(VALID);
             assertEquals(PUBLISHED, get(reload(runtime)));
@@ -171,6 +179,8 @@ class NativeCatalogRuntimeTest {
         var runtime = start("schema: 1\nvariants: {}\n");
         try {
             assertEquals(PUBLISHED, get(runtime.startup()));
+            var pack = runtime.javaPack(PACK_URL);
+            pack.availability().requireValid();
             try (var connection = SqliteTestConnections.open(database()); var sql = connection.createStatement()) {
                 sql.execute("CREATE TRIGGER reject_publication BEFORE UPDATE ON catalog_state "
                         + "BEGIN SELECT RAISE(ABORT,'fixture publication failure'); END");
@@ -178,6 +188,8 @@ class NativeCatalogRuntimeTest {
                     write(VALID);
                     assertEquals(UNAVAILABLE, get(reload(runtime)));
                     assertEquals(UNAVAILABLE, get(reload(runtime)));
+                    assertNull(runtime.javaPack(PACK_URL));
+                    assertThrows(CommitRevoked.class, pack.availability()::requireValid);
                 } finally {
                     sql.execute("DROP TRIGGER reject_publication");
                 }
@@ -191,6 +203,38 @@ class NativeCatalogRuntimeTest {
             assertTrue(get(repository.catalog()).variants().isEmpty());
         } finally {
             get(repository.closeAsync());
+        }
+    }
+
+    @Test void javaDefaultUsesVerifiedArchiveAndCoverageAcrossRejectedReload() throws Exception {
+        var runtime = start(VALID);
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            var pack = runtime.javaPack(PACK_URL);
+            assertNotNull(pack);
+            var plan = pack.plan();
+            var download = plan.downloads().getFirst();
+            assertEquals(PACK_URL, download.uri());
+            assertFalse(plan.required());
+            assertEquals(PackPlan.Mode.DEFAULT, plan.identity().mode());
+            assertEquals(PackPlan.Edition.JAVA, plan.identity().edition());
+            assertEquals(2, plan.models().size());
+
+            try (var input = BundledModels.class.getResourceAsStream("/resource-packs/infernolantern-generic-java.zip")) {
+                byte[] bytes = input.readAllBytes();
+                assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+                        download.archive().sha256());
+                assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(bytes)), download.sha1());
+            }
+
+            write("schema: 1\nvariants: null\n");
+            assertEquals(REJECTED, get(reload(runtime)));
+            pack.availability().requireValid();
+            assertEquals(plan, runtime.javaPack(PACK_URL).plan());
+            get(runtime.stop());
+            assertThrows(CommitRevoked.class, pack.availability()::requireValid);
+        } finally {
+            get(runtime.stop());
         }
     }
 

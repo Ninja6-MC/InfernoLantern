@@ -9,6 +9,7 @@ import com.ninja6.infernolantern.prototype.PrototypeLedger;
 import com.ninja6.infernolantern.prototype.ItemPrototype;
 import com.ninja6.infernolantern.item.GroundPolicy;
 import com.ninja6.infernolantern.item.PaperItemFreeze;
+import com.ninja6.infernolantern.pack.NativeJavaPackDelivery;
 import com.ninja6.infernolantern.runtime.NativeCatalogRuntime;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException.CommitRevoked;
@@ -21,6 +22,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
@@ -36,6 +38,7 @@ import java.util.function.Consumer;
 /** Owns either the feasibility fixtures or the native catalog runtime for this startup. */
 public final class InfernoLanternPlugin extends JavaPlugin {
     private static final String RELOAD_PERMISSION = "infernolantern.admin.reload";
+    private static final String JAVA_PACK_CONFIG = "native-catalog.java-pack.";
 
     private RenderingPrototype prototype;
     private ItemPrototype items;
@@ -43,6 +46,9 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     private CampaignAwardCommand awards;
     private NativeCatalogRuntime nativeCatalog;
     private PaperItemFreeze nativeFreeze;
+    private URI javaPackUrl;
+    private String javaPackStatus = "disabled";
+    private NativeJavaPackDelivery javaPacks;
     private PaperWorldScheduler nativeScheduler;
     private ExecutorService catalogIo;
     private OwnerDispatch catalogDispatch;
@@ -67,6 +73,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
 
     private void startNativeCatalog(PaperItemFreeze freeze) {
         nativeFreeze = freeze;
+        configureJavaPack();
         Path directory = getDataFolder().toPath();
         var cleanup = installNativePreservation(directory, freeze, listener -> getServer().getPluginManager().registerEvents(listener, this));
         nativeScheduler = new PaperWorldScheduler(this);
@@ -81,12 +88,68 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         });
         catalogDispatch = dispatch;
         nativeCatalog = new NativeCatalogRuntime(directory, cleanup, catalogIo, nativeScheduler);
-        nativeCatalog.startup().thenAccept(result -> {
-            if (result != NativeCatalogRuntime.Result.PUBLISHED) dispatch.check(() -> {
+        nativeCatalog.startup().thenAccept(result -> dispatch.check(() -> {
+            updateJavaPacks(result);
+            if (result != NativeCatalogRuntime.Result.PUBLISHED) {
                 getLogger().warning("Native catalog startup did not publish. Check the catalog and storage status.");
-                return true;
-            });
-        });
+            }
+            return true;
+        }));
+    }
+
+    private void configureJavaPack() {
+        javaPackUrl = null;
+        javaPackStatus = "disabled";
+        if (!getConfig().getBoolean(JAVA_PACK_CONFIG + "direct-java-only")) return;
+        try {
+            javaPackUrl = parseJavaPackUrl(getConfig().get(JAVA_PACK_CONFIG + "url"));
+            javaPackStatus = "waiting for catalog publication";
+        } catch (IllegalArgumentException invalid) {
+            javaPackStatus = "configuration rejected";
+            getLogger().warning("Bundled Java pack delivery requires a valid HTTPS URL. Check the startup configuration.");
+        }
+    }
+
+    static URI parseJavaPackUrl(Object raw) {
+        if (!(raw instanceof String value)) throw new IllegalArgumentException("Java pack URL must be a string");
+        URI url = URI.create(value);
+        if (!"https".equalsIgnoreCase(url.getScheme()) || url.getHost() == null
+                || url.getUserInfo() != null || url.getFragment() != null || url.getPort() > 65_535) {
+            throw new IllegalArgumentException("Invalid HTTPS pack URL");
+        }
+        return url;
+    }
+
+    private void updateJavaPacks(NativeCatalogRuntime.Result result) {
+        if (javaPackUrl == null) return;
+        if (result == NativeCatalogRuntime.Result.UNAVAILABLE) {
+            javaPackStatus = "catalog unavailable";
+            stopJavaPacks();
+        } else if (result == NativeCatalogRuntime.Result.PUBLISHED && javaPacks == null) {
+            var pack = nativeCatalog.javaPack(javaPackUrl);
+            if (pack == null) return;
+            javaPacks = new NativeJavaPackDelivery(getServer(), pack,
+                    (task, delay) -> getServer().getScheduler().runTaskLater(this, task, delay));
+            try {
+                javaPacks.start(listener -> getServer().getPluginManager().registerEvents(listener, this));
+            } catch (RuntimeException unavailable) {
+                javaPackStatus = "unavailable";
+                stopJavaPacks();
+                getLogger().warning("Bundled Java pack delivery could not start.");
+            }
+        }
+    }
+
+    private void stopJavaPacks() {
+        var delivery = javaPacks;
+        javaPacks = null;
+        if (delivery != null) {
+            try {
+                delivery.close();
+            } catch (RuntimeException unavailable) {
+                getLogger().warning("Bundled Java pack delivery closed with a client removal failure.");
+            }
+        }
     }
 
     static PrototypeLedger.CleanupInspection installNativePreservation(Path directory, PaperItemFreeze freeze,
@@ -128,6 +191,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         if (override != null) override.close();
         if (nativeCatalog != null) nativeCatalog.close();
         if (catalogDispatch != null) catalogDispatch.close();
+        stopJavaPacks();
         if (nativeScheduler != null) nativeScheduler.close();
         if (catalogIo != null) catalogIo.shutdown();
         if (nativeFreeze != null) nativeFreeze.close();
@@ -168,6 +232,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         OwnerDispatch dispatch = catalogDispatch;
         nativeCatalog.reload(request, () -> dispatch.check(() -> authorizedReload(sender, request)))
                 .thenAccept(result -> dispatch.check(() -> {
+                    updateJavaPacks(result);
                     if (authorizedReload(sender, request)) sender.sendMessage(switch (result) {
                         case PUBLISHED -> "Catalog published. Native gameplay remains unavailable.";
                         case REJECTED -> "Catalog reload rejected. Check the file and current permissions.";
@@ -240,7 +305,8 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             }
             case "status" -> {
                 if (!sender.hasPermission("infernolantern.admin.status")) sender.sendMessage("You do not have permission to inspect status.");
-                else if (nativeCatalog != null) sender.sendMessage("Native runtime: " + nativeCatalog.status() + ".");
+                else if (nativeCatalog != null) sender.sendMessage("Native runtime: " + nativeCatalog.status()
+                        + ". Java pack delivery: " + (javaPacks == null ? javaPackStatus : javaPacks.status()) + ".");
                 else sender.sendMessage("Rendering prototype: " + (getConfig().getBoolean("prototype.enabled") ? "enabled" : "disabled")
                         + "; active fixtures=" + prototype.count() + "; cleanup cells=" + prototype.pendingCleanupCells() + prototype.combatStatus() + ". Runtime feasibility evidence pending. Item prototype: " + items.status() + ".");
             }

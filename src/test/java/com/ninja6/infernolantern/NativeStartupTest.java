@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Proxy;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -106,6 +107,16 @@ class NativeStartupTest {
         assertEquals(1, listeners.size());
         assertInstanceOf(PaperItemFreeze.class, listeners.getFirst());
         assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(manifest));
+    }
+
+    @Test void onlyAValidHttpsDownloadUrlCanConfigureJavaDelivery() {
+        URI permitted = URI.create("https://assets.example.invalid/infernolantern-generic-java.zip");
+        assertEquals(permitted, InfernoLanternPlugin.parseJavaPackUrl(permitted.toString()));
+        for (Object invalid : new Object[]{null, 42, "", "http://example.invalid/pack.zip",
+                "https:pack.zip", "https://username@example.invalid/pack.zip",
+                "https://example.invalid/pack.zip#extra", "https://example.invalid:99999/pack.zip"}) {
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackUrl(invalid));
+        }
     }
 
     private static Block block(UUID world, int x) {
