@@ -98,6 +98,9 @@ a texture swap.
 Each edition also has `ember_frame.png`, `frost_frame.png`, and
 `frost_glow.png` beside that path. The frame and glow textures retain their
 original 64 × 64 or 64 × 512 dimensions and non-interlaced 8-bit RGBA layout.
+The Java base and combined archives register those four textures in Minecraft's
+block-model atlas. The Java override relies on the base archive's registration
+and replaces texture files at the same paths.
 The generated Java override puts the original `.png.mcmeta` animation
 sidecar next to each overridden animated glow PNG. Java resolves the metadata
 at the winning texture pack's priority, so the sidecar must travel with

@@ -80,6 +80,27 @@ class ResourcePackTests(unittest.TestCase):
         glow = lambda variant: java[f"assets/infernolantern/textures/generic/{variant}_glow.png"]
         self.assertNotEqual(packs.rgba_png(glow("ember"))[1], packs.rgba_png(glow("frost"))[1])
 
+    def test_java_model_textures_are_registered_in_block_atlas(self):
+        atlas = "assets/minecraft/atlases/blocks.json"
+        base, override, combined = (self.contents("java", name) for name in ("generic", "override", "combined"))
+        self.assertNotIn(atlas, override)
+        for mode, files in (("default", base), ("stacked", base | override), ("combined", combined)):
+            with self.subTest(mode=mode):
+                texture_ids = set()
+                for variant in self.manifest["variants"].values():
+                    for identifier in variant.values():
+                        namespace, stem = identifier.split(":")
+                        model = json.loads(files[f"assets/{namespace}/models/{stem}.json"])
+                        self.assertEqual(model["textures"]["0"], model["textures"]["particle"])
+                        texture_ids.update(model["textures"].values())
+                sources = json.loads(files[atlas])["sources"]
+                self.assertCountEqual(sources, [{"type": "minecraft:single", "resource": resource}
+                                                for resource in texture_ids])
+                self.assertEqual(4, len(texture_ids))
+                for resource in texture_ids:
+                    namespace, path = resource.split(":")
+                    self.assertIn(f"assets/{namespace}/textures/{path}.png", files)
+
     def test_override_priority_and_complete_combined_set(self):
         self.assertEqual({"default": ["generic"], "stacked": ["generic", "override"], "combined": ["combined"]},
                          self.manifest["delivery"])
