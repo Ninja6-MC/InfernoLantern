@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -27,7 +28,10 @@ import static org.junit.jupiter.api.Assertions.*;
 class NativeCatalogRuntimeTest {
     @TempDir Path data;
 
-    private static final URI PACK_URL = URI.create("https://assets.example.invalid/infernolantern-generic-java.zip");
+    private static final String BASE_PACK = "infernolantern-generic-java.zip";
+    private static final String OVERRIDE_PACK = "infernolantern-override-java.zip";
+    private static final URI PACK_URL = URI.create("https://assets.example.invalid/" + BASE_PACK);
+    private static final URI OVERRIDE_URL = URI.create("https://assets.example.invalid/" + OVERRIDE_PACK);
 
     private static final WorldScheduler NO_WORLD = new WorldScheduler() {
         @Override
@@ -85,7 +89,7 @@ class NativeCatalogRuntimeTest {
         try {
             assertEquals(REJECTED, get(runtime.startup()));
             assertEquals("no published catalog for this startup; native gameplay unavailable", runtime.status());
-            assertNull(runtime.javaPack(PACK_URL));
+            assertNull(runtime.javaPack(PACK_URL, null, false));
             assertFalse(Files.exists(data.resolve("item-prototype.db")));
             write(VALID);
             assertEquals(PUBLISHED, get(reload(runtime)));
@@ -179,7 +183,7 @@ class NativeCatalogRuntimeTest {
         var runtime = start("schema: 1\nvariants: {}\n");
         try {
             assertEquals(PUBLISHED, get(runtime.startup()));
-            var pack = runtime.javaPack(PACK_URL);
+            var pack = runtime.javaPack(PACK_URL, null, false);
             pack.availability().requireValid();
             try (var connection = SqliteTestConnections.open(database()); var sql = connection.createStatement()) {
                 sql.execute("CREATE TRIGGER reject_publication BEFORE UPDATE ON catalog_state "
@@ -188,7 +192,7 @@ class NativeCatalogRuntimeTest {
                     write(VALID);
                     assertEquals(UNAVAILABLE, get(reload(runtime)));
                     assertEquals(UNAVAILABLE, get(reload(runtime)));
-                    assertNull(runtime.javaPack(PACK_URL));
+                    assertNull(runtime.javaPack(PACK_URL, null, false));
                     assertThrows(CommitRevoked.class, pack.availability()::requireValid);
                 } finally {
                     sql.execute("DROP TRIGGER reject_publication");
@@ -210,7 +214,7 @@ class NativeCatalogRuntimeTest {
         var runtime = start(VALID);
         try {
             assertEquals(PUBLISHED, get(runtime.startup()));
-            var pack = runtime.javaPack(PACK_URL);
+            var pack = runtime.javaPack(PACK_URL, null, false);
             assertNotNull(pack);
             var plan = pack.plan();
             var download = plan.downloads().getFirst();
@@ -220,21 +224,65 @@ class NativeCatalogRuntimeTest {
             assertEquals(PackPlan.Edition.JAVA, plan.identity().edition());
             assertEquals(2, plan.models().size());
 
-            try (var input = BundledModels.class.getResourceAsStream("/resource-packs/infernolantern-generic-java.zip")) {
-                byte[] bytes = input.readAllBytes();
-                assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
-                        download.archive().sha256());
-                assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(bytes)), download.sha1());
-            }
+            assertDownloadDigests(BASE_PACK, download);
 
             write("schema: 1\nvariants: null\n");
             assertEquals(REJECTED, get(reload(runtime)));
             pack.availability().requireValid();
-            assertEquals(plan, runtime.javaPack(PACK_URL).plan());
+            assertEquals(plan, runtime.javaPack(PACK_URL, null, false).plan());
             get(runtime.stop());
             assertThrows(CommitRevoked.class, pack.availability()::requireValid);
         } finally {
             get(runtime.stop());
+        }
+    }
+
+    @Test void stackedJavaPlanBindsBothVerifiedArchivesInLoadOrderAndRequiredPolicy() throws Exception {
+        var runtime = start(VALID);
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            var plan = runtime.javaPack(PACK_URL, OVERRIDE_URL, true).plan();
+            assertTrue(plan.required());
+            assertEquals(PackPlan.Mode.STACKED, plan.identity().mode());
+            assertEquals(PackPlan.Edition.JAVA, plan.identity().edition());
+            assertEquals(List.of(PackPlan.Slot.BASE, PackPlan.Slot.OVERRIDE),
+                    plan.identity().packs().stream().map(PackPlan.Archive::slot).toList());
+            assertEquals(List.of(PACK_URL, OVERRIDE_URL), plan.downloads().stream().map(PackPlan.Download::uri).toList());
+            assertDownloadDigests(BASE_PACK, plan.downloads().getFirst());
+            assertDownloadDigests(OVERRIDE_PACK, plan.downloads().getLast());
+
+            var defaultRequired = runtime.javaPack(PACK_URL, null, true).plan();
+            assertTrue(defaultRequired.required());
+            assertEquals(PackPlan.Mode.DEFAULT, defaultRequired.identity().mode());
+        } finally {
+            get(runtime.stop());
+        }
+    }
+
+    @Test void tamperedOverrideCanNeverFallBackToRequiredBaseDelivery() throws Exception {
+        write(VALID);
+        var runtime = new NativeCatalogRuntime(data, PrototypeLedger.inspectCleanup(data), Runnable::run, NO_WORLD,
+                () -> BundledModels.load(name -> name.endsWith(OVERRIDE_PACK)
+                        ? new ByteArrayInputStream(new byte[]{1, 2, 3})
+                        : BundledModels.class.getResourceAsStream(name)),
+                () -> SqliteRepository.openCatalogOnly(database(), 4));
+        try {
+            assertEquals(PUBLISHED, get(runtime.startup()));
+            assertNull(runtime.javaPack(PACK_URL, OVERRIDE_URL, true));
+            var defaultPack = runtime.javaPack(PACK_URL, null, false).plan();
+            assertFalse(defaultPack.required());
+            assertEquals(PackPlan.Mode.DEFAULT, defaultPack.identity().mode());
+        } finally {
+            get(runtime.stop());
+        }
+    }
+
+    private static void assertDownloadDigests(String filename, PackPlan.Download download) throws Exception {
+        try (var input = BundledModels.class.getResourceAsStream("/resource-packs/" + filename)) {
+            byte[] bytes = input.readAllBytes();
+            assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+                    download.archive().sha256());
+            assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(bytes)), download.sha1());
         }
     }
 

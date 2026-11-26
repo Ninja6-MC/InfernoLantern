@@ -75,17 +75,42 @@ native-catalog:
     url: "https://assets.example.invalid/infernolantern-generic-java.zip"
 ```
 
-Delivery is off by default. After catalog publication succeeds, the plugin uses
-the verified bundled SHA-1 to offer the pack to connected and joining players.
-Each connection must report a successful load for its own request. Refusal,
-failure, or 1,200 ticks without a successful load yields private feedback and
-no readiness for that connection. The offer is optional, and a new connection
-gets a fresh request. Catalog reload retains the same pack identity. Change the
-URL or delivery mode with a restart.
+Delivery is off by default. Once the catalog publishes, the plugin offers the
+verified bundled archive to connected and joining players. A fresh connection
+gets a fresh request. For the bundled example override, extract
+`resource-packs/infernolantern-override-java.zip` from the same JAR, verify it
+against `SHA256SUMS`, and host it over HTTPS too:
 
-This binding covers only optional delivery of the default bundled Java pack.
-Required delivery, stacked and combined delivery, Geyser session readiness,
-native gameplay, and actual client acceptance remain pending.
+```yaml
+native-catalog:
+  enabled: true
+  java-pack:
+    direct-java-only: true
+    mode: stacked
+    url: "https://assets.example.invalid/infernolantern-generic-java.zip"
+    override-url: "https://assets.example.invalid/infernolantern-override-java.zip"
+    required: false
+```
+
+The plugin sends the base first and the override second in one request. Both
+archive identities are checked, and the current connection must report a
+successful load for both request IDs. If either archive is unverified or a
+required URL is missing or invalid, delivery stays unavailable. The default
+mode uses only `url`; leave `override-url` empty or omit it.
+
+Both modes default to optional delivery. Refusal, failure, or 1,200 ticks
+without a successful load leaves the connection unready and gives private
+feedback. With `required: true`, the server disconnects a client that
+declines, fails, or times out while its offer is active. The client still
+uses the standard optional-pack screen and decline button. The prompt
+explains the server's required policy so a withdrawn offer cannot leave
+the client with a button that disconnects it locally. Catalog reload
+retains the mode, policy and pack identity. Restart to change the delivery
+configuration.
+
+This binding uses the two bundled Java archives. Operator-authored archives,
+combined session readiness, Geyser, and native gameplay are separate
+integration work.
 
 ## Override example
 
@@ -134,8 +159,12 @@ For Java default and stacked delivery, `PaperPackSessions` sends the ordered
 Paper request and accepts successful load reports for every request ID in
 the current connection. It gates model-dependent interaction and returns a
 revocable commit permit. A timeout or terminal refusal/failure leaves the
-permit unavailable. Required delivery kicks with a reason; optional delivery
-reports the failure privately and keeps custom interaction gated.
+permit unavailable. The server enforces required delivery with a kick reason
+while the offer is active. After checking the connection and topology, the
+server admits the action against the catalog's lifetime permit. Revocation
+before admission prevents enforcement. An action admitted first may finish.
+Optional delivery reports the failure privately and keeps custom interaction
+gated.
 
 Server-managed Java combined delivery and all Bedrock modes require explicit
 current-connection readiness for the complete configured identity. For
@@ -148,8 +177,8 @@ Callers should compose this permit with their existing native action fences.
 Java client responses describe what the client reports. They cannot prove that
 a modified client rendered the assets.
 
-The default Java binding registers this adapter after catalog publication using
-the verified bundled plan. Issue #23 remains open for live Java and Bedrock
+The native Java binding registers this adapter after catalog publication using
+the verified bundled default or stacked plan. Issue #23 remains open for live Java and Bedrock
 acceptance.
 Exercise both variants and both stages in all three delivery modes. Check that
 the override takes priority, the combined packs contain the unchanged visuals,

@@ -119,6 +119,29 @@ class NativeStartupTest {
         }
     }
 
+    @Test void bundledJavaDeliveryConfigDefaultsAndRejectsIncompleteOrInvalidChoices() {
+        String base = "https://assets.example.invalid/base.zip";
+        String overlay = "https://assets.example.invalid/override.zip";
+        var defaults = InfernoLanternPlugin.parseJavaPackConfig(base, null, null, null);
+        assertEquals(URI.create(base), defaults.url());
+        assertNull(defaults.overrideUrl());
+        assertFalse(defaults.required());
+        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "default", "", true).required());
+
+        var stacked = InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, true);
+        assertEquals(URI.create(overlay), stacked.overrideUrl());
+        assertTrue(stacked.required());
+
+        for (Object mode : new Object[]{"combined", "stakced", "", false}) {
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, mode, null, null));
+        }
+        for (Object override : new Object[]{null, "", "http://assets.example.invalid/override.zip", base, true}) {
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", override, true));
+        }
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", overlay, false));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, "true"));
+    }
+
     private static Block block(UUID world, int x) {
         World owner = (World) Proxy.newProxyInstance(World.class.getClassLoader(), new Class<?>[]{World.class},
                 (proxy, method, args) -> {

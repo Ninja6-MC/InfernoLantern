@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import static com.ninja6.infernolantern.pack.PackPlan.Edition.BEDROCK;
 import static com.ninja6.infernolantern.pack.PackPlan.Edition.JAVA;
@@ -51,6 +52,7 @@ final class PaperPackSessionsTest {
     private List<Player> online = List.of();
     private Plugin[] installed = {};
     private boolean proxied;
+    private Runnable checkProxy = () -> {};
 
     @BeforeEach void installOwnerThread() throws ReflectiveOperationException {
         server = Bukkit.class.getDeclaredField("server");
@@ -63,8 +65,9 @@ final class PaperPackSessionsTest {
                     case "getOnlinePlayers" -> online;
                     case "getServerConfig" -> Proxy.newProxyInstance(ServerConfiguration.class.getClassLoader(),
                             new Class<?>[]{ServerConfiguration.class}, (config, setting, params) -> {
-                                if (setting.getName().equals("isProxyEnabled")) return proxied;
-                                throw new AssertionError(setting.getName());
+                                if (!setting.getName().equals("isProxyEnabled")) throw new AssertionError(setting.getName());
+                                checkProxy.run();
+                                return proxied;
                             });
                     case "getPluginManager" -> Proxy.newProxyInstance(PluginManager.class.getClassLoader(),
                             new Class<?>[]{PluginManager.class}, (manager, lookup, params) -> {
@@ -105,7 +108,9 @@ final class PaperPackSessionsTest {
         PackPlan plan = pluginPlan(true, true);
         owner.open(client.player, plan);
         assertEquals(1, client.requests.size());
-        assertTrue(client.last().required());
+        assertFalse(client.last().required());
+        assertEquals(Component.text("InfernoLantern requires these packs. Declining or failing to load them "
+                + "disconnects you while this offer is active."), client.last().prompt());
         assertFalse(client.last().replace());
         assertEquals(plan.downloads().stream().map(PackPlan.Download::uri).toList(),
                 client.last().packs().stream().map(ResourcePackInfo::uri).toList());
@@ -300,6 +305,74 @@ final class PaperPackSessionsTest {
         }
     }
 
+    @Test void requiredNativeStackKicksForFailureOnlyWhileDeliveryIsAvailable() {
+        var registered = new ArrayList<Listener>();
+        var timeouts = new ArrayList<Runnable>();
+        var availability = new CommitPermit();
+        PackPlan plan = pluginPlan(true, true);
+        var verified = new JavaPack(plan, availability);
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified, (task, delay) -> timeouts.add(task))) {
+            delivery.start(registered::add);
+            assertEquals("offering the required bundled pack stack", delivery.status());
+            var listener = assertInstanceOf(PaperPackSessions.class, registered.getFirst());
+
+            for (var status : List.of(DECLINED, FAILED_DOWNLOAD)) {
+                Client client = new Client();
+                delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
+                var request = client.last();
+                assertFalse(request.required());
+                assertEquals(plan.downloads().stream().map(PackPlan.Download::uri).toList(),
+                        request.packs().stream().map(ResourcePackInfo::uri).toList());
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getFirst().id(),
+                        SUCCESSFULLY_LOADED));
+                assertNull(delivery.readiness(client.player, EMBER));
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getLast().id(), status));
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getLast().id(), status));
+                listener.status(new PlayerResourcePackStatusEvent(client.player, request.packs().getFirst().id(), FAILED_DOWNLOAD));
+                assertEquals(1, client.kicks.size());
+                assertNull(delivery.readiness(client.player, EMBER));
+                assertTrue(client.messages.isEmpty());
+            }
+
+            Client timedOut = new Client();
+            delivery.join(new PlayerJoinEvent(timedOut.player, Component.empty()));
+            timeouts.getLast().run();
+            timeouts.getLast().run();
+            assertEquals(1, timedOut.kicks.size());
+
+            Client late = new Client();
+            delivery.join(new PlayerJoinEvent(late.player, Component.empty()));
+            Client pending = new Client();
+            delivery.join(new PlayerJoinEvent(pending.player, Component.empty()));
+            availability.revoke();
+            var refusal = new PlayerResourcePackStatusEvent(late.player, late.last().packs().getLast().id(), DECLINED);
+            listener.status(refusal);
+            listener.status(refusal);
+            timeouts.getLast().run();
+            assertTrue(late.kicks.isEmpty());
+            assertTrue(pending.kicks.isEmpty());
+            assertNull(delivery.readiness(late.player, EMBER));
+            assertNull(delivery.readiness(pending.player, EMBER));
+        }
+    }
+
+    @Test void catalogRevocationDuringProxyCheckPreventsRequiredEnforcement() {
+        var listeners = new ArrayList<Listener>();
+        var availability = new CommitPermit();
+        var verified = new JavaPack(pluginPlan(true, true), availability);
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified, (task, delay) -> {})) {
+            delivery.start(listeners::add);
+            Client client = new Client();
+            delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
+            checkProxy = () -> CompletableFuture.runAsync(availability::revoke).join();
+            var listener = assertInstanceOf(PaperPackSessions.class, listeners.getFirst());
+            listener.status(new PlayerResourcePackStatusEvent(client.player, client.last().packs().getFirst().id(), DECLINED));
+            assertThrows(RepositoryException.CommitRevoked.class, availability::requireValid);
+            assertTrue(client.kicks.isEmpty(), () -> "Kick after catalog revocation: " + client.kicks);
+            assertNull(delivery.readiness(client.player, EMBER));
+        }
+    }
+
     @Test void nativeDeliveryBlocksKnownBridgesAndPaperProxyMode() {
         Client client = new Client();
         online = List.of(client.player);
@@ -313,7 +386,7 @@ final class PaperPackSessionsTest {
     }
 
     private void assertNativeDeliveryBlocked(Client client) {
-        var verified = new JavaPack(pluginPlan(false, false), new CommitPermit());
+        var verified = new JavaPack(pluginPlan(true, true), new CommitPermit());
         try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified,
                 (task, delay) -> fail("Blocked topology cannot schedule a pack timeout"))) {
             delivery.start(listener -> fail("Blocked topology cannot register delivery"));
@@ -321,6 +394,7 @@ final class PaperPackSessionsTest {
             assertEquals("blocked by a detected bridge or proxy", delivery.status());
             assertNull(delivery.readiness(client.player, EMBER));
             assertTrue(client.requests.isEmpty());
+            assertTrue(client.kicks.isEmpty());
         }
     }
 

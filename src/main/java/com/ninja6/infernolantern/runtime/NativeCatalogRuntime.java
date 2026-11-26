@@ -80,9 +80,10 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     public CompletableFuture<Result> startup() { return startup; }
 
     /** After publication, reuse the verified bytes and model inventory without filesystem work. */
-    public synchronized JavaPack javaPack(URI url) {
+    public synchronized JavaPack javaPack(URI url, URI overrideUrl, boolean required) {
         if (state != State.PUBLISHED) return null;
-        return new JavaPack(validation.join().javaDefault(url), CommitPermit.allOf(lifetime));
+        var plan = validation.join().javaPlan(url, overrideUrl, required);
+        return plan == null ? null : new JavaPack(plan, CommitPermit.allOf(lifetime));
     }
 
     public CompletableFuture<Result> reload(CommitPermit authority, Supplier<CompletableFuture<Boolean>> recheck) {
