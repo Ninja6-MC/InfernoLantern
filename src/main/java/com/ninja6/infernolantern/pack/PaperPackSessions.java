@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.pack;
 
 import com.ninja6.infernolantern.repository.CommitPermit;
+import com.ninja6.infernolantern.repository.RepositoryException.CommitRevoked;
 import net.kyori.adventure.resource.ResourcePackInfo;
 import net.kyori.adventure.resource.ResourcePackRequest;
 import net.kyori.adventure.text.Component;
@@ -57,15 +58,29 @@ public final class PaperPackSessions implements Listener, AutoCloseable {
     }
 
     private final Map<UUID, Session> players = new HashMap<>();
-    private final BooleanSupplier available;
+    private final BooleanSupplier topologyAllowsDelivery;
+    private final CommitPermit deliveryPermit;
     private boolean closed;
 
     public PaperPackSessions() {
-        this(() -> true);
+        this(() -> true, new CommitPermit());
     }
 
-    PaperPackSessions(BooleanSupplier available) {
-        this.available = available;
+    PaperPackSessions(BooleanSupplier topologyAllowsDelivery, CommitPermit deliveryPermit) {
+        this.topologyAllowsDelivery = topologyAllowsDelivery;
+        this.deliveryPermit = deliveryPermit;
+    }
+
+    boolean admitDelivery() {
+        if (!topologyAllowsDelivery.getAsBoolean() || closed) return false;
+        try {
+            // The native lifetime's volatile read orders admission against background revocation.
+            // An action admitted first may finish. Keep this final check free of Paper callbacks.
+            deliveryPermit.requireValid();
+            return true;
+        } catch (CommitRevoked revoked) {
+            return false;
+        }
     }
 
     /**
@@ -165,21 +180,20 @@ public final class PaperPackSessions implements Listener, AutoCloseable {
 
     private void apply(Session session, Status status) {
         if (session.failed) return;
-        if (!available.getAsBoolean()) {
-            session.revoke();
-            return;
-        }
         if (status == Status.LOADED) {
-            session.ready = true;
+            if (admitDelivery() && !session.failed) session.ready = true;
+            else session.revoke();
             return;
         }
-        session.revoke();
         Component feedback = Component.text(switch (status) {
             case REFUSED -> "InfernoLantern resource packs were declined.";
             case FAILED -> "InfernoLantern resource packs could not be loaded.";
             case MISSING -> "InfernoLantern resource packs are unavailable for this connection.";
             case LOADED -> throw new AssertionError(status);
         });
+        boolean admitted = admitDelivery() && !session.failed;
+        session.revoke();
+        if (!admitted) return;
         if (session.plan.required()) session.player.kick(feedback);
         else session.player.sendMessage(feedback);
     }

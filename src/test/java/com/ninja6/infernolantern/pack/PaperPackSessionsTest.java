@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import static com.ninja6.infernolantern.pack.PackPlan.Edition.BEDROCK;
 import static com.ninja6.infernolantern.pack.PackPlan.Edition.JAVA;
@@ -51,6 +52,7 @@ final class PaperPackSessionsTest {
     private List<Player> online = List.of();
     private Plugin[] installed = {};
     private boolean proxied;
+    private Runnable checkProxy = () -> {};
 
     @BeforeEach void installOwnerThread() throws ReflectiveOperationException {
         server = Bukkit.class.getDeclaredField("server");
@@ -63,8 +65,9 @@ final class PaperPackSessionsTest {
                     case "getOnlinePlayers" -> online;
                     case "getServerConfig" -> Proxy.newProxyInstance(ServerConfiguration.class.getClassLoader(),
                             new Class<?>[]{ServerConfiguration.class}, (config, setting, params) -> {
-                                if (setting.getName().equals("isProxyEnabled")) return proxied;
-                                throw new AssertionError(setting.getName());
+                                if (!setting.getName().equals("isProxyEnabled")) throw new AssertionError(setting.getName());
+                                checkProxy.run();
+                                return proxied;
                             });
                     case "getPluginManager" -> Proxy.newProxyInstance(PluginManager.class.getClassLoader(),
                             new Class<?>[]{PluginManager.class}, (manager, lookup, params) -> {
@@ -350,6 +353,23 @@ final class PaperPackSessionsTest {
             assertTrue(pending.kicks.isEmpty());
             assertNull(delivery.readiness(late.player, EMBER));
             assertNull(delivery.readiness(pending.player, EMBER));
+        }
+    }
+
+    @Test void catalogRevocationDuringProxyCheckPreventsRequiredEnforcement() {
+        var listeners = new ArrayList<Listener>();
+        var availability = new CommitPermit();
+        var verified = new JavaPack(pluginPlan(true, true), availability);
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified, (task, delay) -> {})) {
+            delivery.start(listeners::add);
+            Client client = new Client();
+            delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
+            checkProxy = () -> CompletableFuture.runAsync(availability::revoke).join();
+            var listener = assertInstanceOf(PaperPackSessions.class, listeners.getFirst());
+            listener.status(new PlayerResourcePackStatusEvent(client.player, client.last().packs().getFirst().id(), DECLINED));
+            assertThrows(RepositoryException.CommitRevoked.class, availability::requireValid);
+            assertTrue(client.kicks.isEmpty(), () -> "Kick after catalog revocation: " + client.kicks);
+            assertNull(delivery.readiness(client.player, EMBER));
         }
     }
 

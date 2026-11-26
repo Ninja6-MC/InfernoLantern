@@ -1,7 +1,6 @@
 package com.ninja6.infernolantern.pack;
 
 import com.ninja6.infernolantern.repository.CommitPermit;
-import com.ninja6.infernolantern.repository.RepositoryException.CommitRevoked;
 import com.ninja6.infernolantern.runtime.NativeCatalogRuntime.JavaPack;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
@@ -26,7 +25,7 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     private final Server server;
     private final JavaPack pack;
     private final BiConsumer<Runnable, Long> schedule;
-    private final PaperPackSessions sessions = new PaperPackSessions(this::active);
+    private final PaperPackSessions sessions;
     private boolean started;
     private boolean blocked;
     private boolean closed;
@@ -35,6 +34,7 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
         this.server = server;
         this.pack = pack;
         this.schedule = schedule;
+        sessions = new PaperPackSessions(this::topologyAllowsDelivery, pack.availability());
     }
 
     public void start(Consumer<Listener> register) {
@@ -65,7 +65,7 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     }
 
     private void offer(Player player) {
-        if (!active() || !player.isOnline() || sessions.hasAttempt(player)) return;
+        if (!sessions.admitDelivery() || !player.isOnline() || sessions.hasAttempt(player)) return;
         var attempt = sessions.open(player, pack.plan());
         try {
             schedule.accept(() -> sessions.timedOut(player, attempt), TIMEOUT_TICKS);
@@ -76,27 +76,22 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
 
     /** The gameplay owner must additionally verify permissions, world policy, and other action rules. */
     public CommitPermit readiness(Player player, PackPlan.Models models) {
-        if (!active()) return null;
+        if (!sessions.admitDelivery()) return null;
         var connection = sessions.readiness(player, pack.plan(), models);
         return connection == null ? null : CommitPermit.allOf(connection, pack.availability());
     }
 
-    private boolean active() {
+    private boolean topologyAllowsDelivery() {
         if (!started || closed) return false;
-        try {
-            pack.availability().requireValid();
-        } catch (CommitRevoked unavailable) {
-            return false;
-        }
         if (server.getServerConfig().isProxyEnabled()) {
             block();
             return false;
         }
-        return true;
+        return !closed;
     }
 
     public String status() {
-        if (!active()) return blocked ? "blocked by a detected bridge or proxy" : "unavailable";
+        if (!sessions.admitDelivery()) return blocked ? "blocked by a detected bridge or proxy" : "unavailable";
         String policy = pack.plan().required() ? "required" : "optional";
         String shape = pack.plan().identity().mode() == PackPlan.Mode.STACKED ? "pack stack" : "pack";
         return "offering the " + policy + " bundled " + shape;

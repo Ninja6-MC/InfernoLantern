@@ -160,8 +160,11 @@ Paper request and accepts successful load reports for every request ID in
 the current connection. It gates model-dependent interaction and returns a
 revocable commit permit. A timeout or terminal refusal/failure leaves the
 permit unavailable. The server enforces required delivery with a kick reason
-while the offer is active. Optional delivery reports the failure privately and
-keeps custom interaction gated.
+while the offer is active. After checking the connection and topology, the
+server admits the action against the catalog's lifetime permit. Revocation
+before admission prevents enforcement. An action admitted first may finish.
+Optional delivery reports the failure privately and keeps custom interaction
+gated.
 
 Server-managed Java combined delivery and all Bedrock modes require explicit
 current-connection readiness for the complete configured identity. For
