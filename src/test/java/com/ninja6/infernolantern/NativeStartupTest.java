@@ -122,24 +122,28 @@ class NativeStartupTest {
     @Test void bundledJavaDeliveryConfigDefaultsAndRejectsIncompleteOrInvalidChoices() {
         String base = "https://assets.example.invalid/base.zip";
         String overlay = "https://assets.example.invalid/override.zip";
-        var defaults = InfernoLanternPlugin.parseJavaPackConfig(base, null, null, null);
+        var defaults = InfernoLanternPlugin.parseJavaPackConfig(base, null, null, null, null);
         assertEquals(URI.create(base), defaults.url());
         assertNull(defaults.overrideUrl());
         assertFalse(defaults.required());
-        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "default", "", true).required());
+        assertFalse(defaults.localOverride());
+        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "default", "", true, null).required());
 
-        var stacked = InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, true);
+        var stacked = InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, true, null);
         assertEquals(URI.create(overlay), stacked.overrideUrl());
         assertTrue(stacked.required());
 
         for (Object mode : new Object[]{"combined", "stakced", "", false}) {
-            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, mode, null, null));
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, mode, null, null, null));
         }
         for (Object override : new Object[]{null, "", "http://assets.example.invalid/override.zip", base, true}) {
-            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", override, true));
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", override, true, null));
         }
-        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", overlay, false));
-        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, "true"));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", overlay, false, null));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, "true", null));
+        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, false, true).localOverride());
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", null, false, true));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, false, "true"));
     }
 
     private static Block block(UUID world, int x) {
