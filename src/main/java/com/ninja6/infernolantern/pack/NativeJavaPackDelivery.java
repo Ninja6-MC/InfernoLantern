@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.pack;
 
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.runtime.NativeCatalogRuntime.JavaPack;
+import org.bukkit.Bukkit;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -9,7 +10,12 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerKickEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.server.PluginDisableEvent;
 import org.bukkit.event.server.PluginEnableEvent;
+import org.bukkit.event.server.ServiceRegisterEvent;
+import org.bukkit.event.server.ServiceUnregisterEvent;
 import org.bukkit.plugin.Plugin;
 
 import java.util.Arrays;
@@ -26,15 +32,25 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     private final JavaPack pack;
     private final BiConsumer<Runnable, Long> schedule;
     private final PaperPackSessions sessions;
+    private final CombinedJavaPackReadiness combined;
     private boolean started;
     private boolean blocked;
     private boolean closed;
 
     public NativeJavaPackDelivery(Server server, JavaPack pack, BiConsumer<Runnable, Long> schedule) {
+        this(server, pack, schedule, null);
+    }
+
+    public NativeJavaPackDelivery(Server server, JavaPack pack, BiConsumer<Runnable, Long> schedule, String combinedProvider) {
+        if (pack.plan().identity().pluginDelivered() != (combinedProvider == null)
+                || pack.plan().identity().edition() != PackPlan.Edition.JAVA) {
+            throw new IllegalArgumentException("Invalid native Java pack owner");
+        }
         this.server = server;
         this.pack = pack;
         this.schedule = schedule;
         sessions = new PaperPackSessions(this::topologyAllowsDelivery, pack.availability());
+        combined = combinedProvider == null ? null : new CombinedJavaPackReadiness(server, pack.plan(), combinedProvider);
     }
 
     public void start(Consumer<Listener> register) {
@@ -44,18 +60,51 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
             block();
             return;
         }
-        register.accept(sessions);
+        if (combined == null) register.accept(sessions);
         register.accept(this);
         started = true;
-        List.copyOf(server.getOnlinePlayers()).forEach(this::offer);
+        if (combined == null) List.copyOf(server.getOnlinePlayers()).forEach(this::offer);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
-    public void join(PlayerJoinEvent event) { offer(event.getPlayer()); }
+    public void join(PlayerJoinEvent event) {
+        if (combined != null) combined.joined(event.getPlayer());
+        else offer(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void quit(PlayerQuitEvent event) {
+        if (combined != null) combined.disconnected(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void kick(PlayerKickEvent event) {
+        if (combined != null && !event.isCancelled()) combined.kicking(event.getPlayer());
+    }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void pluginEnabled(PluginEnableEvent event) {
         if (bridge(event.getPlugin())) block();
+        else if (combined != null) combined.pluginEnabled(event.getPlugin());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void pluginDisabling(PluginDisableEvent event) {
+        if (combined != null) combined.pluginDisabling(event.getPlugin());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void serviceRegistered(ServiceRegisterEvent event) {
+        if (combined != null && event.getProvider().getService() == CombinedJavaPackProvider.class) {
+            combined.serviceChanged(event.getProvider(), false);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void serviceUnregistered(ServiceUnregisterEvent event) {
+        if (combined != null && event.getProvider().getService() == CombinedJavaPackProvider.class) {
+            combined.serviceChanged(event.getProvider(), true);
+        }
     }
 
     private static boolean bridge(Plugin plugin) {
@@ -76,6 +125,10 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
 
     /** The gameplay owner must additionally verify permissions, world policy, and other action rules. */
     public CommitPermit readiness(Player player, PackPlan.Models models) {
+        if (combined != null) {
+            if (!Bukkit.isPrimaryThread()) throw new IllegalStateException("Paper owning thread required");
+            return combined.readiness(player, models, sessions::admitDelivery, pack.availability());
+        }
         if (!sessions.admitDelivery()) return null;
         var connection = sessions.readiness(player, pack.plan(), models);
         return connection == null ? null : CommitPermit.allOf(connection, pack.availability());
@@ -91,7 +144,9 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
     }
 
     public String status() {
+        if (combined != null && !Bukkit.isPrimaryThread()) throw new IllegalStateException("Paper owning thread required");
         if (!sessions.admitDelivery()) return blocked ? "blocked by a detected bridge or proxy" : "unavailable";
+        if (combined != null) return combined.status(sessions::admitDelivery, pack.availability());
         String policy = pack.plan().required() ? "required" : "optional";
         String shape = pack.plan().identity().mode() == PackPlan.Mode.STACKED ? "pack stack" : "pack";
         if (pack.localOverride()) return "offering the " + policy + " pack stack with a local override";
@@ -108,7 +163,8 @@ public final class NativeJavaPackDelivery implements Listener, AutoCloseable {
         if (closed) return;
         closed = true;
         HandlerList.unregisterAll(this);
-        HandlerList.unregisterAll(sessions);
+        if (combined != null) combined.close();
+        else HandlerList.unregisterAll(sessions);
         sessions.close();
     }
 }

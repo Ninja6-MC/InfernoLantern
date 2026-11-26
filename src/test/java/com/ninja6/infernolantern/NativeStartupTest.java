@@ -122,28 +122,53 @@ class NativeStartupTest {
     @Test void bundledJavaDeliveryConfigDefaultsAndRejectsIncompleteOrInvalidChoices() {
         String base = "https://assets.example.invalid/base.zip";
         String overlay = "https://assets.example.invalid/override.zip";
-        var defaults = InfernoLanternPlugin.parseJavaPackConfig(base, null, null, null, null);
+        var defaults = InfernoLanternPlugin.parseJavaPackConfig(base, null, null, null, null, null);
         assertEquals(URI.create(base), defaults.url());
         assertNull(defaults.overrideUrl());
         assertFalse(defaults.required());
         assertFalse(defaults.localOverride());
-        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "default", "", true, null).required());
+        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "default", "", true, null, null).required());
 
-        var stacked = InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, true, null);
+        var stacked = InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, true, null, null);
         assertEquals(URI.create(overlay), stacked.overrideUrl());
         assertTrue(stacked.required());
 
         for (Object mode : new Object[]{"combined", "stakced", "", false}) {
-            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, mode, null, null, null));
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, mode, null, null, null, null));
         }
         for (Object override : new Object[]{null, "", "http://assets.example.invalid/override.zip", base, true}) {
-            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", override, true, null));
+            assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", override, true, null, null));
         }
-        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", overlay, false, null));
-        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, "true", null));
-        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, false, true).localOverride());
-        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", null, false, true));
-        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, false, "true"));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", overlay, false, null, null));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, "true", null, null));
+        assertTrue(InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, false, true, null).localOverride());
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "default", null, false, true, null));
+        assertThrows(IllegalArgumentException.class, () -> InfernoLanternPlugin.parseJavaPackConfig(base, "stacked", overlay, false, "true", null));
+    }
+
+    @Test void combinedModeRequiresOnlyTheExactProviderName() {
+        var selected = InfernoLanternPlugin.parseJavaPackConfig("", "combined", "", false, false, "PackOwner-1");
+        assertEquals("PackOwner-1", selected.combinedProvider());
+        assertNull(selected.url());
+        assertNull(selected.overrideUrl());
+        assertFalse(selected.required());
+        assertFalse(selected.localOverride());
+
+        for (Object provider : new Object[]{null, "", false, " Owner", "a/b"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> InfernoLanternPlugin.parseJavaPackConfig("", "combined", "", false, false, provider));
+        }
+        String url = "https://assets.example.invalid/pack.zip";
+        assertThrows(IllegalArgumentException.class,
+                () -> InfernoLanternPlugin.parseJavaPackConfig(url, "combined", "", false, false, "PackOwner"));
+        assertThrows(IllegalArgumentException.class,
+                () -> InfernoLanternPlugin.parseJavaPackConfig("", "combined", url, false, false, "PackOwner"));
+        assertThrows(IllegalArgumentException.class,
+                () -> InfernoLanternPlugin.parseJavaPackConfig("", "combined", "", true, false, "PackOwner"));
+        assertThrows(IllegalArgumentException.class,
+                () -> InfernoLanternPlugin.parseJavaPackConfig("", "combined", "", false, true, "PackOwner"));
+        assertThrows(IllegalArgumentException.class,
+                () -> InfernoLanternPlugin.parseJavaPackConfig(url, "default", "", false, false, "PackOwner"));
     }
 
     private static Block block(UUID world, int x) {

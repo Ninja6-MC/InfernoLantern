@@ -108,8 +108,8 @@ the client with a button that disconnects it locally. Catalog reload
 retains the mode, policy and pack identity. Restart to change the delivery
 configuration.
 
-Combined session readiness, Geyser, and native gameplay are separate
-integration work.
+Combined Java uses a separate server-managed delivery owner. Geyser and native
+gameplay are separate integration work.
 
 ## Override example
 
@@ -168,6 +168,50 @@ Keep any branding artwork and its licensing with the administrator-managed
 pack. For model overrides, preserve the documented identifiers and verify each
 platform's complete reference set before publishing a new asset identity.
 
+## Enable server-managed combined Java readiness
+
+On a direct Java-only Paper server, select the bundled combined archive and
+name the installed delivery owner in `config.yml`. Restart to apply the mode
+and provider settings.
+
+```yaml
+native-catalog:
+  enabled: true
+  java-pack:
+    direct-java-only: true
+    mode: combined
+    combined-provider: CombinedPackOwner
+```
+
+Leave `url` and `override-url` empty and `required` and `local-override` false.
+The configured plugin owns delivery of the exact bundled
+`infernolantern-combined-java.zip`, including any required-pack enforcement,
+timeouts and private failure messages. InfernoLantern issues no pack request
+in this mode. Combined readiness stays unavailable if the named plugin is
+missing, disabled, registered more than once, or reports a stale or different
+archive. Current integration supports the exact bundled combined archive.
+
+The delivery owner declares a plugin dependency on InfernoLantern and
+registers `com.ninja6.infernolantern.pack.CombinedJavaPackProvider` in Paper's
+`ServicesManager` under its own plugin instance. The configured name matches
+the owner's plugin name exactly. Its `observe` method runs on the Paper
+primary thread and must return promptly. Return `null` while pending. A
+successful receipt must match the same current `Player` object, the independently
+verified SHA-256 of the served archive, and terminal success for that owner's
+request. The expected identity supplied to the method helps select the request;
+the owner must establish the actual identity from the loaded delivery. Keep
+the receipt permit stable and revoke it before withdrawal, replacement,
+disconnect, or provider shutdown. A fresh request needs a fresh permit.
+The connection must stay active through observation. An accepted kick fences
+that connection before the quit event.
+
+Paper's `server.properties` pack and generic player pack status can deliver or
+describe a pack, but lack the exact request receipt needed here. An owner can
+observe exact request-scoped callbacks and terminal status for its own request.
+An initial unscoped status, configuration flag, or download progress cannot
+grant readiness. `/infernolantern status` shows the number of ready connections
+in a sample of up to 128 online players. The status scan runs only on request.
+
 ## Readiness and client acceptance
 
 `PackPlan` describes a validated artifact set. The deployment binding verifies
@@ -195,8 +239,8 @@ Callers should compose this permit with their existing native action fences.
 Java client responses describe what the client reports. They cannot prove that
 a modified client rendered the assets.
 
-The native Java binding registers this adapter after catalog publication using
-the verified bundled default or stacked plan. Issue #23 remains open for live Java and Bedrock
+The native Java binding starts after catalog publication using the selected
+verified plan. Issue #23 remains open for live Java and Bedrock
 acceptance.
 Exercise both variants and both stages in all three delivery modes. Check that
 the override takes priority, the combined packs contain the unchanged visuals,

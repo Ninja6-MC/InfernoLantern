@@ -105,17 +105,19 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         try {
             javaPackConfig = parseJavaPackConfig(getConfig().get(JAVA_PACK_CONFIG + "url"),
                     getConfig().get(JAVA_PACK_CONFIG + "mode"), getConfig().get(JAVA_PACK_CONFIG + "override-url"),
-                    getConfig().get(JAVA_PACK_CONFIG + "required"), getConfig().get(JAVA_PACK_CONFIG + "local-override"));
+                    getConfig().get(JAVA_PACK_CONFIG + "required"), getConfig().get(JAVA_PACK_CONFIG + "local-override"),
+                    getConfig().get(JAVA_PACK_CONFIG + "combined-provider"));
             javaPackStatus = "waiting for catalog publication";
         } catch (IllegalArgumentException invalid) {
             javaPackStatus = "configuration rejected";
-            getLogger().warning("Java pack delivery configuration rejected. Check the mode, HTTPS URLs, and pack flags.");
+            getLogger().warning("Java pack delivery configuration rejected. Check the mode, HTTPS URLs, pack flags, and provider.");
         }
     }
 
-    record JavaPackConfig(URI url, URI overrideUrl, boolean required, boolean localOverride) {}
+    record JavaPackConfig(URI url, URI overrideUrl, boolean required, boolean localOverride, String combinedProvider) {}
 
-    static JavaPackConfig parseJavaPackConfig(Object url, Object mode, Object overrideUrl, Object required, Object localOverride) {
+    static JavaPackConfig parseJavaPackConfig(Object url, Object mode, Object overrideUrl, Object required,
+            Object localOverride, Object combinedProvider) {
         if (required != null && !(required instanceof Boolean)) {
             throw new IllegalArgumentException("Java pack required flag must be a boolean");
         }
@@ -123,9 +125,17 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             throw new IllegalArgumentException("Local Java override flag must be a boolean");
         }
         boolean local = Boolean.TRUE.equals(localOverride);
+        if ("combined".equals(mode)) {
+            if (configured(url) || configured(overrideUrl) || Boolean.TRUE.equals(required) || local
+                    || !(combinedProvider instanceof String name) || !name.matches("[A-Za-z0-9_.-]{1,64}")) {
+                throw new IllegalArgumentException("Combined Java packs require only an exact external provider name");
+            }
+            return new JavaPackConfig(null, null, false, false, name);
+        }
+        if (configured(combinedProvider)) throw new IllegalArgumentException("A combined provider requires combined mode");
         URI override;
         if (mode == null || "default".equals(mode)) {
-            if (local || (overrideUrl != null && !"".equals(overrideUrl))) {
+            if (local || configured(overrideUrl)) {
                 throw new IllegalArgumentException("A Java pack override requires stacked mode");
             }
             override = null;
@@ -136,7 +146,11 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         }
         URI base = parseJavaPackUrl(url);
         if (base.equals(override)) throw new IllegalArgumentException("Stacked pack URLs must be distinct");
-        return new JavaPackConfig(base, override, Boolean.TRUE.equals(required), local);
+        return new JavaPackConfig(base, override, Boolean.TRUE.equals(required), local, null);
+    }
+
+    private static boolean configured(Object value) {
+        return value != null && !"".equals(value);
     }
 
     static URI parseJavaPackUrl(Object raw) {
@@ -155,7 +169,10 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             javaPackStatus = "catalog unavailable";
             stopJavaPacks();
         } else if (result == NativeCatalogRuntime.Result.PUBLISHED && javaPacks == null) {
-            var pack = nativeCatalog.javaPack(javaPackConfig.url(), javaPackConfig.overrideUrl(), javaPackConfig.required());
+            String provider = javaPackConfig.combinedProvider();
+            var pack = provider == null
+                    ? nativeCatalog.javaPack(javaPackConfig.url(), javaPackConfig.overrideUrl(), javaPackConfig.required())
+                    : nativeCatalog.javaCombinedPack();
             if (pack == null) {
                 javaPackStatus = javaPackConfig.localOverride()
                         ? "local override unavailable or rejected; check the generated archive and restart"
@@ -163,7 +180,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
                 return;
             }
             javaPacks = new NativeJavaPackDelivery(getServer(), pack,
-                    (task, delay) -> getServer().getScheduler().runTaskLater(this, task, delay));
+                    (task, delay) -> getServer().getScheduler().runTaskLater(this, task, delay), provider);
             try {
                 javaPacks.start(listener -> getServer().getPluginManager().registerEvents(listener, this));
             } catch (RuntimeException unavailable) {

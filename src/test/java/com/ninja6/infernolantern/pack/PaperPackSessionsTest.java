@@ -12,11 +12,18 @@ import org.bukkit.Server;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerResourcePackStatusEvent;
+import org.bukkit.event.server.PluginDisableEvent;
 import org.bukkit.event.server.PluginEnableEvent;
+import org.bukkit.event.server.ServiceRegisterEvent;
+import org.bukkit.event.server.ServiceUnregisterEvent;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.PluginManager;
+import org.bukkit.plugin.RegisteredServiceProvider;
+import org.bukkit.plugin.ServicePriority;
+import org.bukkit.plugin.ServicesManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +58,7 @@ final class PaperPackSessionsTest {
     private final PaperPackSessions owner = new PaperPackSessions();
     private List<Player> online = List.of();
     private Plugin[] installed = {};
+    private List<RegisteredServiceProvider<CombinedJavaPackProvider>> services = List.of();
     private boolean proxied;
     private Runnable checkProxy = () -> {};
 
@@ -63,6 +71,14 @@ final class PaperPackSessionsTest {
                 (proxy, method, arguments) -> switch (method.getName()) {
                     case "isPrimaryThread" -> Thread.currentThread() == thread;
                     case "getOnlinePlayers" -> online;
+                    case "getPlayer" -> online.stream().filter(p -> p.getUniqueId().equals(arguments[0])).findFirst().orElse(null);
+                    case "getServicesManager" -> Proxy.newProxyInstance(ServicesManager.class.getClassLoader(),
+                            new Class<?>[]{ServicesManager.class}, (manager, lookup, params) -> {
+                                if (lookup.getName().equals("getRegistrations") && params[0] == CombinedJavaPackProvider.class) {
+                                    return services;
+                                }
+                                throw new AssertionError(lookup.getName());
+                            });
                     case "getServerConfig" -> Proxy.newProxyInstance(ServerConfiguration.class.getClassLoader(),
                             new Class<?>[]{ServerConfiguration.class}, (config, setting, params) -> {
                                 if (!setting.getName().equals("isProxyEnabled")) throw new AssertionError(setting.getName());
@@ -72,6 +88,10 @@ final class PaperPackSessionsTest {
                     case "getPluginManager" -> Proxy.newProxyInstance(PluginManager.class.getClassLoader(),
                             new Class<?>[]{PluginManager.class}, (manager, lookup, params) -> {
                                 if (lookup.getName().equals("getPlugins")) return installed;
+                                if (lookup.getName().equals("getPlugin")) {
+                                    return java.util.Arrays.stream(installed).filter(plugin -> plugin.getName().equals(params[0]))
+                                            .findFirst().orElse(null);
+                                }
                                 throw new AssertionError(lookup.getName());
                             });
                     default -> throw new AssertionError(method.getName());
@@ -426,8 +446,244 @@ final class PaperPackSessionsTest {
         return (Plugin) Proxy.newProxyInstance(Plugin.class.getClassLoader(), new Class<?>[]{Plugin.class},
                 (proxy, method, args) -> {
                     if (method.getName().equals("getName")) return name;
+                    if (method.getName().equals("isEnabled")) return true;
                     throw new AssertionError(method.getName());
                 });
+    }
+
+    @Test void nativeCombinedObservesOnlyExactCurrentReceiptsFromItsConfiguredOwner() {
+        var client = new Client();
+        online = List.of(client.player);
+        var installedOwner = plugin("PackOwner");
+        var other = plugin("OtherOwner");
+        installed = new Plugin[]{installedOwner, other};
+        var plan = combinedPlan();
+        var lifetime = new CommitPermit();
+        var receiptPermit = new CommitPermit();
+        var observed = new java.util.concurrent.atomic.AtomicReference<CombinedJavaPackProvider.Receipt>();
+        var registration = registration(installedOwner, (player, expected) -> {
+            assertSame(client.player, player);
+            assertEquals(plan.identity(), expected);
+            return observed.get();
+        });
+        services = List.of(registration(other, (player, expected) -> fail("Unconfigured provider was called")));
+
+        try (var delivery = combinedDelivery(plan, lifetime)) {
+            var registered = new ArrayList<Listener>();
+            delivery.start(registered::add);
+            assertEquals(List.of(delivery), registered);
+            assertEquals("combined pack provider unavailable", delivery.status());
+            assertNull(delivery.readiness(client.player, EMBER));
+            services = List.of(services.getFirst(), registration);
+            delivery.serviceRegistered(new ServiceRegisterEvent(registration));
+            assertEquals("observing the server-managed combined pack (0/1 checked connections ready)", delivery.status());
+
+            delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
+            observed.set(new CombinedJavaPackProvider.Receipt(new Client(client.id).player, plan.identity(),
+                    PaperPackSessions.Status.LOADED, receiptPermit));
+            assertNull(delivery.readiness(client.player, EMBER));
+            observed.set(new CombinedJavaPackProvider.Receipt(client.player, pluginPlan(false, false).identity(),
+                    PaperPackSessions.Status.LOADED, receiptPermit));
+            assertNull(delivery.readiness(client.player, EMBER));
+            observed.set(new CombinedJavaPackProvider.Receipt(client.player, plan.identity(),
+                    PaperPackSessions.Status.REFUSED, receiptPermit));
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertTrue(client.messages.isEmpty());
+            assertTrue(client.kicks.isEmpty());
+
+            observed.set(new CombinedJavaPackProvider.Receipt(client.player, plan.identity(),
+                    PaperPackSessions.Status.LOADED, receiptPermit));
+            var grant = delivery.readiness(client.player, EMBER);
+            assertNotNull(grant);
+            assertNull(delivery.readiness(client.player, FROST));
+            assertEquals("observing the server-managed combined pack (1/1 checked connections ready)", delivery.status());
+            receiptPermit.revoke();
+            assertThrows(RepositoryException.CommitRevoked.class, grant::requireValid);
+            assertNull(delivery.readiness(client.player, EMBER));
+
+            observed.set(new CombinedJavaPackProvider.Receipt(client.player, plan.identity(),
+                    PaperPackSessions.Status.LOADED, new CommitPermit()));
+            var lastGrant = delivery.readiness(client.player, EMBER);
+            assertNotNull(lastGrant);
+            lifetime.revoke();
+            assertThrows(RepositoryException.CommitRevoked.class, lastGrant::requireValid);
+            assertNull(delivery.readiness(client.player, EMBER));
+        }
+        assertTrue(client.requests.isEmpty());
+        assertTrue(client.removed.isEmpty());
+    }
+
+    @Test void nativeCombinedRevokesOnProviderLifecycleAndDisconnect() {
+        var client = new Client();
+        var rejoined = new Client(client.id);
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var selected = registration(ownerPlugin, (player, expected) ->
+                new CombinedJavaPackProvider.Receipt(player, expected, PaperPackSessions.Status.LOADED, new CommitPermit()));
+        services = List.of(selected);
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var previous = delivery.readiness(client.player, EMBER);
+            assertNotNull(previous);
+            var duplicate = registration(ownerPlugin, selected.getProvider());
+            services = List.of(selected, duplicate);
+            delivery.serviceRegistered(new ServiceRegisterEvent(duplicate));
+            assertThrows(RepositoryException.CommitRevoked.class, previous::requireValid);
+            assertNull(delivery.readiness(client.player, EMBER));
+
+            services = List.of(selected);
+            delivery.serviceUnregistered(new ServiceUnregisterEvent(duplicate));
+            var beforeDisable = delivery.readiness(client.player, EMBER);
+            assertNotNull(beforeDisable);
+            delivery.pluginDisabling(new PluginDisableEvent(ownerPlugin));
+            assertThrows(RepositoryException.CommitRevoked.class, beforeDisable::requireValid);
+            assertNull(delivery.readiness(client.player, EMBER));
+
+            delivery.pluginEnabled(new PluginEnableEvent(ownerPlugin));
+            var beforeQuit = delivery.readiness(client.player, EMBER);
+            assertNotNull(beforeQuit);
+            delivery.quit(new PlayerQuitEvent(client.player, Component.empty(), PlayerQuitEvent.QuitReason.DISCONNECTED));
+            assertThrows(RepositoryException.CommitRevoked.class, beforeQuit::requireValid);
+            online = List.of(rejoined.player);
+            delivery.join(new PlayerJoinEvent(rejoined.player, Component.empty()));
+            assertNull(delivery.readiness(client.player, EMBER));
+            var beforeReplacement = delivery.readiness(rejoined.player, EMBER);
+            assertNotNull(beforeReplacement);
+            services = List.of();
+            delivery.serviceUnregistered(new ServiceUnregisterEvent(selected));
+            assertThrows(RepositoryException.CommitRevoked.class, beforeReplacement::requireValid);
+            assertNull(delivery.readiness(rejoined.player, EMBER));
+        }
+    }
+
+    @Test void nativeCombinedCannotReadmitAQuitConnectionStillInTheOnlineRegistry() {
+        var client = new Client();
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var observations = new java.util.concurrent.atomic.AtomicInteger();
+        var receipt = new CombinedJavaPackProvider.Receipt(client.player, plan.identity(), PaperPackSessions.Status.LOADED,
+                new CommitPermit());
+        services = List.of(registration(ownerPlugin, (player, expected) -> {
+            observations.incrementAndGet();
+            return receipt;
+        }));
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var grant = delivery.readiness(client.player, EMBER);
+            assertNotNull(grant);
+
+            client.connected = false;
+            delivery.quit(new PlayerQuitEvent(client.player, Component.empty(), PlayerQuitEvent.QuitReason.DISCONNECTED));
+            assertThrows(RepositoryException.CommitRevoked.class, grant::requireValid);
+            assertTrue(client.player.isOnline());
+            assertSame(client.player, Bukkit.getServer().getPlayer(client.id));
+            assertEquals("observing the server-managed combined pack (0/1 checked connections ready)", delivery.status());
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertEquals(1, observations.get());
+        }
+    }
+
+    @Test void nativeCombinedRejectsReceiptWhenTheConnectionClosesDuringObservation() {
+        var client = new Client();
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var receipts = new java.util.concurrent.atomic.AtomicInteger();
+        var receipt = new CombinedJavaPackProvider.Receipt(client.player, plan.identity(), PaperPackSessions.Status.LOADED,
+                new CommitPermit());
+        services = List.of(registration(ownerPlugin, (player, expected) -> {
+            if (receipts.incrementAndGet() == 2) client.connected = false;
+            return receipt;
+        }));
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var beforeClose = delivery.readiness(client.player, EMBER);
+            assertNotNull(beforeClose);
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertThrows(RepositoryException.CommitRevoked.class, beforeClose::requireValid);
+            assertTrue(client.player.isOnline());
+        }
+    }
+
+    @Test void nativeCombinedOnlyFencesTheExactConnectionOfAnAcceptedKick() {
+        var client = new Client();
+        var rejoined = new Client(client.id);
+        online = List.of(client.player);
+        var ownerPlugin = plugin("PackOwner");
+        installed = new Plugin[]{ownerPlugin};
+        var plan = combinedPlan();
+        var oldPermit = new CommitPermit();
+        var newPermit = new CommitPermit();
+        services = List.of(registration(ownerPlugin, (player, expected) -> new CombinedJavaPackProvider.Receipt(
+                player, expected, PaperPackSessions.Status.LOADED, player == client.player ? oldPermit : newPermit)));
+
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            delivery.start(listener -> {});
+            var grant = delivery.readiness(client.player, EMBER);
+            assertNotNull(grant);
+            var event = new PlayerKickEvent(client.player, Component.empty(), Component.empty(), PlayerKickEvent.Cause.UNKNOWN);
+            event.setCancelled(true);
+            delivery.kick(event);
+            grant.requireValid();
+            assertSame(grant, delivery.readiness(client.player, EMBER));
+
+            event.setCancelled(false);
+            delivery.kick(event);
+            assertThrows(RepositoryException.CommitRevoked.class, grant::requireValid);
+            assertTrue(client.player.isConnected());
+            assertNull(delivery.readiness(client.player, EMBER));
+
+            online = List.of(rejoined.player);
+            delivery.join(new PlayerJoinEvent(rejoined.player, Component.empty()));
+            var rejoinedGrant = delivery.readiness(rejoined.player, EMBER);
+            assertNotNull(rejoinedGrant);
+            client.connected = false;
+            delivery.quit(new PlayerQuitEvent(client.player, Component.empty(), PlayerQuitEvent.QuitReason.KICKED));
+            rejoinedGrant.requireValid();
+            assertSame(rejoinedGrant, delivery.readiness(rejoined.player, EMBER));
+        }
+    }
+
+    @Test void nativeCombinedDiscardsObservationIfProviderUnregistersDuringCallback() {
+        var client = new Client();
+        online = List.of(client.player);
+        var installedOwner = plugin("PackOwner");
+        installed = new Plugin[]{installedOwner};
+        var plan = combinedPlan();
+        try (var delivery = combinedDelivery(plan, new CommitPermit())) {
+            var selected = registration(installedOwner, (player, expected) -> {
+                var registration = services.getFirst();
+                services = List.of();
+                delivery.serviceUnregistered(new ServiceUnregisterEvent(registration));
+                assertNull(delivery.readiness(player, EMBER));
+                return new CombinedJavaPackProvider.Receipt(player, expected, PaperPackSessions.Status.LOADED, new CommitPermit());
+            });
+            services = List.of(selected);
+            delivery.start(listener -> {});
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertEquals("combined pack provider unavailable", delivery.status());
+        }
+    }
+
+    private static NativeJavaPackDelivery combinedDelivery(PackPlan plan, CommitPermit lifetime) {
+        return new NativeJavaPackDelivery(Bukkit.getServer(), new JavaPack(plan, lifetime),
+                (task, delay) -> fail("Combined delivery scheduled a timeout"), "PackOwner");
+    }
+
+    private static PackPlan combinedPlan() {
+        return new PackPlan(new PackPlan.Identity(JAVA, COMBINED, List.of(MERGED), null), Set.of(EMBER), List.of(), false);
+    }
+
+    private static RegisteredServiceProvider<CombinedJavaPackProvider> registration(Plugin owner, CombinedJavaPackProvider provider) {
+        return new RegisteredServiceProvider<>(CombinedJavaPackProvider.class, provider, ServicePriority.Normal, owner);
     }
 
     @Test void incompleteCombinedAndReversedStackAreRejected() {
@@ -451,6 +707,7 @@ final class PaperPackSessionsTest {
         final List<Component> messages = new ArrayList<>();
         final List<List<?>> removed = new ArrayList<>();
         final Player player;
+        boolean connected = true;
 
         Client() {
             this(UUID.randomUUID());
@@ -462,6 +719,7 @@ final class PaperPackSessionsTest {
                     (proxy, method, arguments) -> switch (method.getName()) {
                         case "getUniqueId" -> id;
                         case "isOnline" -> true;
+                        case "isConnected" -> connected;
                         case "sendResourcePacks" -> {
                             requests.add((ResourcePackRequest) arguments[0]);
                             yield null;
