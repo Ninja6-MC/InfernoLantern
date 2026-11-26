@@ -1,6 +1,7 @@
 package com.ninja6.infernolantern.runtime;
 
 import com.ninja6.infernolantern.catalog.CatalogService;
+import com.ninja6.infernolantern.pack.PackPlan;
 import com.ninja6.infernolantern.prototype.PrototypeLedger.CleanupInspection;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
@@ -8,6 +9,7 @@ import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -24,6 +26,8 @@ import java.util.function.Supplier;
 /** Owns one catalog-only native store and serializes startup and reload. */
 public final class NativeCatalogRuntime implements AutoCloseable {
     public enum Result { PUBLISHED, REJECTED, UNAVAILABLE, BUSY }
+
+    public record JavaPack(PackPlan plan, CommitPermit availability) {}
     private enum State { OPENING, CLEANUP_BLOCKED, UNAVAILABLE, UNPUBLISHED, PUBLISHED, CLOSED }
     private static final int MAX_CATALOG_BYTES = 1_048_576;
     private static final int QUEUE_CAPACITY = 64;
@@ -33,6 +37,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     private final Executor io;
     private final CommitPermit lifetime = new CommitPermit();
     private final AtomicBoolean busy = new AtomicBoolean(true);
+    private final CompletableFuture<BundledModels> validation;
     private final CompletableFuture<SqliteRepository> opening;
     private final CompletableFuture<CatalogService> service;
     private final CompletableFuture<Result> startup;
@@ -44,11 +49,11 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     }
 
     NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
-            Supplier<CatalogService.DefinitionValidator> models, Supplier<CompletableFuture<SqliteRepository>> open) {
+            Supplier<BundledModels> models, Supplier<CompletableFuture<SqliteRepository>> open) {
         config = Objects.requireNonNull(directory).resolve("catalog.yml");
         this.cleanup = Objects.requireNonNull(cleanup);
         this.io = Objects.requireNonNull(io);
-        CompletableFuture<CatalogService.DefinitionValidator> validation = CompletableFuture.supplyAsync(() -> {
+        validation = CompletableFuture.supplyAsync(() -> {
             lifetime.requireValid();
             if (!cleanup.complete()) {
                 setState(State.CLEANUP_BLOCKED);
@@ -73,6 +78,12 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     }
 
     public CompletableFuture<Result> startup() { return startup; }
+
+    /** After publication, reuse the verified bytes and model inventory without filesystem work. */
+    public synchronized JavaPack javaPack(URI url) {
+        if (state != State.PUBLISHED) return null;
+        return new JavaPack(validation.join().javaDefault(url), CommitPermit.allOf(lifetime));
+    }
 
     public CompletableFuture<Result> reload(CommitPermit authority, Supplier<CompletableFuture<Boolean>> recheck) {
         if (state == State.CLOSED || state == State.UNAVAILABLE || state == State.CLEANUP_BLOCKED) {
@@ -157,6 +168,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
 
     private synchronized boolean setState(State next) {
         if (state == State.CLOSED) return false;
+        if (next == State.UNAVAILABLE) lifetime.revoke();
         state = next;
         return true;
     }

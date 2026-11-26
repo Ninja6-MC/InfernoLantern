@@ -1,6 +1,11 @@
 # Select this mode at startup. It publishes catalog.yml and keeps gameplay unavailable.
 native-catalog:
   enabled: false
+  java-pack:
+    # Enable only on a direct Java-only server with no bridge or proxy, including a remote one.
+    direct-java-only: false
+    # Host the exact bundled infernolantern-generic-java.zip archive over HTTPS.
+    url: ""
 
 # Disposable rendering fixtures.
 prototype:

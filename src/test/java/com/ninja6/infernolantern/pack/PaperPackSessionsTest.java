@@ -1,14 +1,22 @@
 package com.ninja6.infernolantern.pack;
 
+import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
+import com.ninja6.infernolantern.runtime.NativeCatalogRuntime.JavaPack;
+import io.papermc.paper.configuration.ServerConfiguration;
 import net.kyori.adventure.resource.ResourcePackInfo;
 import net.kyori.adventure.resource.ResourcePackRequest;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerResourcePackStatusEvent;
+import org.bukkit.event.server.PluginEnableEvent;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.PluginManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,6 +48,9 @@ final class PaperPackSessionsTest {
     private Field server;
     private Object oldServer;
     private final PaperPackSessions owner = new PaperPackSessions();
+    private List<Player> online = List.of();
+    private Plugin[] installed = {};
+    private boolean proxied;
 
     @BeforeEach void installOwnerThread() throws ReflectiveOperationException {
         server = Bukkit.class.getDeclaredField("server");
@@ -47,9 +58,20 @@ final class PaperPackSessionsTest {
         oldServer = server.get(null);
         Thread thread = Thread.currentThread();
         server.set(null, Proxy.newProxyInstance(Server.class.getClassLoader(), new Class<?>[]{Server.class},
-                (proxy, method, arguments) -> {
-                    if (method.getName().equals("isPrimaryThread")) return Thread.currentThread() == thread;
-                    throw new AssertionError(method.getName());
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "isPrimaryThread" -> Thread.currentThread() == thread;
+                    case "getOnlinePlayers" -> online;
+                    case "getServerConfig" -> Proxy.newProxyInstance(ServerConfiguration.class.getClassLoader(),
+                            new Class<?>[]{ServerConfiguration.class}, (config, setting, params) -> {
+                                if (setting.getName().equals("isProxyEnabled")) return proxied;
+                                throw new AssertionError(setting.getName());
+                            });
+                    case "getPluginManager" -> Proxy.newProxyInstance(PluginManager.class.getClassLoader(),
+                            new Class<?>[]{PluginManager.class}, (manager, lookup, params) -> {
+                                if (lookup.getName().equals("getPlugins")) return installed;
+                                throw new AssertionError(lookup.getName());
+                            });
+                    default -> throw new AssertionError(method.getName());
                 }));
     }
 
@@ -209,6 +231,129 @@ final class PaperPackSessionsTest {
         assertThrows(RepositoryException.CommitRevoked.class, permit::requireValid);
         assertEquals(1, client.removed.size());
         assertEquals(Set.copyOf(ids), Set.copyOf(client.removed.getFirst()));
+    }
+
+    @Test void nativeDeliveryRegistersAndOffersToCurrentAndJoiningConnections() {
+        Client before = new Client();
+        online = List.of(before.player);
+        var registered = new ArrayList<Listener>();
+        var timeouts = new ArrayList<Runnable>();
+        var availability = new CommitPermit();
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), new JavaPack(pluginPlan(false, false),
+                availability), (task, delay) -> {
+                    assertEquals(1_200L, delay);
+                    timeouts.add(task);
+                })) {
+            delivery.start(registered::add);
+            assertEquals("offering the optional bundled pack", delivery.status());
+            var listener = assertInstanceOf(PaperPackSessions.class, registered.getFirst());
+            assertSame(delivery, registered.get(1));
+            assertEquals(1, before.requests.size());
+            assertFalse(before.last().required());
+            UUID original = before.last().packs().getFirst().id();
+            listener.status(new PlayerResourcePackStatusEvent(before.player, original, ACCEPTED));
+            assertNull(delivery.readiness(before.player, EMBER));
+            listener.status(new PlayerResourcePackStatusEvent(before.player, original, SUCCESSFULLY_LOADED));
+            var permit = delivery.readiness(before.player, EMBER);
+            assertNotNull(permit);
+            assertNull(delivery.readiness(before.player, FROST));
+            timeouts.getFirst().run();
+            permit.requireValid();
+
+            Client reconnected = new Client(before.id);
+            var join = new PlayerJoinEvent(reconnected.player, Component.empty());
+            delivery.join(join);
+            delivery.join(join);
+            assertEquals(1, reconnected.requests.size());
+            assertThrows(RepositoryException.CommitRevoked.class, permit::requireValid);
+            assertNull(delivery.readiness(reconnected.player, EMBER));
+            timeouts.getFirst().run();
+            assertTrue(reconnected.messages.isEmpty());
+            listener.status(new PlayerResourcePackStatusEvent(reconnected.player, original, SUCCESSFULLY_LOADED));
+            assertNull(delivery.readiness(reconnected.player, EMBER));
+            var fresh = reconnected.last().packs().getFirst().id();
+            listener.status(new PlayerResourcePackStatusEvent(reconnected.player, fresh, SUCCESSFULLY_LOADED));
+            var freshPermit = delivery.readiness(reconnected.player, EMBER);
+            assertNotNull(freshPermit);
+
+            Client refuses = new Client();
+            delivery.join(new PlayerJoinEvent(refuses.player, Component.empty()));
+            listener.status(new PlayerResourcePackStatusEvent(refuses.player, refuses.last().packs().getFirst().id(), DECLINED));
+            assertNull(delivery.readiness(refuses.player, EMBER));
+            assertEquals(1, refuses.messages.size());
+            assertTrue(refuses.kicks.isEmpty());
+
+            Client pending = new Client();
+            delivery.join(new PlayerJoinEvent(pending.player, Component.empty()));
+            timeouts.getLast().run();
+            assertEquals(1, pending.messages.size());
+            listener.status(new PlayerResourcePackStatusEvent(pending.player, pending.last().packs().getFirst().id(), SUCCESSFULLY_LOADED));
+            assertNull(delivery.readiness(pending.player, EMBER));
+
+            availability.revoke();
+            assertThrows(RepositoryException.CommitRevoked.class, freshPermit::requireValid);
+            assertNull(delivery.readiness(reconnected.player, EMBER));
+            delivery.close();
+            assertEquals(List.of(List.of(fresh)), reconnected.removed);
+            timeouts.forEach(Runnable::run);
+            assertEquals(1, pending.messages.size());
+        }
+    }
+
+    @Test void nativeDeliveryBlocksKnownBridgesAndPaperProxyMode() {
+        Client client = new Client();
+        online = List.of(client.player);
+        for (String name : List.of("Geyser-Spigot", "floodgate")) {
+            installed = new Plugin[]{plugin(name)};
+            assertNativeDeliveryBlocked(client);
+        }
+        installed = new Plugin[0];
+        proxied = true;
+        assertNativeDeliveryBlocked(client);
+    }
+
+    private void assertNativeDeliveryBlocked(Client client) {
+        var verified = new JavaPack(pluginPlan(false, false), new CommitPermit());
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified,
+                (task, delay) -> fail("Blocked topology cannot schedule a pack timeout"))) {
+            delivery.start(listener -> fail("Blocked topology cannot register delivery"));
+            delivery.join(new PlayerJoinEvent(client.player, Component.empty()));
+            assertEquals("blocked by a detected bridge or proxy", delivery.status());
+            assertNull(delivery.readiness(client.player, EMBER));
+            assertTrue(client.requests.isEmpty());
+        }
+    }
+
+    @Test void enablingBridgeRevokesLoadedReadinessAndStopsFurtherOffers() {
+        Client client = new Client();
+        online = List.of(client.player);
+        var registered = new ArrayList<Listener>();
+        var verified = new JavaPack(pluginPlan(false, false), new CommitPermit());
+        try (var delivery = new NativeJavaPackDelivery(Bukkit.getServer(), verified, (task, delay) -> {})) {
+            delivery.start(registered::add);
+            var id = client.last().packs().getFirst().id();
+            assertInstanceOf(PaperPackSessions.class, registered.getFirst())
+                    .status(new PlayerResourcePackStatusEvent(client.player, id, SUCCESSFULLY_LOADED));
+            var permit = delivery.readiness(client.player, EMBER);
+            assertNotNull(permit);
+            delivery.pluginEnabled(new PluginEnableEvent(plugin("Unrelated")));
+            permit.requireValid();
+            delivery.pluginEnabled(new PluginEnableEvent(plugin("Geyser-Spigot")));
+            assertThrows(RepositoryException.CommitRevoked.class, permit::requireValid);
+            assertEquals(List.of(List.of(id)), client.removed);
+            Client fresh = new Client();
+            delivery.join(new PlayerJoinEvent(fresh.player, Component.empty()));
+            assertTrue(fresh.requests.isEmpty());
+            assertEquals("blocked by a detected bridge or proxy", delivery.status());
+        }
+    }
+
+    private static Plugin plugin(String name) {
+        return (Plugin) Proxy.newProxyInstance(Plugin.class.getClassLoader(), new Class<?>[]{Plugin.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("getName")) return name;
+                    throw new AssertionError(method.getName());
+                });
     }
 
     @Test void incompleteCombinedAndReversedStackAreRejected() {

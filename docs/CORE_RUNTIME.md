@@ -1,8 +1,9 @@
 # Native Catalog Startup
 
-The catalog runtime owns configuration and one SQLite store. This first native
-integration slice supports validation, durable publication, and administrator reload
-for bundled models. Gameplay remains unavailable while its owner bindings are pending.
+The catalog runtime owns configuration and one SQLite store. It supports
+validation, durable publication, and administrator reload for bundled models.
+A direct Java-only server can opt in to delivery of the bundled Java pack.
+Gameplay remains unavailable while its owner bindings are pending.
 
 ## Startup and reload
 
@@ -36,8 +37,10 @@ The catalog is a regular UTF-8 file limited to 1 MiB. It uses the
 omission semantics. `variants: {}` intentionally retires all active definitions.
 The catalog validator checks the embedded pack manifest and digests for the
 generic Java and Bedrock archives and Geyser mapping. It accepts only compact and
-expanded model pairs from that verified bundled inventory. Client delivery, custom
-operator pack sets and Geyser session readiness require their runtime bindings.
+expanded model pairs from that verified bundled inventory. See
+[Enable bundled Java delivery](RESOURCE_PACKS.md#enable-bundled-java-delivery)
+for the optional default Java pack. Custom operator pack sets and Geyser session
+readiness require their runtime bindings.
 
 This example exercises publication with the bundled Ember models. The values are
 synthetic inputs for a catalog check.
@@ -93,7 +96,7 @@ never waits on the Paper thread for SQL or reload authorization.
 | Item lifecycle, placement and recovery | Requires the native token admission, world/provider checks, and matched durable evidence from their respective owners. |
 | Switches, lighting, combat, blasts and pistons | Requires loaded component, protection-provider and owner registration. |
 | Repair, health view and campaign awards | Requires native menu/session routing and the inventory, protection and save witness bindings. |
-| Resource packs | Requires live Java delivery, Geyser and per-connection readiness binding. |
+| Resource packs | Optional bundled Java delivery and per-connection readiness are wired for direct Java-only servers. Other delivery modes, Geyser and live acceptance remain open. |
 | Core release acceptance | Requires exact Paper/Geyser/Java/Bedrock tests, isolated matched saves and load measurements under #27. |
 
 The local suite uses temporary SQLite files and Paper API doubles. Its results

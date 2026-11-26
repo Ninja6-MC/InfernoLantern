@@ -53,6 +53,40 @@ The actual Java, Bedrock, and bridge version combination requires live testing.
 [Paper resource pack delivery](https://docs.papermc.io/adventure/resource-pack/)
 [Geyser resource packs](https://geysermc.org/wiki/geyser/packs/)
 
+## Enable bundled Java delivery
+
+This mode is for a direct Java-only Paper server. Leave it disabled on mixed-edition
+servers and on servers behind any proxy or bridge. The plugin rejects an installed
+Geyser or Floodgate plugin and Paper's configured proxy mode. A standalone Geyser
+process or a transparent proxy can be invisible to Paper, so confirm the entire
+connection path before opting in. If a known bridge is enabled after delivery
+starts, the plugin revokes existing readiness and stops offering the pack.
+
+Extract `resource-packs/infernolantern-generic-java.zip` from the same plugin JAR
+you will run. Verify it against the bundled `SHA256SUMS` and serve the unchanged
+archive over HTTPS. Set the following options in `config.yml` and restart. See
+[Native Catalog Startup](CORE_RUNTIME.md) for configuring `catalog.yml`.
+
+```yaml
+native-catalog:
+  enabled: true
+  java-pack:
+    direct-java-only: true
+    url: "https://assets.example.invalid/infernolantern-generic-java.zip"
+```
+
+Delivery is off by default. After catalog publication succeeds, the plugin uses
+the verified bundled SHA-1 to offer the pack to connected and joining players.
+Each connection must report a successful load for its own request. Refusal,
+failure, or 1,200 ticks without a successful load yields private feedback and
+no readiness for that connection. The offer is optional, and a new connection
+gets a fresh request. Catalog reload retains the same pack identity. Change the
+URL or delivery mode with a restart.
+
+This binding covers only optional delivery of the default bundled Java pack.
+Required delivery, stacked and combined delivery, Geyser session readiness,
+native gameplay, and actual client acceptance remain pending.
+
 ## Override example
 
 The override archive changes only Ember's glow texture. Keep these paths for
@@ -111,8 +145,9 @@ Callers should compose this permit with their existing native action fences.
 Java client responses describe what the client reports. They cannot prove that
 a modified client rendered the assets.
 
-The adapter is ready for integration with a deployment binding and is currently
-unregistered. Issue #23 remains open for live Java and Bedrock acceptance.
+The default Java binding registers this adapter after catalog publication using
+the verified bundled plan. Issue #23 remains open for live Java and Bedrock
+acceptance.
 Exercise both variants and both stages in all three delivery modes. Check that
 the override takes priority, the combined packs contain the unchanged visuals,
 and optional failure blocks model-dependent interaction. Exercise required
