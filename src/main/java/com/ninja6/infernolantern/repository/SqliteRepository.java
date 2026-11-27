@@ -160,6 +160,9 @@ public final class SqliteRepository {
         }
     }
     private PreparedStatement statement(String sql,Object...values)throws SQLException {
+        return statement(connection,sql,values);
+    }
+    private static PreparedStatement statement(Connection connection,String sql,Object...values)throws SQLException {
         var p=connection.prepareStatement(sql);
         try {for(int i=0;i<values.length;i++)p.setObject(i+1,values[i] instanceof UUID id?id.toString():values[i]);return p;}
         catch(SQLException e){p.close();throw e;}
@@ -380,21 +383,24 @@ public final class SqliteRepository {
         TowerSnapshot value=loadTower(id);require(value!=null&&value.rowVersion()==version&&Objects.equals(value.activeOperation(),operation),"Stale tower or operation ownership");return value;
     }
     private TowerSnapshot loadTower(UUID id)throws Exception{
-        try(var p=statement("SELECT * FROM towers WHERE id=?",id);var r=p.executeQuery()){
+        return loadTower(connection,id);
+    }
+    static TowerSnapshot loadTower(Connection connection,UUID id)throws Exception{
+        try(var p=statement(connection,"SELECT * FROM towers WHERE id=?",id);var r=p.executeQuery()){
             if(!r.next())return null;
             String world=r.getString("world");
             Position position=world==null?null:new Position(uuid(world),r.getInt("x"),r.getInt("y"),r.getInt("z"),r.getString("orientation"));
             Tower t=new Tower(uuid(r.getString("id")),r.getString("variant_id"),r.getDouble("hp"),r.getDouble("maximum_hp"),Form.valueOf(r.getString("form")),r.getLong("generation"),r.getLong("deployment_revision"),uuid(r.getString("controller")),position,r.getBoolean("light"),r.getBoolean("defence"),r.getLong("expand_after"),r.getLong("repair_after"));
             long version=r.getLong("row_version");UUID operation=uuid(r.getString("active_operation"));
             Ground ground=null;
-            try(var gp=statement("SELECT * FROM ground_representations WHERE tower_id=?",id);var gr=gp.executeQuery()){
+            try(var gp=statement(connection,"SELECT * FROM ground_representations WHERE tower_id=?",id);var gr=gp.executeQuery()){
                 if(gr.next()){
                     if(gr.getLong("generation")!=t.generation()||gr.getInt("payload_version")!=1)throw new RepositoryException("Ground snapshot mismatch");
                     ground=new Ground(uuid(gr.getString("entity_id")),uuid(gr.getString("world")),gr.getInt("chunk_x"),gr.getInt("chunk_z"),uuid(gr.getString("delivery_operation")),gr.getString("status"));
                 }
             }
             var components=new ArrayList<Component>();
-            try(var mp=statement("SELECT * FROM manifest_components WHERE tower_id=? ORDER BY component_id LIMIT ?",id,MAX_COMPONENTS+1);var mr=mp.executeQuery()){
+            try(var mp=statement(connection,"SELECT * FROM manifest_components WHERE tower_id=? ORDER BY component_id LIMIT ?",id,MAX_COMPONENTS+1);var mr=mp.executeQuery()){
                 while(mr.next()){
                     if(mr.getLong("deployment_revision")!=t.deploymentRevision()||mr.getInt("payload_version")!=1)throw new RepositoryException("Manifest snapshot mismatch");
                     components.add(new Component(mr.getString("component_id"),ComponentKind.valueOf(mr.getString("kind")),uuid(mr.getString("world")),mr.getInt("x"),mr.getInt("y"),mr.getInt("z"),mr.getString("original_state"),mr.getString("expected_state"),uuid(mr.getString("entity_id")),mr.getString("entity_type")));
@@ -687,7 +693,10 @@ public final class SqliteRepository {
     }
     private Operation requireOperation(UUID id,long version)throws Exception{Operation op=loadOperation(id);require(op!=null&&op.rowVersion()==version&&op.pending(),"Stale or terminal operation");return op;}
     private Operation loadOperation(UUID id)throws Exception{
-        try(var p=statement("SELECT * FROM operations WHERE id=?",id);var r=p.executeQuery()){
+        return loadOperation(connection,id);
+    }
+    static Operation loadOperation(Connection connection,UUID id)throws Exception{
+        try(var p=statement(connection,"SELECT * FROM operations WHERE id=?",id);var r=p.executeQuery()){
             if(!r.next())return null;
             State before=SnapshotCodec.decode(r.getBytes("before_state")),after=SnapshotCodec.decode(r.getBytes("after_state"));
             Intent intent=new Intent(uuid(r.getString("id")),uuid(r.getString("tower_id")),r.getLong("expected_version"),r.getLong("expected_generation"),r.getLong("expected_revision"),r.getString("kind"),after,new Document(r.getInt("effects_version"),r.getString("effects")));

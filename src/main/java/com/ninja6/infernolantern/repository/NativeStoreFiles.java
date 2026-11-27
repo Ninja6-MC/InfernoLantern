@@ -58,6 +58,11 @@ final class NativeStoreFiles {
         return true;
     }
 
+    /** A capture copy has no aliases, even an exact first-publication link. */
+    static void checkCapturePath(Path file) throws IOException {
+        checkRegular(file);
+    }
+
     /** The caller holds the process and filesystem owner locks for the entire operation. */
     static void prepare(Path file, FileChannel owner, Initializer initializer) throws Exception {
         checkPaths(file);

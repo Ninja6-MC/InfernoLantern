@@ -1,6 +1,6 @@
 # Evidence-Bounded Interrupted-Operation Reconciliation
 
-Task #11 is **partial**. `ReconciliationService` implements explicit, asynchronous recovery calls; `RecoveryEnvelope` records a strict observation recipe; `PaperRecoveryPort` supplies a one-attempt item observation/activation boundary. `MatchedItemSaves` compares that observation with independently inspected save evidence. None is registered by the plugin entry point. There is no startup replay, recovery command, native repair permission, save scanner or new gameplay feature. The existing prototype still refuses mutations when its pending journal gate fails. No shared server data was inspected, changed, deployed or repaired by this implementation.
+Task #11 is **partial**. `ReconciliationService` implements explicit, asynchronous recovery calls; `RecoveryEnvelope` records a strict observation recipe; `PaperRecoveryPort` supplies a one-attempt item observation/activation boundary. `MatchedItemSaves` compares that observation with independently inspected save evidence. None is registered by the plugin entry point. There is no startup replay, recovery command, native repair permission, Minecraft save scanner or new gameplay feature. The existing prototype still refuses mutations when its pending journal gate fails. No shared server data was inspected, changed, deployed or repaired by this implementation.
 
 Tasks #9/#10 and G1 remain open. Service tests and API doubles do not accept native placement, independent world/player-save recovery or the already audited test environment. Preserve that environment and its scenario evidence; do not install this development candidate there to try to clear quarantine.
 
@@ -43,6 +43,31 @@ It inspects a sidecar-free store under its existing owner lock and leaves any
 unexamined SQLite sidecars in place. Status identifies the reason without
 reporting operation or player identifiers. A held startup admits no reload,
 reconciliation, or physical activation.
+
+## Offline journal inspection
+
+Run the developer tool on an isolated copy of a stopped server's native store
+directory. The directory must contain `lanterns.db` and its original
+`lanterns.db.owner` marker. Preserve any sidecars with the capture. A copy with
+sidecars is unavailable to this tool, so do not remove them to make it pass.
+
+```sh
+./gradlew -q offlineRecoveryInspection --args='"/path/to/copy/native-runtime" 00000000-0000-0000-0000-000000000001'
+```
+
+The inspector checks the native header, pinned schema, and SQLite integrity
+through the private read-only driver. It uses the existing owner marker for
+a read lock, accepts databases up to 256 MiB, and creates no files in the
+capture. It reports a missing operation, the selected operation's phase, and
+whether a pending operation still owns the exact frozen tower row. A supported
+item-drop recipe adds recorded source and target locators only when
+`--locators` is appended inside the quoted arguments. Keep that output local.
+It includes the player UUID and inventory slot, the world UUID and chunk
+coordinates, and the ground entity UUID.
+
+The locators describe the journal's expected scope. Minecraft saves and other
+custody remain unexamined. The command performs no recovery, and its output
+does not establish when the copy was captured or whether the saves match.
 
 ## Recovery decision and durable phase matrix
 
