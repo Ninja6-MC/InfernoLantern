@@ -8,6 +8,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
@@ -134,6 +135,39 @@ class NativeCatalogStorageTest {
         try (var connection = PrivateSqlite.open(file); var sql = connection.createStatement()) {
             insertTower(sql);
             sql.execute("UPDATE schema_migrations SET checksum='unrecognized' WHERE version=5");
+        }
+        assertUnavailablePreserving(file);
+    }
+
+    @Test void corruptFreelistCannotFinishInterruptedPublicationLink() throws Exception {
+        var file = data.resolve("lanterns.db");
+        var stage = UUID.randomUUID();
+        var stageDir = Files.createDirectory(data.resolve("lanterns.db.initializing-" + stage));
+        var stageFile = stageDir.resolve(file.getFileName());
+        try (var connection = PrivateSqlite.open(stageFile)) {
+            Schema.initialize(connection, Schema.NATIVE_APPLICATION_ID);
+        }
+        byte[] evidence = Files.readAllBytes(stageFile);
+        // The header claims one freelist page while the freelist head is zero.
+        assertEquals(0, ByteBuffer.wrap(evidence).getInt(32));
+        ByteBuffer.wrap(evidence).putInt(36, 1);
+        Files.write(stageFile, evidence);
+        String marker = "native-stage-v1:" + stage;
+        Files.writeString(owner(file), marker);
+        Files.createLink(file, stageFile);
+
+        assertUnavailablePreserving(file);
+        assertTrue(Files.isSameFile(file, stageFile));
+        assertArrayEquals(evidence, Files.readAllBytes(stageFile));
+        assertEquals(marker, Files.readString(owner(file)));
+    }
+
+    @Test void sqliteLookalikeTableCannotPassNativeSchemaInspection() throws Exception {
+        var file = data.resolve("lanterns.db");
+        initializeNative(file);
+        try (var connection = PrivateSqlite.open(file); var sql = connection.createStatement()) {
+            sql.execute("CREATE TABLE sqliteX_recovery(value TEXT)");
+            sql.execute("INSERT INTO sqliteX_recovery VALUES('held evidence')");
         }
         assertUnavailablePreserving(file);
     }

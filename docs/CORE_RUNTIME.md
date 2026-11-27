@@ -88,7 +88,8 @@ An existing native store needs its recognized owner marker and exact pinned
 SQLite application identity, schema and migration history. Startup holds any
 WAL, shared-memory or rollback journal sidecars before opening the database.
 A sidecar-free store is inspected through the private driver in immutable,
-read-only mode under its owner lock. Pending journal phases, terminal records,
+read-only mode under its owner lock. Integrity is checked before completing
+an interrupted publication link. Pending journal phases, terminal records,
 other gameplay state and unmanaged variants hold publication and reload. A
 terminal receipt alone does not establish that the physical saves match.
 

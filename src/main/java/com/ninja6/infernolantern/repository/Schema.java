@@ -12,6 +12,7 @@ final class Schema {
     static final int APPLICATION_ID=0x494C4442; // ILDB
     static final int NATIVE_APPLICATION_ID=0x494C4E44; // ILND
     static final int VERSION=5;
+    private static final String USER_OBJECTS=" FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'";
     static final List<List<String>> MIGRATIONS=List.of(List.of(
         "CREATE TABLE variants(id TEXT PRIMARY KEY, definition_revision INTEGER NOT NULL CHECK(definition_revision>=0), status TEXT NOT NULL CHECK(status IN ('ACTIVE','RETIRED')), payload_version INTEGER NOT NULL CHECK(payload_version>0), definition TEXT NOT NULL, row_version INTEGER NOT NULL CHECK(row_version>=0))",
         "CREATE TABLE towers(id TEXT PRIMARY KEY, variant_id TEXT NOT NULL REFERENCES variants(id), hp REAL NOT NULL CHECK(hp>=0), maximum_hp REAL NOT NULL CHECK(maximum_hp>0 AND hp<=maximum_hp), form TEXT NOT NULL CHECK(form IN ('PORTABLE','GROUND','COMPACT','EXPANDED','LOST')), generation INTEGER NOT NULL CHECK(generation>=0), deployment_revision INTEGER NOT NULL CHECK(deployment_revision>=0), controller TEXT, world TEXT, x INTEGER, y INTEGER, z INTEGER, orientation TEXT, light INTEGER NOT NULL CHECK(light IN (0,1)), defence INTEGER NOT NULL CHECK(defence IN (0,1)), expand_after INTEGER NOT NULL CHECK(expand_after>=0), repair_after INTEGER NOT NULL CHECK(repair_after>=0), row_version INTEGER NOT NULL CHECK(row_version>=0), active_operation TEXT UNIQUE, CHECK((form='EXPANDED')=(controller IS NOT NULL)), CHECK((form IN ('COMPACT','EXPANDED'))=(world IS NOT NULL)), CHECK((world IS NULL AND x IS NULL AND y IS NULL AND z IS NULL AND orientation IS NULL) OR (world IS NOT NULL AND x IS NOT NULL AND y IS NOT NULL AND z IS NOT NULL AND orientation IS NOT NULL)))",
@@ -45,9 +46,9 @@ final class Schema {
     static void initialize(Connection c,int applicationId)throws SQLException{
         int app=pragma(c,"application_id"),version=pragma(c,"user_version");
         boolean empty;
-        try(var s=c.createStatement();var r=s.executeQuery("SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")){empty=r.next()&&r.getInt(1)==0;}
+        try(var s=c.createStatement();var r=s.executeQuery("SELECT count(*)"+USER_OBJECTS)){empty=r.next()&&r.getInt(1)==0;}
         if((app!=applicationId && !(app==0&&version==0&&empty)) || version<0 || version>VERSION)throw new SQLException("Unrecognized or future database schema; preserve database");
-        try(var s=c.createStatement();var r=s.executeQuery("PRAGMA quick_check")){if(!r.next()||!"ok".equals(r.getString(1))||r.next())throw new SQLException("Database integrity check failed");}
+        verifyIntegrity(c);
         if(version>0){
             verifyMigrations(c,version);
             verifyTables(c,version);
@@ -84,6 +85,7 @@ final class Schema {
             throw new SQLException("Unrecognized native database schema");
         verifyMigrations(c,VERSION);
         verifyTables(c,VERSION);
+        verifyIntegrity(c);
         if(exists(c,"SELECT EXISTS(SELECT 1 FROM operations WHERE phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING'))"))
             throw new NativeStartupHold(NativeStartupHold.Reason.PENDING_OPERATIONS);
         if(hasRecordedState(c))throw new NativeStartupHold(NativeStartupHold.Reason.RECORDED_STATE);
@@ -106,6 +108,11 @@ final class Schema {
             return rows.getBoolean(1);
         }
     }
+    private static void verifyIntegrity(Connection c)throws SQLException{
+        try(var s=c.createStatement();var r=s.executeQuery("PRAGMA quick_check")){
+            if(!r.next()||!"ok".equals(r.getString(1))||r.next())throw new SQLException("Database integrity check failed");
+        }
+    }
     private static void verifyMigrations(Connection c,int version)throws SQLException{
         try(var s=c.createStatement();var r=s.executeQuery("SELECT version,checksum FROM schema_migrations ORDER BY version")){
             int expected=1;
@@ -122,7 +129,7 @@ final class Schema {
         expected.add("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,checksum TEXT NOT NULL)");
         for(int i=0;i<version;i++)expected.addAll(MIGRATIONS.get(i));
         var actual=new HashSet<String>();
-        try(var s=c.createStatement();var r=s.executeQuery("SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")){
+        try(var s=c.createStatement();var r=s.executeQuery("SELECT sql"+USER_OBJECTS)){
             while(r.next()){
                 String sql=r.getString(1);
                 if(!expected.contains(sql)||!actual.add(sql))
