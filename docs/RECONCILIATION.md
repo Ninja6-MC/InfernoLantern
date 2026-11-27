@@ -116,6 +116,11 @@ The previously audited shared-world/database-swap evidence cannot satisfy this s
 
 ## Verification and remaining integration
 
+The [disposable item-drop fixture](ITEM_RECOVERY_ACCEPTANCE.md) is an opt-in
+Paper integration check. It pairs a real saved player slot and selected
+entity record with the exact journal and exercises the recovery service on
+copies. Its capture and custody scope are specific to the synthetic case.
+
 Local verification uses real temporary SQLite databases, fault-injection triggers that share the private driver, a controllable owner scheduler and strict API doubles executing the Paper port. It covers each pending phase, independent-save order models, incomplete/unmatched/missing states, exact operation/version checks, multiple coordinators, fresh finalization, SQL failure/reopen, source change, unload, close, terminal no-replay, post-completion review, newer-row preservation, reservation retention/release, strict envelopes, actual producer emission and existing stage age/marker behavior. These tests are not a Paper process, save scanner or live compatibility result.
 
 Before #11/G1 acceptance, integrate an independently reviewed source/save coverage provider and readiness coordinator; prove every automatic case with matched independent database/world/entity/player/container save sets; test before/after intent, source removal/staging, verification, phase commit, completion and activation interruptions; verify exact existing tagged-drop discovery and native remaining lifetime; and prove full structure/visual/service observation. Unknown legacy and actual audited cases need a separately reviewed evidence-based administrative plan. Keep #9/#10 integration and native placement claims pending. Do not publish private identifiers, coordinates, host paths, raw databases, full logs or unsanitized save dumps in the evidence.

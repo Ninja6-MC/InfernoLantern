@@ -1,0 +1,8 @@
+name: InfernoLanternItemDropAcceptance
+version: 1
+main: com.ninja6.infernolantern.acceptance.recovery.ItemDropAcceptancePlugin
+api-version: '26.3'
+depend: [InfernoLantern]
+commands:
+  crashprobe:
+    description: Disposable item-drop recovery fixture, console only
