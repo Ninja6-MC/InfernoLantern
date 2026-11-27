@@ -49,7 +49,10 @@ the addressed region record, and checks the manifest and file digests.
 Paper's pinned parser and item codec interpret the physical bytes. The
 test reasserts live mob pickup quarantine for its exact staged entity
 before the real service runs. It checks the journal, authority row,
-entity outcome and original file fingerprints afterward.
+entity outcome and original file fingerprints afterward. The held drop
+must retain its pickup restrictions and protection flags. At publication,
+the finite age must equal the last observed staged age on the owner
+thread. The final age can advance only by elapsed server ticks.
 
 The capture's custody claim comes from the controlled single-player
 fixture. Hashes identify its input artifacts. Coverage of other slots,

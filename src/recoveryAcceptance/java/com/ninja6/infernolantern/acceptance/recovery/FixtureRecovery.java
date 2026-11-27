@@ -5,6 +5,7 @@ import com.ninja6.infernolantern.item.ItemLifecycle;
 import com.ninja6.infernolantern.item.PaperItemIdentity;
 import com.ninja6.infernolantern.recovery.MatchedItemSaves;
 import com.ninja6.infernolantern.recovery.PaperRecoveryPort;
+import com.ninja6.infernolantern.recovery.PaperRecoveryPort.GroundEvidence;
 import com.ninja6.infernolantern.recovery.ReconciliationService;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
 import com.ninja6.infernolantern.repository.SqliteRepository;
@@ -18,7 +19,6 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.zip.DataFormatException;
 import org.bukkit.Bukkit;
@@ -128,7 +128,7 @@ final class FixtureRecovery {
             Player actor, Inspection inspected) {
         var anchor = inspected.inputs().context().anchor();
         Ground ground = inspected.inputs().reference();
-        var admissions = new AtomicInteger();
+        var oracle = new RecoveryOracle();
         var service = new ReconciliationService(repository, scheduler);
         return scheduler.supply(anchor, () -> {
             var physical = CapturedItemDrop.pair(inspected.seal(), inspected.operation(), inspected.tower(),
@@ -138,17 +138,19 @@ final class FixtureRecovery {
                             .get(PaperItemIdentity.OPERATION, PersistentDataType.STRING))) {
                 item.setCanMobPickup(false);
             }
-            return new PaperRecoveryPort(new MatchedItemSaves(() -> Optional.of(physical)),
-                    operation -> actor.isConnected() && actor.getUniqueId().equals(physical.player().player())
-                            && actor.getWorld().getUID().equals(anchor.world()),
-                    variant -> GroundPolicy.DEFAULT, item -> {
-                        if (!item.getUniqueId().equals(ground.entity()) || admissions.incrementAndGet() != 1) {
-                            throw new IllegalStateException("Unexpected fixture drop admission");
-                        }
-                    });
+            oracle.saved = physical.ground().item();
+            var witness = new MatchedItemSaves(() -> Optional.of(physical));
+            return new PaperRecoveryPort((operation, tower, context, view) -> {
+                if (view.ground() != null && view.ground().persisted().staged()) {
+                    oracle.stage = new Clock(view.ground().persisted().age(), Bukkit.getCurrentTick());
+                }
+                return witness.assess(operation, tower, context, view);
+            }, operation -> actor.isConnected() && actor.getUniqueId().equals(physical.player().player())
+                    && actor.getWorld().getUID().equals(anchor.world()),
+                    variant -> GroundPolicy.DEFAULT, item -> oracle.admit(item, ground));
         }).thenCompose(port -> service.reconcile(inspected.operation().intent().id(), port))
                 .thenCompose(result -> repository.operation(result.operation()).thenCompose(row -> scheduler.supply(anchor,
-                        () -> result(result.outcome(), row.orElseThrow(), actor.getWorld(), ground, admissions.get()))))
+                        () -> oracle.result(result.outcome(), row.orElseThrow(), actor.getWorld(), ground))))
                 .whenComplete((ignored, failure) -> service.close());
     }
 
@@ -156,19 +158,57 @@ final class FixtureRecovery {
         return item.getPersistentDataContainer().has(STAGED, PersistentDataType.BYTE);
     }
 
-    private static String result(ReconciliationService.Outcome outcome, Operation row, World world, Ground ground, int admissions) {
-        Item drop = world.getEntity(ground.entity()) instanceof Item item ? item : null;
-        if (outcome == ReconciliationService.Outcome.COMPLETED) {
-            if (admissions != 1 || !(drop instanceof CraftItem item) || staged(item) || !item.canPlayerPickup()
-                    || item.isInvulnerable() || item.isUnlimitedLifetime() || item.getTicksLived() < 1200
-                    || item.getHandle().getAge() != item.getTicksLived()) {
-                throw new IllegalStateException("Unexpected final fixture drop state");
-            }
-        } else if (admissions != 0) {
-            throw new IllegalStateException("Unexpected admission without a winning recovery");
+    private record Clock(int age, int tick) {
+        boolean continues(Item item) {
+            int elapsed = Bukkit.getCurrentTick() - tick;
+            int advanced = item.getTicksLived() - age;
+            return advanced >= 0 && advanced <= elapsed;
         }
-        String state = drop == null ? "ABSENT" : staged(drop) ? "STAGED" : "ACTIVE";
-        return "RECOVERY-RESULT " + outcome + " " + row.phase() + " " + state;
+    }
+
+    /** Confined to the Paper owner thread, including the publication callback. */
+    private static final class RecoveryOracle {
+        private GroundEvidence saved;
+        private Clock stage;
+        private Clock activation;
+
+        private void admit(Item item, Ground ground) {
+            // The port's last staged observation and admission occur within one owner callback.
+            if (activation != null || !item.getUniqueId().equals(ground.entity()) || stage == null
+                    || stage.tick() != Bukkit.getCurrentTick() || !stage.continues(item)
+                    || !(item instanceof CraftItem active) || active.getHandle().getAge() != stage.age()) {
+                throw new IllegalStateException("Fixture activation changed the staged age or identity");
+            }
+            activation = stage;
+        }
+
+        private String result(ReconciliationService.Outcome outcome, Operation row, World world, Ground ground) {
+            Item drop = world.getEntity(ground.entity()) instanceof Item item ? item : null;
+            if (outcome == ReconciliationService.Outcome.COMPLETED) {
+                if (activation == null || !(drop instanceof CraftItem item) || staged(item) || !item.canPlayerPickup()
+                        || item.isInvulnerable() || item.isUnlimitedLifetime() || !activation.continues(item)
+                        || item.getHandle().getAge() != item.getTicksLived()) {
+                    throw new IllegalStateException("Unexpected final fixture drop state or age");
+                }
+            } else if (activation != null) {
+                throw new IllegalStateException("Unexpected admission without a winning recovery");
+            } else if (outcome == ReconciliationService.Outcome.ADMIN_REQUIRED) {
+                requireHeldStage(drop, ground);
+            }
+            String state = drop == null ? "ABSENT" : staged(drop) ? "STAGED" : "ACTIVE";
+            return "RECOVERY-RESULT " + outcome + " " + row.phase() + " " + state;
+        }
+
+        private void requireHeldStage(Item drop, Ground ground) {
+            if (drop == null || saved == null || stage == null || !stage.continues(drop) || !staged(drop)
+                    || drop.canPlayerPickup() || drop.getPickupDelay() != Short.MAX_VALUE || drop.canMobPickup()
+                    || !drop.isInvulnerable() || !drop.isUnlimitedLifetime() || drop.hasGravity() != saved.gravity()
+                    || !ground.deliveryOperation().toString().equals(drop.getPersistentDataContainer()
+                            .get(PaperItemIdentity.OPERATION, PersistentDataType.STRING))
+                    || !saved.stack().equals(Base64.getEncoder().encodeToString(drop.getItemStack().serializeAsBytes()))) {
+                throw new IllegalStateException("Mixed saves did not preserve the unavailable staged drop");
+            }
+        }
     }
 
     private static WorldScheduler owner(JavaPlugin plugin) {
