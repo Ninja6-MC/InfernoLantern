@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.recovery;
 
 import com.ninja6.infernolantern.item.*;
 import com.ninja6.infernolantern.repository.RepositoryRecords.*;
+import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 import io.papermc.paper.persistence.PersistentDataContainerView;
 import org.bukkit.*;
@@ -10,17 +11,25 @@ import org.bukkit.inventory.*;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.security.MessageDigest;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
+import static com.ninja6.infernolantern.recovery.MatchedItemSaves.*;
+import static com.ninja6.infernolantern.recovery.PaperRecoveryPort.*;
 import static com.ninja6.infernolantern.recovery.ReconciliationService.*;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.STRUCTURE_EXIT_COMPACT;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Actual observation/activation adapter with strict API doubles, not native save/physics evidence. */
 class PaperRecoveryPortTest {
+    @TempDir Path directory;
     final UUID worldId=UUID.randomUUID(),actor=UUID.randomUUID(),towerId=UUID.randomUUID(),operation=UUID.randomUUID(),entityId=UUID.randomUUID(),session=UUID.randomUUID();
     final WorldScheduler.Anchor anchor=new WorldScheduler.Anchor(worldId,0,0);
     final PaperItemIdentity identity=new PaperItemIdentity();
@@ -58,8 +67,147 @@ class PaperRecoveryPortTest {
         return new Operation(new Intent(operation,towerId,0,1,0,"item-drop",new State(tower(Form.GROUND,2),ground,List.of()),RecoveryEnvelope.item("item-drop",anchor,raw)),new State(tower(Form.PORTABLE,1),null,List.of()),Phase.INTENT,0,"intent");
     }
     void stage(){groundStack=stack(2);tags.put(staged,(byte)1);tags.put(PaperItemIdentity.OPERATION,operation.toString());entities.put(entityId,item);}
-    PaperRecoveryPort port(){return new PaperRecoveryPort((o,c)->new PaperRecoveryPort.CoverageProof(coverage,"synthetic independent matched-save scope"),o->authorized,v->GroundPolicy.DEFAULT,i->{assertSame(item,i);admitted++;});}
+    PaperRecoveryPort port(){return port((o,t,c,i)->new CoverageProof(coverage,"synthetic independent matched-save scope"));}
+    PaperRecoveryPort port(CoverageCheck witness){return new PaperRecoveryPort(witness,o->authorized,v->GroundPolicy.DEFAULT,i->{assertSame(item,i);admitted++;});}
     Inspection inspect(PaperRecoveryPort port,Operation op){var context=RecoveryEnvelope.decode(op.intent().effects()).orElseThrow();TowerSnapshot pending=new TowerSnapshot(op.before(),1,operation);return new Inspection(op,pending,context,port.inspect(op,pending,context));}
+    Capture saved(Operation op,String slot,GroundEvidence mark){
+        UUID id=UUID.randomUUID();
+        return new Capture(new Database(new Source(id,"1".repeat(64)),op,new TowerSnapshot(op.before(),1,operation)),
+                new WorldScope(new Source(id,"2".repeat(64)),anchor,Custody.EXACT),
+                new PlayerSlot(new Source(id,"3".repeat(64)),actor,0,slot),
+                new GroundEntity(new Source(id,"4".repeat(64)),op.intent().after().ground(),mark));
+    }
+    String itemBytes(ItemStack stack){return Base64.getEncoder().encodeToString(stack.serializeAsBytes());}
+    GroundEvidence savedStage(int savedAge){
+        return new GroundEvidence(entityId,itemBytes(stack(2)),worldId,0,0,4.5,70.5,4.5,true,false,true,true,true,savedAge,operation.toString());
+    }
+    @Test void independentBeforeAndAfterCapturesMatchOnlyTheirExactRepresentation(){
+        Operation op=drop();String source=itemBytes(stack(1));
+        Capture before=saved(op,source,null),after=saved(op,"empty",savedStage(age));
+        inventory.put(0,stack(1));
+        assertEquals(Coverage.MATCHED_COMPLETE,inspect(port(new MatchedItemSaves(()->Optional.of(before))),op).observation().coverage());
+        assertEquals(Coverage.UNMATCHED,inspect(port(new MatchedItemSaves(()->Optional.of(after))),op).observation().coverage());
+
+        inventory.clear();stage();age+=5;
+        var loaded=port(new MatchedItemSaves(()->Optional.of(after)));
+        var observation=inspect(loaded,op);
+        assertEquals(Coverage.MATCHED_COMPLETE,observation.observation().coverage());
+        assertEquals(Physical.AFTER,observation.observation().physical());
+        assertTrue(loaded.publish(observation,new TowerSnapshot(op.intent().after(),2,null)));
+        assertEquals(2723,age);
+        assertEquals(1,admitted);
+    }
+    @Test void missingAndMismatchedCapturePartsHoldWithoutPublishing(){
+        Operation op=drop();stage();Capture original=saved(op,"empty",savedStage(age));
+        var current=new AtomicReference<>(Optional.of(original));
+        var witness=new MatchedItemSaves(current::get);
+        var cases=Map.of(
+                new Capture(original.database(),original.world(),null,original.ground()),Coverage.INCOMPLETE,
+                new Capture(original.database(),original.world(),original.player(),null),Coverage.INCOMPLETE,
+                new Capture(original.database(),new WorldScope(original.world().source(),anchor,Custody.INCOMPLETE),original.player(),original.ground()),Coverage.INCOMPLETE,
+                new Capture(original.database(),new WorldScope(original.world().source(),anchor,Custody.CONFLICTING),original.player(),original.ground()),Coverage.UNMATCHED,
+                new Capture(original.database(),original.world(),saved(op,"empty",null).player(),original.ground()),Coverage.UNMATCHED,
+                new Capture(original.database(),original.world(),original.player(),new GroundEntity(original.ground().source(),original.ground().reference(),null)),Coverage.UNMATCHED,
+                new Capture(original.database(),original.world(),original.player(),new GroundEntity(original.ground().source(),original.ground().reference(),savedStage(age+1))),Coverage.UNMATCHED,
+                new Capture(original.database(),original.world(),original.player(),new GroundEntity(original.ground().source(),original.ground().reference(),savedStage(-1))),Coverage.INCOMPLETE,
+                new Capture(original.database(),original.world(),new PlayerSlot(original.player().source(),actor,1,"empty"),original.ground()),Coverage.UNMATCHED,
+                new Capture(new Database(original.database().source(),new Operation(op.intent(),op.before(),Phase.EFFECTS_APPLIED,1,"advanced"),original.database().tower()),original.world(),original.player(),original.ground()),Coverage.UNMATCHED);
+        for(var test:cases.entrySet()){
+            current.set(Optional.of(test.getKey()));
+            var port=port(witness);var observation=inspect(port,op);
+            assertEquals(test.getValue(),observation.observation().coverage());
+            assertFalse(port.publish(observation,new TowerSnapshot(op.intent().after(),2,null)));
+        }
+        assertEquals(0,mutations);
+        assertTrue(tags.containsKey(staged));
+    }
+    @Test void withdrawalOrNewCaptureInvalidatesTheAttempt(){
+        Operation op=drop();stage();Capture original=saved(op,"empty",savedStage(age));
+        var current=new AtomicReference<>(Optional.of(original));
+        var port=port(new MatchedItemSaves(current::get));
+        var observation=inspect(port,op);
+        current.set(Optional.empty());
+        assertFalse(port.revalidate(observation));
+        current.set(Optional.of(saved(op,"empty",savedStage(age))));
+        assertFalse(port.revalidate(observation));
+        assertFalse(port.publish(observation,new TowerSnapshot(op.intent().after(),2,null)));
+        assertEquals(0,mutations);
+    }
+    @Test void stagedMobPickupMustBeQuarantinedOnTheOwnerThreadAfterRestart(){
+        Operation op=drop();stage();
+        Capture after=saved(op,"empty",savedStage(age));
+        var witness=new MatchedItemSaves(()->Optional.of(after));
+        TowerSnapshot completed=new TowerSnapshot(op.intent().after(),2,null);
+        age+=5;
+        mob=true;
+        var raw=port(witness);var unquarantined=inspect(raw,op);
+        assertEquals(Physical.MIXED,unquarantined.observation().physical());
+        assertEquals(Coverage.UNMATCHED,unquarantined.observation().coverage());
+        assertFalse(raw.publish(unquarantined,completed));
+
+        mob=false;
+        var quarantined=port(witness);var observed=inspect(quarantined,op);
+        assertEquals(Physical.AFTER,observed.observation().physical());
+        assertEquals(Coverage.MATCHED_COMPLETE,observed.observation().coverage());
+        mob=true;
+        assertFalse(quarantined.revalidate(observed));
+        assertFalse(quarantined.publish(observed,completed));
+        assertTrue(tags.containsKey(staged));
+        assertEquals(0,mutations);
+    }
+    @Test void reopenedJournalUsesInspectedDatabaseCopyAndNeverReusesTerminalAuthority() throws Exception {
+        Path store=directory.resolve("active.db"),copy=directory.resolve("captured.db");
+        Operation op=drop();
+        var seed=get(SqliteRepository.open(store,32));
+        try {
+            get(seed.createVariant(new Variant("fixture",1,VariantStatus.ACTIVE,new Document(1,"Fixture"),0)));
+            get(seed.createTower(op.before().tower()));
+            get(seed.beginNewIntent(op.intent()));
+        } finally {get(seed.closeAsync());}
+        Files.copy(store,copy);
+        String hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(copy)));
+        var savedDatabase=get(SqliteRepository.open(copy,32));
+        Capture capture;
+        try {
+            Operation savedOp=get(savedDatabase.operation(operation)).orElseThrow();
+            TowerSnapshot savedRow=get(savedDatabase.tower(towerId)).orElseThrow();
+            Capture physical=saved(savedOp,"empty",savedStage(age));
+            capture=new Capture(new Database(new Source(physical.database().source().captureId(),hash),savedOp,savedRow),
+                    physical.world(),physical.player(),physical.ground());
+        } finally {get(savedDatabase.closeAsync());}
+        var repository=get(SqliteRepository.open(store,32));
+        var current=new AtomicReference<>(Optional.of(new Capture(capture.database(),capture.world(),capture.player(),null)));
+        try(var owner=Executors.newSingleThreadExecutor()){
+            var scheduler=new WorldScheduler(){
+                @Override public <T> CompletableFuture<T> supply(Anchor at,Supplier<T> action){
+                    assertEquals(anchor,at);return CompletableFuture.supplyAsync(action,owner);
+                }
+            };
+            try(var service=new ReconciliationService(repository,scheduler)){
+                stage();var witness=new MatchedItemSaves(current::get);
+                assertEquals(Outcome.WAIT,get(service.reconcile(operation,port(witness))).outcome());
+                assertEquals(capture.database().operation(),get(repository.operation(operation)).orElseThrow());
+                assertEquals(0,mutations);
+                var conflict=new WorldScope(capture.world().source(),anchor,Custody.CONFLICTING);
+                for(Capture partial:List.of(new Capture(capture.database(),conflict,null,capture.ground()),
+                        new Capture(capture.database(),conflict,capture.player(),null))){
+                    current.set(Optional.of(partial));
+                    assertEquals(Outcome.ADMIN_REQUIRED,get(service.reconcile(operation,port(witness))).outcome());
+                    assertEquals(capture.database().operation(),get(repository.operation(operation)).orElseThrow());
+                    assertEquals(0,mutations);
+                }
+                current.set(Optional.of(capture));
+                var matched=port(witness);
+                assertEquals(Outcome.COMPLETED,get(service.reconcile(operation,matched)).outcome());
+                assertEquals(Phase.COMPLETE,get(repository.operation(operation)).orElseThrow().phase());
+                assertEquals(age,item.getTicksLived());
+                assertEquals(1,admitted);
+                assertEquals(Outcome.TERMINAL,get(service.reconcile(operation,matched)).outcome());
+                assertEquals(1,admitted);
+            }
+        } finally {get(repository.closeAsync());}
+    }
+    static <T>T get(CompletableFuture<T> work) throws Exception {return work.get(10,TimeUnit.SECONDS);}
     @Test void existingTaggedDropActivatesOnlyAfterExactCompletedRowWithoutAgeReset(){
         Operation op=drop();stage();var port=port();Inspection observed=inspect(port,op);assertEquals(Physical.AFTER,observed.observation().physical());assertEquals(0,mutations);
         assertFalse(port.publish(observed,new TowerSnapshot(op.intent().after(),1,operation)));assertEquals(0,mutations);
