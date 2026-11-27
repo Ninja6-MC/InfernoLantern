@@ -1,6 +1,6 @@
 # Evidence-Bounded Interrupted-Operation Reconciliation
 
-Task #11 is **partial**. `ReconciliationService` implements explicit, asynchronous recovery calls; `RecoveryEnvelope` records a strict observation recipe; `PaperRecoveryPort` supplies a one-attempt item observation/activation boundary. None is registered by the plugin entry point. There is no startup replay, recovery command, native repair permission, save scanner or new gameplay feature. The existing prototype still refuses mutations when its pending journal gate fails. No server data was inspected, changed, deployed or repaired by this implementation.
+Task #11 is **partial**. `ReconciliationService` implements explicit, asynchronous recovery calls; `RecoveryEnvelope` records a strict observation recipe; `PaperRecoveryPort` supplies a one-attempt item observation/activation boundary. `MatchedItemSaves` compares that observation with independently inspected save evidence. None is registered by the plugin entry point. There is no startup replay, recovery command, native repair permission, save scanner or new gameplay feature. The existing prototype still refuses mutations when its pending journal gate fails. No shared server data was inspected, changed, deployed or repaired by this implementation.
 
 Tasks #9/#10 and G1 remain open. Service tests and API doubles do not accept native placement, independent world/player-save recovery or the already audited test environment. Preserve that environment and its scenario evidence; do not install this development candidate there to try to clear quarantine.
 
@@ -13,6 +13,25 @@ The decoder rejects unknown document/wire versions, malformed fields, unsupporte
 Current `ItemLifecycle` drop/pickup captures the normal Paper actor/session/slot/source format; intentional loss records its named cause. `FixtureDelivery` captures its exact unavailable inventory bytes and delivery operation. `PaperStructureEffects` supplies typed source metadata to `StructureLifecycle`, which retains the request fingerprint and original physical evidence. Custom/opaque structure preparations produce an ADMIN recipe unless they explicitly supply the supported typed preparation. External removal, fixture activation review and structure activation review stay administrative. [Campaign awards](CAMPAIGN_AWARDS.md) retain their own receipt and slot proof for administrative review on an uncertain outcome. Existing version-1 journals are not rewritten or retroactively promoted into proof.
 
 **An envelope never establishes matched saves.** `WorldPort.inspect` must independently establish exact BEFORE or AFTER physical state and coverage/provenance. `MATCHED_COMPLETE` is an obligation of a trusted observation adapter, not a claim made true by setting an enum or passing an envelope. It requires an actually inspected matching save/observation set covering all relevant source, target, stage and original-component evidence; a database-only copy, clean stop, matching baseline or loaded target chunk alone is insufficient. Unknown locations, unavailable players/chunks, mixed snapshots and unverified provenance remain incomplete or unmatched. No permissive production coverage callback is supplied.
+
+`MatchedItemSaves` consumes an independently verified, preloaded capture. Its SQLite input
+must contain the exact pending journal and frozen tower row. The world input must cover the
+recipe anchor and all relevant custody, including containers, other slots and chunks where
+either generation could have moved. The referenced player slot and ground entity each need
+explicit evidence from their respective saves. An inspected absence is represented separately
+from a missing capture component. Each input retains its original capture identity and
+digest. The consumer rejects mixed captures, different rows, and any difference between the
+saved state and the owner observation other than forward item age. A ground entity requires
+explicit persisted `Spigot.ticksLived`; a missing field must be reported as unknown. On the
+pinned Paper build, returning an unlimited stage to finite lifetime uses that counter.
+
+The trusted capture source must assign the capture identity at a common quiescent boundary,
+verify each artifact and inspect its contents before handing them to the comparator. It must
+keep the relevant custody fenced through reconciliation and withdraw evidence when that scope
+changes. Loading a set of filenames or hashing unrelated files does not establish this
+boundary. The comparator performs no file I/O on the owner thread and includes an opaque
+capture fingerprint in the observation. A replaced or withdrawn capture invalidates the
+current attempt. A production capture producer and readiness coordinator are still pending.
 
 The [native catalog startup check](CORE_RUNTIME.md#storage-and-shutdown) holds
 publication when its own store contains pending or terminal gameplay evidence.
