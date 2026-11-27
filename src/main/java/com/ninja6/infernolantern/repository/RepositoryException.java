@@ -12,6 +12,19 @@ public class RepositoryException extends RuntimeException {
     public static final class CommitRevoked extends RepositoryException {
         public CommitRevoked() { super("Session authorization revoked before commit"); }
     }
+    /** Startup stopped before opening the native database for writes. */
+    public static final class NativeStartupHold extends RepositoryException {
+        public enum Reason { SIDECARS, PENDING_OPERATIONS, RECORDED_STATE }
+
+        private final Reason reason;
+
+        NativeStartupHold(Reason reason) {
+            super("Native storage evidence needs inspection");
+            this.reason = reason;
+        }
+
+        public Reason reason() { return reason; }
+    }
     public static final class Conflict extends RepositoryException {
         public Conflict(String message) { super(message); }
     }

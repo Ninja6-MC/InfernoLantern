@@ -32,7 +32,10 @@ public final class NativeCatalogRuntime implements AutoCloseable {
             this(plan, availability, false);
         }
     }
-    private enum State { OPENING, CLEANUP_BLOCKED, UNAVAILABLE, UNPUBLISHED, PUBLISHED, CLOSED }
+    private enum State {
+        OPENING, CLEANUP_BLOCKED, SIDECARS_BLOCKED, JOURNAL_BLOCKED, RECORDS_BLOCKED, UNAVAILABLE,
+        UNPUBLISHED, PUBLISHED, CLOSED
+    }
     private static final int MAX_CATALOG_BYTES = 1_048_576;
     private static final int QUEUE_CAPACITY = 64;
 
@@ -80,7 +83,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         startup = service.handle((catalog, failure) -> {
             if (state == State.CLOSED) return CompletableFuture.completedFuture(Result.UNAVAILABLE);
             if (failure != null) {
-                if (state != State.CLEANUP_BLOCKED) setState(State.UNAVAILABLE);
+                if (state != State.CLEANUP_BLOCKED) setState(startupFailure(failure));
                 return CompletableFuture.completedFuture(Result.UNAVAILABLE);
             }
             return publish(lifetime, () -> CompletableFuture.completedFuture(true));
@@ -104,10 +107,12 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     }
 
     public CompletableFuture<Result> reload(CommitPermit authority, Supplier<CompletableFuture<Boolean>> recheck) {
-        if (state == State.CLOSED || state == State.UNAVAILABLE || state == State.CLEANUP_BLOCKED) {
+        State current = state;
+        if (current == State.OPENING) return CompletableFuture.completedFuture(Result.BUSY);
+        if (current != State.PUBLISHED && current != State.UNPUBLISHED) {
             return CompletableFuture.completedFuture(Result.UNAVAILABLE);
         }
-        if (state == State.OPENING || !busy.compareAndSet(false, true)) return CompletableFuture.completedFuture(Result.BUSY);
+        if (!busy.compareAndSet(false, true)) return CompletableFuture.completedFuture(Result.BUSY);
         return publish(CommitPermit.allOf(lifetime, authority), recheck);
     }
 
@@ -136,10 +141,24 @@ public final class NativeCatalogRuntime implements AutoCloseable {
                 });
     }
 
-    private static boolean storageFailure(Throwable failure) {
+    private static Throwable unwrap(Throwable failure) {
         while (failure instanceof CompletionException && failure.getCause() != null) {
             failure = failure.getCause();
         }
+        return failure;
+    }
+
+    private static State startupFailure(Throwable failure) {
+        if (!(unwrap(failure) instanceof RepositoryException.NativeStartupHold hold)) return State.UNAVAILABLE;
+        return switch (hold.reason()) {
+            case SIDECARS -> State.SIDECARS_BLOCKED;
+            case PENDING_OPERATIONS -> State.JOURNAL_BLOCKED;
+            case RECORDED_STATE -> State.RECORDS_BLOCKED;
+        };
+    }
+
+    private static boolean storageFailure(Throwable failure) {
+        failure = unwrap(failure);
         if (failure instanceof SQLException) return true;
         return failure instanceof RepositoryException && (!(failure instanceof RepositoryException.Conflict
                 || failure instanceof RepositoryException.CommitRevoked) || failure.getSuppressed().length != 0);
@@ -169,6 +188,9 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         return switch (state) {
             case OPENING -> "opening";
             case CLEANUP_BLOCKED -> cleanupStatus();
+            case SIDECARS_BLOCKED -> "blocked by native SQLite sidecars; preserve the database and sidecars together";
+            case JOURNAL_BLOCKED -> "blocked by pending native operations; preserve the database and matching saves for recovery review";
+            case RECORDS_BLOCKED -> "blocked by recorded native gameplay evidence; preserve the database and matching saves for review";
             case UNAVAILABLE -> "storage or bundled assets unavailable";
             case UNPUBLISHED -> "no published catalog for this startup";
             case PUBLISHED -> "catalog published";
