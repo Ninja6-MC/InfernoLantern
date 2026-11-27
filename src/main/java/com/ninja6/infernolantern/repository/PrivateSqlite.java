@@ -43,12 +43,21 @@ final class PrivateSqlite {
     }
 
     static Connection open(Path file)throws SQLException {
+        return connect(file.toString(), false);
+    }
+
+    /** The owner lock excludes native writers and the caller verifies that no sidecars exist. */
+    static Connection inspectNative(Path file)throws SQLException {
+        return connect(file.toUri().toASCIIString()+"?mode=ro&immutable=1", true);
+    }
+
+    private static Connection connect(String address, boolean inspect)throws SQLException {
         Connection connection=null;
         try {
             Properties properties=new Properties();
             properties.setProperty("busy_timeout","5000");
             properties.setProperty("transaction_mode","IMMEDIATE");
-            String address=file.toString();
+            if(inspect)properties.setProperty("open_mode","1");
             connection=(Connection)connectionConstructor().newInstance("jdbc:sqlite:"+address,address,properties);
             try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT sqlite_version()")){
                 String actual=rows.next()?rows.getString(1):"missing";

@@ -150,6 +150,46 @@ class NativeCatalogRuntimeTest {
         }
     }
 
+    @Test void pendingNativeJournalBlocksReloadAndPackBindingsWithoutPublication() throws Exception {
+        var repository = get(SqliteRepository.openCatalogOnly(database(), 4));
+        get(repository.closeAsync());
+        try (var connection = SqliteTestConnections.open(database()); var sql = connection.createStatement()) {
+            sql.execute("INSERT INTO variants VALUES('held',0,'ACTIVE',1,'held definition',0)");
+            sql.execute("INSERT INTO towers VALUES('00000000-0000-0000-0000-000000000001',"
+                    + "'held',0,100,'PORTABLE',1,0,null,null,null,null,null,null,0,0,0,0,0,null)");
+            sql.execute("INSERT INTO operations VALUES("
+                    + "'00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001',"
+                    + "0,1,0,'test',X'00',X'00',1,'held recipe','INTENT',0,'held evidence')");
+        }
+        byte[] saved = Files.readAllBytes(database());
+        assertNativeStorageBlocked("blocked by pending native operations");
+        assertArrayEquals(saved, Files.readAllBytes(database()));
+    }
+
+    @Test void orphanSidecarReportsHoldWithoutCreatingAnyOwnerOrDatabase() throws Exception {
+        Files.createDirectories(database().getParent());
+        Path sidecar = Files.writeString(database().resolveSibling("lanterns.db-wal"), "held journal bytes");
+        assertNativeStorageBlocked("blocked by native SQLite sidecars");
+        assertEquals("held journal bytes", Files.readString(sidecar));
+        assertFalse(Files.exists(database()));
+        assertFalse(Files.exists(database().resolveSibling("lanterns.db.owner")));
+    }
+
+    private void assertNativeStorageBlocked(String message) throws Exception {
+        var runtime = start(VALID);
+        try {
+            assertEquals(UNAVAILABLE, get(runtime.startup()));
+            assertTrue(runtime.status().startsWith(message), runtime::status);
+            assertEquals(UNAVAILABLE, get(runtime.reload(new CommitPermit(), () -> {
+                throw new AssertionError("Blocked native storage must not begin a catalog reload");
+            })));
+            assertNull(runtime.javaPack(PACK_URL, null, false));
+            assertNull(runtime.javaCombinedPack());
+        } finally {
+            get(runtime.stop());
+        }
+    }
+
     private void assertCleanupBlocked() throws Exception {
         var runtime = start(VALID);
         try {

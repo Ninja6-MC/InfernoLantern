@@ -84,9 +84,20 @@ interruption after linking can safely finish unlinking that candidate. An interr
 before linking leaves the fixed database path absent, and the next startup initializes
 a separate candidate. Unrecognized files, journals, and abandoned stages stay preserved.
 
-Catalog-only startup rejects existing gameplay records and unmanaged definitions.
-Native storage also checks this restriction before transaction commit. This
-permits publication and retirement of definitions while the ledger is empty.
+An existing native store needs its recognized owner marker and exact pinned
+SQLite application identity, schema and migration history. Startup holds any
+WAL, shared-memory or rollback journal sidecars before opening the database.
+A sidecar-free store is inspected through the private driver in immutable,
+read-only mode under its owner lock. Pending journal phases, terminal records,
+other gameplay state and unmanaged variants hold publication and reload. A
+terminal receipt alone does not establish that the physical saves match.
+
+The status command distinguishes pending operations, recorded state and
+unexamined sidecars from an unavailable store with unknown evidence. Preserve
+the original files, including any sidecars and matching saves, for
+[recovery review](RECONCILIATION.md). A hold leaves recorded files in place
+and performs no recovery. An empty existing store can still publish, and
+each catalog-only transaction rechecks the restriction before commit.
 Shutdown immediately stops new reload admission and revokes queued publication.
 The database worker drains admitted work and closes asynchronously. Shutdown
 never waits on the Paper thread for SQL or reload authorization.

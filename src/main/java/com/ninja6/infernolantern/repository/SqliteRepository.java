@@ -62,19 +62,25 @@ public final class SqliteRepository {
         Path registeredOwner=null;
         try {
             Path parent=file.getParent();
-            if(catalogOnly)NativeStoreFiles.checkPaths(file);
+            boolean existingNative=catalogOnly&&NativeStoreFiles.checkStartupPaths(file);
             if(parent!=null)Files.createDirectories(parent);
             if(catalogOnly){
                 Path owner=parent.toRealPath().resolve(file.getFileName()+".owner");
                 if(!NATIVE_OWNERS.add(owner))throw new IOException("Native storage already has an owner");
                 registeredOwner=owner;
-                nativeOwner=FileChannel.open(owner,StandardOpenOption.CREATE,StandardOpenOption.READ,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);
+                var ownerOptions=new HashSet<OpenOption>(Set.of(StandardOpenOption.READ,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS));
+                if(!existingNative)ownerOptions.add(StandardOpenOption.CREATE);
+                nativeOwner=FileChannel.open(owner,ownerOptions);
                 if(nativeOwner.tryLock()==null)throw new IOException("Native storage already has an owner");
+                boolean inspect=NativeStoreFiles.inspectExisting(file,nativeOwner);
+                if(existingNative&&!inspect)throw new IOException("Native database changed before inspection");
+                if(inspect)inspectNative(file);
                 NativeStoreFiles.prepare(file,nativeOwner,candidate->{
                     try(var initialized=PrivateSqlite.open(candidate)){
                         Schema.initialize(initialized,Schema.NATIVE_APPLICATION_ID);
                     }
                 });
+                if(!NativeStoreFiles.checkStartupPaths(file))throw new IOException("Native database disappeared before startup");
             }
             connection=PrivateSqlite.open(file);
             try(var statement=connection.createStatement();var rows=statement.executeQuery("SELECT sqlite_version()")){
@@ -99,6 +105,15 @@ public final class SqliteRepository {
             try {if(nativeOwner!=null)nativeOwner.close();}catch(IOException e){if(failure==null)failure=e;else failure.addSuppressed(e);}
             if(registeredOwner!=null)NATIVE_OWNERS.remove(registeredOwner);
             if(failure==null)closed.complete(null);else closed.completeExceptionally(failure);
+        }
+    }
+    private void inspectNative(Path file)throws Exception{
+        try(var inspection=PrivateSqlite.inspectNative(file)){
+            connection=inspection;
+            Schema.inspectNative(inspection);
+            validateStoredRows();
+        }finally{
+            connection=null;
         }
     }
     private <T> CompletableFuture<T> submit(Callable<T> action) {

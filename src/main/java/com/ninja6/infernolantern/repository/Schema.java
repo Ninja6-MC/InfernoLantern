@@ -1,5 +1,7 @@
 package com.ninja6.infernolantern.repository;
 
+import com.ninja6.infernolantern.repository.RepositoryException.NativeStartupHold;
+
 import java.sql.*;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
@@ -47,11 +49,7 @@ final class Schema {
         if((app!=applicationId && !(app==0&&version==0&&empty)) || version<0 || version>VERSION)throw new SQLException("Unrecognized or future database schema; preserve database");
         try(var s=c.createStatement();var r=s.executeQuery("PRAGMA quick_check")){if(!r.next()||!"ok".equals(r.getString(1))||r.next())throw new SQLException("Database integrity check failed");}
         if(version>0){
-            try(var s=c.createStatement();var r=s.executeQuery("SELECT version,checksum FROM schema_migrations ORDER BY version")){
-                int expected=1;
-                while(r.next()){if(r.getInt(1)!=expected||expected>version||!checksum(expected).equals(r.getString(2)))throw new SQLException("Migration history mismatch");expected++;}
-                if(expected!=version+1)throw new SQLException("Missing migration history");
-            }
+            verifyMigrations(c,version);
             verifyTables(c,version);
             if(applicationId==NATIVE_APPLICATION_ID)requireCatalogOnly(c);
         } else if(app==applicationId&&!empty)throw new SQLException("Missing migration metadata");
@@ -80,12 +78,43 @@ final class Schema {
         if(pragma(c,"synchronous")!=2||pragma(c,"foreign_keys")!=1||pragma(c,"busy_timeout")!=5000||pragma(c,"wal_autocheckpoint")!=1000)throw new SQLException("Required durability pragmas unavailable");
         verifyTables(c,VERSION);
     }
+    /** The immutable connection is for classification only. */
+    static void inspectNative(Connection c)throws SQLException{
+        if(pragma(c,"application_id")!=NATIVE_APPLICATION_ID||pragma(c,"user_version")!=VERSION)
+            throw new SQLException("Unrecognized native database schema");
+        verifyMigrations(c,VERSION);
+        verifyTables(c,VERSION);
+        if(exists(c,"SELECT EXISTS(SELECT 1 FROM operations WHERE phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING'))"))
+            throw new NativeStartupHold(NativeStartupHold.Reason.PENDING_OPERATIONS);
+        if(hasRecordedState(c))throw new NativeStartupHold(NativeStartupHold.Reason.RECORDED_STATE);
+    }
     static void requireCatalogOnly(Connection c)throws SQLException{
-        String sql="SELECT EXISTS(SELECT 1 FROM towers) OR EXISTS(SELECT 1 FROM operations) "
-                +"OR EXISTS(SELECT 1 FROM awards) OR EXISTS(SELECT 1 FROM variants "
-                +"WHERE NOT EXISTS(SELECT 1 FROM catalog_managed_variants WHERE variant_id=variants.id))";
+        if(hasRecordedState(c))throw new SQLException("Native gameplay evidence needs integration review");
+    }
+    private static boolean hasRecordedState(Connection c)throws SQLException{
+        return exists(c,"SELECT EXISTS(SELECT 1 FROM towers) OR EXISTS(SELECT 1 FROM operations) "
+                +"OR EXISTS(SELECT 1 FROM awards) OR EXISTS(SELECT 1 FROM ground_representations) "
+                +"OR EXISTS(SELECT 1 FROM manifest_components) OR EXISTS(SELECT 1 FROM structure_cells) "
+                +"OR EXISTS(SELECT 1 FROM award_towers) OR EXISTS(SELECT 1 FROM repair_escrows) "
+                +"OR EXISTS(SELECT 1 FROM catalog_award_holds) OR EXISTS(SELECT 1 FROM campaign_progress) "
+                +"OR EXISTS(SELECT 1 FROM variants WHERE NOT EXISTS(SELECT 1 FROM catalog_managed_variants "
+                +"WHERE variant_id=variants.id))");
+    }
+    private static boolean exists(Connection c,String sql)throws SQLException{
         try(var s=c.createStatement();var rows=s.executeQuery(sql)){
-            if(!rows.next()||rows.getBoolean(1))throw new SQLException("Native gameplay evidence needs integration review");
+            if(!rows.next())throw new SQLException("Native storage evidence could not be inspected");
+            return rows.getBoolean(1);
+        }
+    }
+    private static void verifyMigrations(Connection c,int version)throws SQLException{
+        try(var s=c.createStatement();var r=s.executeQuery("SELECT version,checksum FROM schema_migrations ORDER BY version")){
+            int expected=1;
+            while(r.next()){
+                if(r.getInt(1)!=expected||expected>version||!checksum(expected).equals(r.getString(2)))
+                    throw new SQLException("Migration history mismatch");
+                expected++;
+            }
+            if(expected!=version+1)throw new SQLException("Missing migration history");
         }
     }
     private static void verifyTables(Connection c,int version)throws SQLException{
@@ -94,7 +123,11 @@ final class Schema {
         for(int i=0;i<version;i++)expected.addAll(MIGRATIONS.get(i));
         var actual=new HashSet<String>();
         try(var s=c.createStatement();var r=s.executeQuery("SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")){
-            while(r.next())actual.add(r.getString(1));
+            while(r.next()){
+                String sql=r.getString(1);
+                if(!expected.contains(sql)||!actual.add(sql))
+                    throw new SQLException("Schema structure differs from migration history; preserve database");
+            }
         }
         if(!actual.equals(expected))throw new SQLException("Schema structure differs from migration history; preserve database");
     }

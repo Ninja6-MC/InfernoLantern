@@ -14,6 +14,13 @@ Current `ItemLifecycle` drop/pickup captures the normal Paper actor/session/slot
 
 **An envelope never establishes matched saves.** `WorldPort.inspect` must independently establish exact BEFORE or AFTER physical state and coverage/provenance. `MATCHED_COMPLETE` is an obligation of a trusted observation adapter, not a claim made true by setting an enum or passing an envelope. It requires an actually inspected matching save/observation set covering all relevant source, target, stage and original-component evidence; a database-only copy, clean stop, matching baseline or loaded target chunk alone is insufficient. Unknown locations, unavailable players/chunks, mixed snapshots and unverified provenance remain incomplete or unmatched. No permissive production coverage callback is supplied.
 
+The [native catalog startup check](CORE_RUNTIME.md#storage-and-shutdown) holds
+publication when its own store contains pending or terminal gameplay evidence.
+It inspects a sidecar-free store under its existing owner lock and leaves any
+unexamined SQLite sidecars in place. Status identifies the reason without
+reporting operation or player identifiers. A held startup admits no reload,
+reconciliation, or physical activation.
+
 ## Recovery decision and durable phase matrix
 
 `reconcile(operationId, port)` returns a future with a bounded generic diagnostic. Repository reads/writes run asynchronously. All inspection, revalidation and publication callbacks run through `WorldScheduler`; no world thread joins a database future. Callers keep gameplay unavailable until journals **and** unresolved physical staging/marker evidence have been assessed. Resolving one operation or receiving a terminal receipt does not grant global readiness.

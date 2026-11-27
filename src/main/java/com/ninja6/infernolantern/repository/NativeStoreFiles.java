@@ -1,5 +1,7 @@
 package com.ninja6.infernolantern.repository;
 
+import com.ninja6.infernolantern.repository.RepositoryException.NativeStartupHold;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -40,6 +42,22 @@ final class NativeStoreFiles {
         checkRegular(sidecar(file, ".owner"));
     }
 
+    static boolean checkStartupPaths(Path file) throws IOException {
+        checkPaths(file);
+        for (String suffix : SIDECARS) {
+            if (present(sidecar(file, suffix))) throw new NativeStartupHold(NativeStartupHold.Reason.SIDECARS);
+        }
+        return present(file);
+    }
+
+    /** Assess the existing publication link without unlinking anything. */
+    static boolean inspectExisting(Path file, FileChannel owner) throws IOException {
+        if (!checkStartupPaths(file)) return false;
+        if (parseMarker(readMarker(owner)) == null) throw new IOException("Unrecognized native owner metadata");
+        publicationCandidate(file, owner);
+        return true;
+    }
+
     /** The caller holds the process and filesystem owner locks for the entire operation. */
     static void prepare(Path file, FileChannel owner, Initializer initializer) throws Exception {
         checkPaths(file);
@@ -76,20 +94,9 @@ final class NativeStoreFiles {
     }
 
     private static void finishLink(Path file, FileChannel owner) throws IOException {
-        Integer links = links(file);
-        if (Integer.valueOf(1).equals(links)) return;
-        UUID stageId = parseMarker(readMarker(owner));
-        Path staging = stageId == null ? null : stagingDirectory(file, stageId);
-        Path candidate = staging == null ? null : staging.resolve(file.getFileName());
-        if (candidate == null || !Files.isDirectory(staging, LinkOption.NOFOLLOW_LINKS)
-                || !Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)
-                || !Files.isSameFile(file, candidate)) {
-            if (links != null) throw new IOException("Unrecognized native database link");
-            return;
-        }
-        if (links != null && links != 2) throw new IOException("Native database has unexpected links");
-        requireAbsentSidecars(file);
-        requireAbsentSidecars(candidate);
+        Path candidate = publicationCandidate(file, owner);
+        if (candidate == null) return;
+        Path staging = candidate.getParent();
         if (supportsUnix(file)) {
             try (var directory = FileChannel.open(file.getParent(), StandardOpenOption.READ)) {
                 directory.force(true);
@@ -101,6 +108,24 @@ final class NativeStoreFiles {
         } catch (DirectoryNotEmptyException preserve) {
             // Evidence unrelated to the exact publication link stays in the staging directory.
         }
+    }
+
+    private static Path publicationCandidate(Path file, FileChannel owner) throws IOException {
+        Integer links = links(file);
+        if (Integer.valueOf(1).equals(links)) return null;
+        UUID stageId = parseMarker(readMarker(owner));
+        Path staging = stageId == null ? null : stagingDirectory(file, stageId);
+        Path candidate = staging == null ? null : staging.resolve(file.getFileName());
+        if (candidate == null || !Files.isDirectory(staging, LinkOption.NOFOLLOW_LINKS)
+                || !Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)
+                || !Files.isSameFile(file, candidate)) {
+            if (links != null) throw new IOException("Unrecognized native database link");
+            return null;
+        }
+        if (links != null && links != 2) throw new IOException("Native database has unexpected links");
+        requireAbsentSidecars(file);
+        requireAbsentSidecars(candidate);
+        return candidate;
     }
 
     private static void verifyHeader(Path file) throws IOException {

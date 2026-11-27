@@ -1,12 +1,18 @@
 package com.ninja6.infernolantern.repository;
 
+import com.ninja6.infernolantern.repository.RepositoryException.NativeStartupHold;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
+import java.sql.SQLException;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -56,21 +62,128 @@ class NativeCatalogStorageTest {
         }
     }
 
-    @Test void unexpectedlyNonemptyNativeStoreFailsWithoutCatalogPublication() throws Exception {
-        var file = data.resolve("lanterns.db");
-        get(get(SqliteRepository.openCatalogOnly(file, 8)).closeAsync());
-        try (var connection = PrivateSqlite.open(file); var sql = connection.createStatement()) {
-            sql.execute("INSERT INTO variants VALUES('legacy',0,'ACTIVE',1,'held definition',0)");
-            sql.execute("INSERT INTO towers VALUES('00000000-0000-0000-0000-000000000001','legacy',0,100,'PORTABLE',1,0,null,null,null,null,null,null,0,0,0,0,0,null)");
-        }
+    @Test void nativeInspectorOpensReadOnlyWithoutSidecarsInPathWithSpaces() throws Exception {
+        var directory = Files.createDirectory(data.resolve("native catalog #%"));
+        var file = directory.resolve("lanterns.db");
+        initializeNative(file);
         byte[] saved = Files.readAllBytes(file);
-        assertThrows(ExecutionException.class, () -> get(SqliteRepository.openCatalogOnly(file, 8)));
+        try (var inspection = PrivateSqlite.inspectNative(file); var sql = inspection.createStatement()) {
+            assertTrue(inspection.isReadOnly());
+            assertThrows(SQLException.class, () -> sql.execute("DELETE FROM schema_migrations"));
+            assertNoSidecars(file);
+        }
         assertArrayEquals(saved, Files.readAllBytes(file));
-        try (var connection = PrivateSqlite.open(file); var sql = connection.createStatement();
-             var rows = sql.executeQuery("SELECT (SELECT count(*) FROM towers), (SELECT count(*) FROM catalog_state)")) {
-            assertTrue(rows.next());
-            assertEquals(1, rows.getInt(1));
-            assertEquals(0, rows.getInt(2));
+        initializeNative(file);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Phase.class)
+    void nativePhasesHoldWithoutChangingEvidence(Phase phase) throws Exception {
+        var file = data.resolve("lanterns.db");
+        initializeNative(file);
+        try (var connection = PrivateSqlite.open(file); var sql = connection.createStatement()) {
+            insertTower(sql);
+            try (var insert = connection.prepareStatement("INSERT INTO operations VALUES("
+                    + "'00000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001',"
+                    + "0,1,0,'test',X'00',X'00',1,'held recipe',?,0,'held evidence')")){
+                insert.setString(1, phase.name());
+                insert.executeUpdate();
+            }
+        }
+        var expected = switch (phase) {
+            case INTENT, EFFECTS_APPLIED, RECONCILING -> NativeStartupHold.Reason.PENDING_OPERATIONS;
+            case COMPLETE, ROLLED_BACK -> NativeStartupHold.Reason.RECORDED_STATE;
+        };
+        assertHeld(file, expected);
+    }
+
+    @Test void heldRecordsDoNotFinishInterruptedPublicationLink() throws Exception {
+        var file = data.resolve("lanterns.db");
+        var stage = UUID.randomUUID();
+        var stageDir = Files.createDirectory(data.resolve("lanterns.db.initializing-" + stage));
+        var stageFile = stageDir.resolve(file.getFileName());
+        try (var connection = PrivateSqlite.open(stageFile); var sql = connection.createStatement()) {
+            Schema.initialize(connection, Schema.NATIVE_APPLICATION_ID);
+            insertTower(sql);
+        }
+        Files.writeString(owner(file), "native-stage-v1:" + stage);
+        Files.createLink(file, stageFile);
+        assertHeld(file, NativeStartupHold.Reason.RECORDED_STATE);
+        assertTrue(Files.isSameFile(file, stageFile));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"-wal", "-shm", "-journal"})
+    void sidecarsArePreservedWithoutAttemptingReadOrRecovery(String suffix) throws Exception {
+        var file = data.resolve("lanterns.db");
+        initializeNative(file);
+        var sidecar = Files.writeString(data.resolve("lanterns.db" + suffix), "unexamined test bytes");
+        byte[] main = Files.readAllBytes(file);
+        byte[] ownerBytes = Files.readAllBytes(owner(file));
+        var failure = assertThrows(ExecutionException.class, () -> get(SqliteRepository.openCatalogOnly(file, 8)));
+        assertEquals(NativeStartupHold.Reason.SIDECARS,
+                assertInstanceOf(NativeStartupHold.class, failure.getCause()).reason());
+        assertArrayEquals(main, Files.readAllBytes(file));
+        assertArrayEquals(ownerBytes, Files.readAllBytes(owner(file)));
+        assertEquals("unexamined test bytes", Files.readString(sidecar));
+    }
+
+    @Test void nativeHeaderAloneCannotClassifyJournalWithUnknownMigration() throws Exception {
+        var file = data.resolve("lanterns.db");
+        initializeNative(file);
+        try (var connection = PrivateSqlite.open(file); var sql = connection.createStatement()) {
+            insertTower(sql);
+            sql.execute("UPDATE schema_migrations SET checksum='unrecognized' WHERE version=5");
+        }
+        assertUnavailablePreserving(file);
+    }
+
+    @Test void existingNativeDataWithoutRecognizedOwnerIsNotAdopted() throws Exception {
+        var file = data.resolve("lanterns.db");
+        initializeNative(file);
+        Files.delete(owner(file));
+        assertUnavailablePreserving(file);
+        assertFalse(Files.exists(owner(file)));
+        Files.writeString(owner(file), "unrecognized owner");
+        assertUnavailablePreserving(file);
+        assertEquals("unrecognized owner", Files.readString(owner(file)));
+    }
+
+    private static void insertTower(java.sql.Statement sql) throws Exception {
+        sql.execute("INSERT INTO variants VALUES('legacy',0,'ACTIVE',1,'held definition',0)");
+        sql.execute("INSERT INTO towers VALUES('00000000-0000-0000-0000-000000000001',"
+                + "'legacy',0,100,'PORTABLE',1,0,null,null,null,null,null,null,0,0,0,0,0,null)");
+    }
+
+    private static void initializeNative(Path file) throws Exception {
+        get(get(SqliteRepository.openCatalogOnly(file, 8)).closeAsync());
+    }
+
+    private static Path owner(Path file) {
+        return file.resolveSibling(file.getFileName() + ".owner");
+    }
+
+    private static void assertHeld(Path file, NativeStartupHold.Reason expected) throws Exception {
+        byte[] saved = Files.readAllBytes(file);
+        byte[] ownerBytes = Files.readAllBytes(owner(file));
+        var failure = assertThrows(ExecutionException.class, () -> get(SqliteRepository.openCatalogOnly(file, 8)));
+        assertEquals(expected, assertInstanceOf(NativeStartupHold.class, failure.getCause()).reason());
+        assertArrayEquals(saved, Files.readAllBytes(file));
+        assertArrayEquals(ownerBytes, Files.readAllBytes(owner(file)));
+        assertNoSidecars(file);
+    }
+
+    private static void assertUnavailablePreserving(Path file) throws Exception {
+        byte[] saved = Files.readAllBytes(file);
+        var failure = assertThrows(ExecutionException.class, () -> get(SqliteRepository.openCatalogOnly(file, 8)));
+        assertFalse(failure.getCause() instanceof NativeStartupHold);
+        assertArrayEquals(saved, Files.readAllBytes(file));
+        assertNoSidecars(file);
+    }
+
+    private static void assertNoSidecars(Path file) {
+        for (String suffix : new String[]{"-wal", "-shm", "-journal"}) {
+            assertFalse(Files.exists(file.resolveSibling(file.getFileName() + suffix)));
         }
     }
 
