@@ -135,6 +135,23 @@ tasks.register<JavaExec>("repositoryBenchmark") {
     mainClass.set("com.ninja6.infernolantern.repository.RepositoryBenchmark")
 }
 
+// Run the offline inspector from its own source set, outside the plugin JAR.
+val offlineRecovery = sourceSets.create("offlineRecovery") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().output
+}
+sourceSets.test {
+    compileClasspath += offlineRecovery.output
+    runtimeClasspath += offlineRecovery.output
+}
+tasks.register<JavaExec>("offlineRecoveryInspection") {
+    group = "verification"
+    description = "Inspects one item-drop journal in a copied offline native database."
+    classpath = offlineRecovery.runtimeClasspath
+    mainClass.set("com.ninja6.infernolantern.repository.OfflineRecoveryInspection")
+    javaLauncher.set(javaToolchains.launcherFor(java.toolchain))
+}
+
 // Local artifact preparation only: no deployment, server configuration or network access.
 tasks.register<Exec>("itemTestKit") {
     group = "build"

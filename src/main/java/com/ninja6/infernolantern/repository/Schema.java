@@ -80,12 +80,15 @@ final class Schema {
         verifyTables(c,VERSION);
     }
     /** The immutable connection is for classification only. */
-    static void inspectNative(Connection c)throws SQLException{
+    static void verifyNative(Connection c)throws SQLException{
         if(pragma(c,"application_id")!=NATIVE_APPLICATION_ID||pragma(c,"user_version")!=VERSION)
             throw new SQLException("Unrecognized native database schema");
         verifyMigrations(c,VERSION);
         verifyTables(c,VERSION);
         verifyIntegrity(c);
+    }
+    static void inspectNative(Connection c)throws SQLException{
+        verifyNative(c);
         if(exists(c,"SELECT EXISTS(SELECT 1 FROM operations WHERE phase IN ('INTENT','EFFECTS_APPLIED','RECONCILING'))"))
             throw new NativeStartupHold(NativeStartupHold.Reason.PENDING_OPERATIONS);
         if(hasRecordedState(c))throw new NativeStartupHold(NativeStartupHold.Reason.RECORDED_STATE);
