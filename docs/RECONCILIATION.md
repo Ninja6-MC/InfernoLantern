@@ -20,10 +20,14 @@ recipe anchor and all relevant custody, including containers, other slots and ch
 either generation could have moved. The referenced player slot and ground entity each need
 explicit evidence from their respective saves. An inspected absence is represented separately
 from a missing capture component. Each input retains its original capture identity and
-digest. The consumer rejects mixed captures, different rows, and any difference between the
-saved state and the owner observation other than forward item age. A ground entity requires
-explicit persisted `Spigot.ticksLived`; a missing field must be reported as unknown. On the
-pinned Paper build, returning an unlimited stage to finite lifetime uses that counter.
+digest. The consumer rejects mixed captures, different rows and differences in the persisted
+fields of the owner observation, allowing forward item age. Known conflicting custody needs
+administrative review even when a separate required artifact is unavailable. A ground entity
+requires explicit persisted `Spigot.ticksLived`; a missing field must be reported as unknown.
+On the pinned Paper build, returning an unlimited stage to finite lifetime uses that counter.
+Paper restores mob pickup enabled even when it was disabled before a crash. A staged item
+requires a current owner-thread check that mob pickup is disabled before observation and at
+revalidation. The integration must reassert that quarantine after load.
 
 The trusted capture source must assign the capture identity at a common quiescent boundary,
 verify each artifact and inspect its contents before handing them to the comparator. It must

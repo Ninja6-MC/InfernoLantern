@@ -70,7 +70,7 @@ class PaperRecoveryPortTest {
     PaperRecoveryPort port(){return port((o,t,c,i)->new CoverageProof(coverage,"synthetic independent matched-save scope"));}
     PaperRecoveryPort port(CoverageCheck witness){return new PaperRecoveryPort(witness,o->authorized,v->GroundPolicy.DEFAULT,i->{assertSame(item,i);admitted++;});}
     Inspection inspect(PaperRecoveryPort port,Operation op){var context=RecoveryEnvelope.decode(op.intent().effects()).orElseThrow();TowerSnapshot pending=new TowerSnapshot(op.before(),1,operation);return new Inspection(op,pending,context,port.inspect(op,pending,context));}
-    Capture saved(Operation op,String slot,GroundView mark){
+    Capture saved(Operation op,String slot,GroundEvidence mark){
         UUID id=UUID.randomUUID();
         return new Capture(new Database(new Source(id,"1".repeat(64)),op,new TowerSnapshot(op.before(),1,operation)),
                 new WorldScope(new Source(id,"2".repeat(64)),anchor,Custody.EXACT),
@@ -78,8 +78,8 @@ class PaperRecoveryPortTest {
                 new GroundEntity(new Source(id,"4".repeat(64)),op.intent().after().ground(),mark));
     }
     String itemBytes(ItemStack stack){return Base64.getEncoder().encodeToString(stack.serializeAsBytes());}
-    GroundView savedStage(int savedAge){
-        return new GroundView(entityId,itemBytes(stack(2)),worldId,0,0,4.5,70.5,4.5,true,false,false,true,true,true,savedAge,operation.toString());
+    GroundEvidence savedStage(int savedAge){
+        return new GroundEvidence(entityId,itemBytes(stack(2)),worldId,0,0,4.5,70.5,4.5,true,false,true,true,true,savedAge,operation.toString());
     }
     @Test void independentBeforeAndAfterCapturesMatchOnlyTheirExactRepresentation(){
         Operation op=drop();String source=itemBytes(stack(1));
@@ -133,6 +133,28 @@ class PaperRecoveryPortTest {
         assertFalse(port.publish(observation,new TowerSnapshot(op.intent().after(),2,null)));
         assertEquals(0,mutations);
     }
+    @Test void stagedMobPickupMustBeQuarantinedOnTheOwnerThreadAfterRestart(){
+        Operation op=drop();stage();
+        Capture after=saved(op,"empty",savedStage(age));
+        var witness=new MatchedItemSaves(()->Optional.of(after));
+        TowerSnapshot completed=new TowerSnapshot(op.intent().after(),2,null);
+        age+=5;
+        mob=true;
+        var raw=port(witness);var unquarantined=inspect(raw,op);
+        assertEquals(Physical.MIXED,unquarantined.observation().physical());
+        assertEquals(Coverage.UNMATCHED,unquarantined.observation().coverage());
+        assertFalse(raw.publish(unquarantined,completed));
+
+        mob=false;
+        var quarantined=port(witness);var observed=inspect(quarantined,op);
+        assertEquals(Physical.AFTER,observed.observation().physical());
+        assertEquals(Coverage.MATCHED_COMPLETE,observed.observation().coverage());
+        mob=true;
+        assertFalse(quarantined.revalidate(observed));
+        assertFalse(quarantined.publish(observed,completed));
+        assertTrue(tags.containsKey(staged));
+        assertEquals(0,mutations);
+    }
     @Test void reopenedJournalUsesInspectedDatabaseCopyAndNeverReusesTerminalAuthority() throws Exception {
         Path store=directory.resolve("active.db"),copy=directory.resolve("captured.db");
         Operation op=drop();
@@ -166,6 +188,14 @@ class PaperRecoveryPortTest {
                 assertEquals(Outcome.WAIT,get(service.reconcile(operation,port(witness))).outcome());
                 assertEquals(capture.database().operation(),get(repository.operation(operation)).orElseThrow());
                 assertEquals(0,mutations);
+                var conflict=new WorldScope(capture.world().source(),anchor,Custody.CONFLICTING);
+                for(Capture partial:List.of(new Capture(capture.database(),conflict,null,capture.ground()),
+                        new Capture(capture.database(),conflict,capture.player(),null))){
+                    current.set(Optional.of(partial));
+                    assertEquals(Outcome.ADMIN_REQUIRED,get(service.reconcile(operation,port(witness))).outcome());
+                    assertEquals(capture.database().operation(),get(repository.operation(operation)).orElseThrow());
+                    assertEquals(0,mutations);
+                }
                 current.set(Optional.of(capture));
                 var matched=port(witness);
                 assertEquals(Outcome.COMPLETED,get(service.reconcile(operation,matched)).outcome());

@@ -17,6 +17,7 @@ import java.util.regex.Pattern;
 
 import com.ninja6.infernolantern.recovery.PaperRecoveryPort.CoverageCheck;
 import com.ninja6.infernolantern.recovery.PaperRecoveryPort.CoverageProof;
+import com.ninja6.infernolantern.recovery.PaperRecoveryPort.GroundEvidence;
 import com.ninja6.infernolantern.recovery.PaperRecoveryPort.GroundView;
 import com.ninja6.infernolantern.recovery.PaperRecoveryPort.ItemView;
 import com.ninja6.infernolantern.recovery.ReconciliationService.Coverage;
@@ -66,7 +67,7 @@ public final class MatchedItemSaves implements CoverageCheck {
     }
 
     /** A present record with a null item attests to an inspected absence in the complete scope. */
-    public record GroundEntity(Source source,Ground reference,GroundView item) {
+    public record GroundEntity(Source source,Ground reference,GroundEvidence item) {
         public GroundEntity {
             Objects.requireNonNull(source);
             Objects.requireNonNull(reference);
@@ -103,13 +104,13 @@ public final class MatchedItemSaves implements CoverageCheck {
                 ||ground!=null&&!id.equals(ground.source().captureId())){
             return new CoverageProof(Coverage.UNMATCHED,"Save capture or journal snapshot differs");
         }
+        if(world.custody()==Custody.CONFLICTING){
+            return new CoverageProof(Coverage.UNMATCHED,"Capture found conflicting custody evidence");
+        }
         Ground reference=operation.before().ground()!=null?operation.before().ground():operation.intent().after().ground();
         var slot=context.inventory();
         if(world.custody()==Custody.INCOMPLETE||slot!=null&&player==null||reference!=null&&ground==null){
             return new CoverageProof(Coverage.INCOMPLETE,"Player, entity or custody scope unavailable");
-        }
-        if(world.custody()==Custody.CONFLICTING){
-            return new CoverageProof(Coverage.UNMATCHED,"Capture found conflicting custody evidence");
         }
         if(ground!=null&&ground.item()!=null&&ground.item().age()<0){
             return new CoverageProof(Coverage.INCOMPLETE,"Persisted entity lifetime unavailable");
@@ -125,8 +126,8 @@ public final class MatchedItemSaves implements CoverageCheck {
         return new CoverageProof(Coverage.MATCHED_COMPLETE,"Matched item save capture "+digest(fingerprint));
     }
 
-    private static boolean matchesGround(GroundView saved,GroundView observed) {
-        return saved==null?observed==null:saved.stillMatches(observed);
+    private static boolean matchesGround(GroundEvidence saved,GroundView observed) {
+        return saved==null?observed==null:observed!=null&&saved.stillMatches(observed.persisted());
     }
 
     private static String digest(String value) {

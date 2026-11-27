@@ -27,12 +27,19 @@ public final class PaperRecoveryPort implements WorldPort {
     private final PaperItemIdentity identity=new PaperItemIdentity();
     private final Map<UUID,Snapshot> observations=new HashMap<>();
     private boolean inspected;
-    /** Encoded API item bytes and the exact entity state required by the item observation. */
-    public record GroundView(UUID entity,String stack,UUID world,int chunkX,int chunkZ,double x,double y,double z,
-                             boolean staged,boolean pickup,boolean mob,boolean invulnerable,boolean unlimited,boolean gravity,int age,String operation) {
+    /** Fields shared by the pinned Paper entity save and the owner-thread observation. */
+    public record GroundEvidence(UUID entity,String stack,UUID world,int chunkX,int chunkZ,double x,double y,double z,
+                                 boolean staged,boolean pickup,boolean invulnerable,boolean unlimited,boolean gravity,int age,String operation) {
+        boolean stillMatches(GroundEvidence other) {
+            return other!=null&&other.age>=age&&new GroundEvidence(entity,stack,world,chunkX,chunkZ,x,y,z,
+                    staged,pickup,invulnerable,unlimited,gravity,other.age,operation).equals(other);
+        }
+    }
+    /** Mob pickup quarantine must be checked on the current owner thread after a load. */
+    public record GroundView(GroundEvidence persisted,boolean mobPickup) {
+        public GroundView { Objects.requireNonNull(persisted); }
         boolean stillMatches(GroundView other) {
-            return other!=null&&other.age>=age&&new GroundView(entity,stack,world,chunkX,chunkZ,x,y,z,
-                    staged,pickup,mob,invulnerable,unlimited,gravity,other.age,operation).equals(other);
+            return other!=null&&mobPickup==other.mobPickup&&persisted.stillMatches(other.persisted);
         }
     }
     /** Inventory is serialized as base64, or the literal empty/none for an empty or unreferenced slot. */
@@ -72,14 +79,17 @@ public final class PaperRecoveryPort implements WorldPort {
             if(!item.isValid())return incomplete(Physical.UNKNOWN,"Ground scope unavailable");
             Location at=item.getLocation();String operation=item.getPersistentDataContainer().get(PaperItemIdentity.OPERATION,PersistentDataType.STRING);
             boolean staged=Byte.valueOf((byte)1).equals(item.getPersistentDataContainer().get(STAGED,PersistentDataType.BYTE));
+            ItemStack stack=item.getItemStack();
+            var persisted=new GroundEvidence(item.getUniqueId(),bytes(stack),item.getWorld().getUID(),at.getBlockX()>>4,at.getBlockZ()>>4,
+                    at.getX(),at.getY(),at.getZ(),staged,item.canPlayerPickup(),item.isInvulnerable(),item.isUnlimitedLifetime(),
+                    item.hasGravity(),item.getTicksLived(),operation);
+            actual=new GroundView(persisted,item.canMobPickup());
             boolean anchor=item.getUniqueId().equals(expected.entity())&&item.getWorld().getUID().equals(expected.world())&&(at.getBlockX()>>4)==expected.chunkX()&&(at.getBlockZ()>>4)==expected.chunkZ();
             boolean tag=expected.deliveryOperation().toString().equals(operation);
-            var token=identity.read(item.getItemStack());
+            var token=identity.read(stack);
             beforeGround=anchor&&tag&&!staged&&token.filter(ItemLifecycle.token(op.before().tower())::equals).isPresent();
             afterGround=anchor&&tag&&token.filter(ItemLifecycle.token(op.intent().after().tower())::equals).isPresent()
-                    &&(!staged||!item.canPlayerPickup()&&!item.canMobPickup()&&item.isInvulnerable()&&item.isUnlimitedLifetime()&&item.hasGravity());
-            actual=new GroundView(item.getUniqueId(),bytes(item.getItemStack()),item.getWorld().getUID(),at.getBlockX()>>4,at.getBlockZ()>>4,at.getX(),at.getY(),at.getZ(),
-                    staged,item.canPlayerPickup(),item.canMobPickup(),item.isInvulnerable(),item.isUnlimitedLifetime(),item.hasGravity(),item.getTicksLived(),operation);
+                    &&(!staged||!persisted.pickup()&&!actual.mobPickup()&&persisted.invulnerable()&&persisted.unlimited()&&persisted.gravity());
         }
         boolean empty=air(inventory);
         boolean exact=c.inventory()!=null&&inventoryBytes.equals(Base64.getEncoder().encodeToString(c.inventory().bytes().copy()));
@@ -123,7 +133,7 @@ public final class PaperRecoveryPort implements WorldPort {
         if(!resolved.state().equals(inspection.operation().intent().after()))return false;
         Item item=ground(inspection.operation());
         if(captured.items().physical()!=Physical.AFTER)return false;
-        if(captured.items().ground()!=null&&captured.items().ground().staged()){
+        if(captured.items().ground()!=null&&captured.items().ground().persisted().staged()){
             if(item==null||!same(captured,capture(inspection.operation(),inspection.tower(),inspection.context())))return false;
             GroundPolicy policy=Objects.requireNonNull(policies.apply(resolved.state().tower().variantId()));
             item.getPersistentDataContainer().remove(STAGED);item.setInvulnerable(false);item.setUnlimitedLifetime(!policy.despawns());item.setGravity(true);item.setCanPlayerPickup(true);item.setPickupDelay(20);
