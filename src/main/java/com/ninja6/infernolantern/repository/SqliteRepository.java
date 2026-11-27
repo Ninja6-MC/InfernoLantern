@@ -4,6 +4,7 @@ import com.ninja6.infernolantern.catalog.CatalogCodec;
 import com.ninja6.infernolantern.catalog.CatalogConfig.RepairPolicy;
 import com.ninja6.infernolantern.repair.RepairQuote;
 import com.ninja6.infernolantern.recovery.RecoveryEnvelope;
+import com.ninja6.infernolantern.repository.RepositoryException.NativeStartupHold;
 import com.ninja6.infernolantern.structure.BlastImpact;
 
 import java.nio.file.*;
@@ -13,6 +14,7 @@ import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 
@@ -32,12 +34,35 @@ public final class SqliteRepository {
     private String validatedEngineVersion;
     private final Thread worker;
     private final boolean catalogOnly;
+    private final Consumer<HeldReservations> onHeld;
+
+    /** A verified startup projection. Closing releases the owner's read lease asynchronously. */
+    public static final class HeldReservations {
+        private final Set<Cell> cells;
+        private final CompletableFuture<Void> release = new CompletableFuture<>();
+        private final CompletableFuture<Void> closed;
+
+        private HeldReservations(Set<Cell> cells, CompletableFuture<Void> closed) {
+            this.cells = cells;
+            this.closed = closed;
+        }
+
+        public Set<Cell> cells() { return cells; }
+
+        public CompletableFuture<Void> closeAsync() {
+            release.complete(null);
+            return closed.copy();
+        }
+    }
+
+    private record ExistingHold(NativeStartupHold failure, Set<Cell> cells) {}
     private record Job<T>(Callable<T> action, CompletableFuture<T> future) {
         void run() { try { future.complete(action.call()); } catch(Throwable e) { future.completeExceptionally(e); if(e instanceof Error error)throw error; } }
     }
-    private SqliteRepository(Path file,int capacity,boolean catalogOnly) {
+    private SqliteRepository(Path file,int capacity,boolean catalogOnly,Consumer<HeldReservations> onHeld) {
         if(capacity<1||capacity>100_000)throw new IllegalArgumentException("Queue capacity");
         this.catalogOnly=catalogOnly;
+        this.onHeld=onHeld;
         queue=new ArrayBlockingQueue<>(capacity);
         observationSlots=new Semaphore(capacity);
         worker=new Thread(()->run(file),"infernolantern-repository");
@@ -45,15 +70,21 @@ public final class SqliteRepository {
         worker.start();
     }
     public static CompletableFuture<SqliteRepository> open(Path file,int queueCapacity) {
-        return open(file,queueCapacity,false);
+        return open(file,queueCapacity,false,null);
     }
     /** Dedicated native store. Gameplay writes remain closed upstream until their routes are bound. */
     public static CompletableFuture<SqliteRepository> openCatalogOnly(Path file,int queueCapacity) {
-        return open(file,queueCapacity,true);
+        return open(file,queueCapacity,true,null);
     }
-    private static CompletableFuture<SqliteRepository> open(Path file,int queueCapacity,boolean catalogOnly) {
+    /** The observer owns closure for each delivered hold, even if publication is rejected. */
+    public static CompletableFuture<SqliteRepository> openCatalogOnly(Path file,int queueCapacity,
+            Consumer<HeldReservations> observer) {
+        return open(file,queueCapacity,true,Objects.requireNonNull(observer));
+    }
+    private static CompletableFuture<SqliteRepository> open(Path file,int queueCapacity,boolean catalogOnly,
+            Consumer<HeldReservations> observer) {
         Objects.requireNonNull(file);
-        try { return new SqliteRepository(file.toAbsolutePath(),queueCapacity,catalogOnly).ready; }
+        try { return new SqliteRepository(file.toAbsolutePath(),queueCapacity,catalogOnly,observer).ready; }
         catch(RuntimeException e) { return CompletableFuture.failedFuture(e); }
     }
     private void run(Path file) {
@@ -74,7 +105,17 @@ public final class SqliteRepository {
                 if(nativeOwner.tryLock()==null)throw new IOException("Native storage already has an owner");
                 boolean inspect=NativeStoreFiles.inspectExisting(file,nativeOwner);
                 if(existingNative&&!inspect)throw new IOException("Native database changed before inspection");
-                if(inspect)inspectNative(file);
+                var hold=inspect?inspectNative(file):null;
+                if(hold!=null){
+                    if(hold.cells()==null)throw hold.failure();
+                    if(!NativeStoreFiles.inspectExisting(file,nativeOwner))
+                        throw new IOException("Native database changed during reservation inspection");
+                    var reservations=new HeldReservations(hold.cells(),closed);
+                    onHeld.accept(reservations);
+                    ready.completeExceptionally(hold.failure());
+                    if(!hold.cells().isEmpty())reservations.release.join();
+                    return;
+                }
                 NativeStoreFiles.prepare(file,nativeOwner,candidate->{
                     try(var initialized=PrivateSqlite.open(candidate)){
                         Schema.initialize(initialized,Schema.NATIVE_APPLICATION_ID);
@@ -107,11 +148,18 @@ public final class SqliteRepository {
             if(failure==null)closed.complete(null);else closed.completeExceptionally(failure);
         }
     }
-    private void inspectNative(Path file)throws Exception{
+    private ExistingHold inspectNative(Path file)throws Exception{
         try(var inspection=PrivateSqlite.inspectNative(file)){
             connection=inspection;
-            Schema.inspectNative(inspection);
+            try {
+                Schema.inspectNative(inspection);
+            } catch(NativeStartupHold hold){
+                var cells=onHeld!=null&&Files.size(file)<=NativeReservationSnapshot.MAX_DATABASE_BYTES
+                        ?NativeReservationSnapshot.inspect(inspection).orElse(null):null;
+                return new ExistingHold(hold,cells);
+            }
             validateStoredRows();
+            return null;
         }finally{
             connection=null;
         }
@@ -572,7 +620,7 @@ public final class SqliteRepository {
         require(policy!=null,"Repair is not configured");
         return policy;
     }
-    private static Set<Cell> cells(List<State> states){
+    static Set<Cell> cells(List<State> states){
         var result=new HashSet<Cell>();
         for(State state:states)for(Component c:state.components())result.add(new Cell(c.world(),c.x(),c.y(),c.z()));
         return result;

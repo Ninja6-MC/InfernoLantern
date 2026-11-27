@@ -11,6 +11,7 @@ import com.ninja6.infernolantern.item.GroundPolicy;
 import com.ninja6.infernolantern.item.PaperItemFreeze;
 import com.ninja6.infernolantern.pack.NativeJavaPackDelivery;
 import com.ninja6.infernolantern.runtime.NativeCatalogRuntime;
+import com.ninja6.infernolantern.runtime.PaperHeldReservationGuard;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException.CommitRevoked;
 import com.ninja6.infernolantern.scheduling.PaperWorldScheduler;
@@ -45,6 +46,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     private OverrideSessions override;
     private CampaignAwardCommand awards;
     private NativeCatalogRuntime nativeCatalog;
+    private PaperHeldReservationGuard nativeHeldGuard;
     private PaperItemFreeze nativeFreeze;
     private JavaPackConfig javaPackConfig;
     private String javaPackStatus = "disabled";
@@ -87,8 +89,12 @@ public final class InfernoLanternPlugin extends JavaPlugin {
             else getServer().getScheduler().runTask(this, task);
         });
         catalogDispatch = dispatch;
+        var heldGuard = new PaperHeldReservationGuard();
+        nativeHeldGuard = heldGuard;
+        getServer().getPluginManager().registerEvents(heldGuard, this);
         nativeCatalog = new NativeCatalogRuntime(directory, cleanup, catalogIo, nativeScheduler,
-                javaPackConfig != null && javaPackConfig.localOverride());
+                javaPackConfig != null && javaPackConfig.localOverride(),
+                cells -> dispatch.check(() -> heldGuard.publish(cells)));
         nativeCatalog.startup().thenAccept(result -> dispatch.check(() -> {
             updateJavaPacks(result);
             if (result != NativeCatalogRuntime.Result.PUBLISHED) {
@@ -240,6 +246,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
     public void onDisable() {
         if (awards != null) awards.close();
         if (override != null) override.close();
+        if (nativeHeldGuard != null) nativeHeldGuard.close();
         if (nativeCatalog != null) nativeCatalog.close();
         if (catalogDispatch != null) catalogDispatch.close();
         stopJavaPacks();
@@ -249,6 +256,7 @@ public final class InfernoLanternPlugin extends JavaPlugin {
         if (items != null) items.close();
         if (prototype != null) prototype.close();
         nativeCatalog = null;
+        nativeHeldGuard = null;
         catalogDispatch = null;
         nativeScheduler = null;
         catalogIo = null;

@@ -99,6 +99,24 @@ the original files, including any sidecars and matching saves, for
 [recovery review](RECONCILIATION.md). A hold leaves recorded files in place
 and performs no recovery. An empty existing store can still publish, and
 each catalog-only transaction rechecks the restriction before commit.
+
+For a recognized native hold, the immutable inspection can verify the
+database's current structure reservations against the tower manifests and the
+before/after union of each active journal. When a nonempty projection is
+published on the Paper owner thread, status reports that the recorded native
+cells are guarded against direct player edits. The guard checks world UUID
+and exact coordinates for breaking, placement including multi-block placement,
+and bucket fill or empty. It does no file or database I/O and loads no chunks.
+The native owner lock stays held until the guard closes. The read inspection
+accepts at most 256 MiB of database data, 1,024 towers and pending operations,
+and 65,536 current component rows and reserved cells. These are inspection
+bounds. A sidecar, invalid or over-budget projection leaves coverage unknown.
+
+Protection starts after asynchronous inspection and owner publication. Status
+reports unknown coverage while a held projection is awaiting publication.
+This guard covers recorded coordinates and the named Paper event paths.
+General physics, entity and save-custody evidence remain outside its scope.
+A held startup still refuses reload and gameplay.
 Shutdown immediately stops new reload admission and revokes queued publication.
 The database worker drains admitted work and closes asynchronously. Shutdown
 never waits on the Paper thread for SQL or reload authorization.

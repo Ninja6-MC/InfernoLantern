@@ -5,7 +5,9 @@ import com.ninja6.infernolantern.pack.PackPlan;
 import com.ninja6.infernolantern.prototype.PrototypeLedger.CleanupInspection;
 import com.ninja6.infernolantern.repository.CommitPermit;
 import com.ninja6.infernolantern.repository.RepositoryException;
+import com.ninja6.infernolantern.repository.RepositoryRecords.Cell;
 import com.ninja6.infernolantern.repository.SqliteRepository;
+import com.ninja6.infernolantern.repository.SqliteRepository.HeldReservations;
 import com.ninja6.infernolantern.scheduling.WorldScheduler;
 
 import java.io.IOException;
@@ -17,10 +19,13 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /** Owns one catalog-only native store and serializes startup and reload. */
@@ -36,6 +41,9 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         OPENING, CLEANUP_BLOCKED, SIDECARS_BLOCKED, JOURNAL_BLOCKED, RECORDS_BLOCKED, UNAVAILABLE,
         UNPUBLISHED, PUBLISHED, CLOSED
     }
+    private enum ReservationStatus {
+        UNKNOWN, EMPTY, GUARDED
+    }
     private static final int MAX_CATALOG_BYTES = 1_048_576;
     private static final int QUEUE_CAPACITY = 64;
 
@@ -49,6 +57,9 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     private final CompletableFuture<CatalogService> service;
     private final CompletableFuture<Result> startup;
     private volatile State state = State.OPENING;
+    private volatile ReservationStatus reservationStatus = ReservationStatus.UNKNOWN;
+    private HeldReservations heldReservations;
+    private volatile CompletableFuture<Void> heldClosed = CompletableFuture.completedFuture(null);
 
     public NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler) {
         this(directory, cleanup, io, scheduler, false);
@@ -56,13 +67,29 @@ public final class NativeCatalogRuntime implements AutoCloseable {
 
     public NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
             boolean localJavaOverride) {
+        this(directory, cleanup, io, scheduler, localJavaOverride, null);
+    }
+
+    public NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
+            boolean localJavaOverride, Function<Set<Cell>, CompletableFuture<Boolean>> publishReservations) {
         this(directory, cleanup, io, scheduler,
                 () -> BundledModels.load(localJavaOverride ? directory.resolve(JavaTextureOverride.FILE) : null),
-                () -> SqliteRepository.openCatalogOnly(directory.resolve("native-runtime/lanterns.db"), QUEUE_CAPACITY));
+                observer -> {
+                    Path store = directory.resolve("native-runtime/lanterns.db");
+                    return publishReservations == null ? SqliteRepository.openCatalogOnly(store, QUEUE_CAPACITY)
+                            : SqliteRepository.openCatalogOnly(store, QUEUE_CAPACITY, observer);
+                }, publishReservations);
     }
 
     NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
             Supplier<BundledModels> models, Supplier<CompletableFuture<SqliteRepository>> open) {
+        this(directory, cleanup, io, scheduler, models, observer -> open.get(), null);
+    }
+
+    private NativeCatalogRuntime(Path directory, CleanupInspection cleanup, Executor io, WorldScheduler scheduler,
+            Supplier<BundledModels> models,
+            Function<Consumer<HeldReservations>, CompletableFuture<SqliteRepository>> open,
+            Function<Set<Cell>, CompletableFuture<Boolean>> publishReservations) {
         config = Objects.requireNonNull(directory).resolve("catalog.yml");
         this.cleanup = Objects.requireNonNull(cleanup);
         this.io = Objects.requireNonNull(io);
@@ -76,7 +103,7 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         }, io);
         opening = validation.thenCompose(validator -> {
             lifetime.requireValid();
-            return open.get();
+            return open.apply(held -> acceptReservations(held, publishReservations));
         });
         service = opening.thenCombine(validation, (repository, validator) ->
                 new CatalogService(repository, scheduler, validator, snapshot -> CompletableFuture.completedFuture(null)));
@@ -91,6 +118,38 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     }
 
     public CompletableFuture<Result> startup() { return startup; }
+
+    private synchronized void acceptReservations(HeldReservations held,
+            Function<Set<Cell>, CompletableFuture<Boolean>> publishReservations) {
+        if (state == State.CLOSED) {
+            heldClosed = held.closeAsync();
+            return;
+        }
+        heldReservations = held;
+        try {
+            publishReservations.apply(held.cells()).whenComplete((installed, failure) ->
+                    reservationsPublished(held, failure == null && Boolean.TRUE.equals(installed)));
+        } catch (RuntimeException unavailable) {
+            releaseReservations();
+        }
+    }
+
+    private synchronized void reservationsPublished(HeldReservations held, boolean installed) {
+        if (heldReservations != held) return;
+        if (!installed) {
+            releaseReservations();
+            return;
+        }
+        reservationStatus = held.cells().isEmpty() ? ReservationStatus.EMPTY : ReservationStatus.GUARDED;
+    }
+
+    private void releaseReservations() {
+        reservationStatus = ReservationStatus.UNKNOWN;
+        if (heldReservations != null) {
+            heldClosed = heldReservations.closeAsync();
+            heldReservations = null;
+        }
+    }
 
     /** After publication, reuse the verified bytes and model inventory without filesystem work. */
     public synchronized JavaPack javaPack(URI url, URI overrideUrl, boolean required) {
@@ -188,14 +247,25 @@ public final class NativeCatalogRuntime implements AutoCloseable {
         return switch (state) {
             case OPENING -> "opening";
             case CLEANUP_BLOCKED -> cleanupStatus();
-            case SIDECARS_BLOCKED -> "blocked by native SQLite sidecars; preserve the database and sidecars together";
-            case JOURNAL_BLOCKED -> "blocked by pending native operations; preserve the database and matching saves for recovery review";
-            case RECORDS_BLOCKED -> "blocked by recorded native gameplay evidence; preserve the database and matching saves for review";
+            case SIDECARS_BLOCKED -> "blocked by native SQLite sidecars; preserve the database and sidecars together"
+                    + reservationStatus();
+            case JOURNAL_BLOCKED -> "blocked by pending native operations; preserve the database and matching saves for recovery review"
+                    + reservationStatus();
+            case RECORDS_BLOCKED -> "blocked by recorded native gameplay evidence; preserve the database and matching saves for review"
+                    + reservationStatus();
             case UNAVAILABLE -> "storage or bundled assets unavailable";
             case UNPUBLISHED -> "no published catalog for this startup";
             case PUBLISHED -> "catalog published";
             case CLOSED -> "closed";
         } + "; native gameplay unavailable";
+    }
+
+    private String reservationStatus() {
+        return switch (reservationStatus) {
+            case UNKNOWN -> "; native reservation coverage unknown";
+            case EMPTY -> "; no reserved cells recorded at inspection";
+            case GUARDED -> "; recorded native cells guarded against direct player edits";
+        };
     }
 
     private String cleanupStatus() {
@@ -216,9 +286,11 @@ public final class NativeCatalogRuntime implements AutoCloseable {
     public synchronized CompletableFuture<Void> stop() {
         state = State.CLOSED;
         lifetime.revoke();
+        releaseReservations();
         service.thenAccept(CatalogService::close);
         return opening.handle((repository, failure) -> repository == null
-                ? CompletableFuture.<Void>completedFuture(null) : repository.closeAsync()).thenCompose(result -> result);
+                ? CompletableFuture.<Void>completedFuture(null) : repository.closeAsync())
+                .thenCompose(result -> result).thenCompose(ignored -> heldClosed);
     }
 
     @Override
