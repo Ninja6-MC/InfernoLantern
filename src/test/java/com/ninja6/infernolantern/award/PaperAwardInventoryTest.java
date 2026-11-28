@@ -2,6 +2,7 @@ package com.ninja6.infernolantern.award;
 
 import com.ninja6.infernolantern.access.OverrideSessions;
 import com.ninja6.infernolantern.item.GroundPolicy;
+import com.ninja6.infernolantern.repository.SqliteRepository;
 import com.ninja6.infernolantern.item.PaperItemIdentity;
 import io.papermc.paper.persistence.PersistentDataContainerView;
 import org.bukkit.Bukkit;
@@ -9,6 +10,7 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -16,20 +18,25 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 
 import static com.ninja6.infernolantern.repository.RepositoryRecords.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PaperAwardInventoryTest {
+    @TempDir Path directory;
     private final UUID recipient=UUID.randomUUID();
     private final PaperItemIdentity identity=new PaperItemIdentity();
     private final OverrideSessions sessions=new OverrideSessions();
@@ -56,13 +63,15 @@ class PaperAwardInventoryTest {
         bukkitServer.set(null,server);
         var inventory=proxy(PlayerInventory.class,(name,args)->switch(name){
             case "firstEmpty"->slot==null?1:-1;
+            case "getItemInMainHand"->slot;
+            case "getItemInOffHand"->null;
             case "getItem"->{assertEquals(1,args[0]);yield slot;}
             case "setItem"->{assertEquals(1,args[0]);slot=(Stack)args[1];writes++;yield null;}
             default->throw new AssertionError(name);
         });
         player=proxy(Player.class,(name,args)->switch(name){
             case "getUniqueId"->recipient;
-            case "isOnline"->online;
+            case "isOnline","isConnected"->online;
             case "getInventory"->inventory;
             case "hasPermission"->false;
             default->throw new AssertionError(name);
@@ -128,6 +137,48 @@ class PaperAwardInventoryTest {
         assertFalse(prepared.activate(()->true));
         assertTrue(identity.read(slot).isEmpty());
         assertEquals(1,writes);
+    }
+
+    @Test void nativeFenceGuardsExactStageAndActiveItemButLeavesOrdinaryHandSwapAvailable() throws Exception {
+        var repository=SqliteRepository.open(directory.resolve("fence.db"),16).get(10,TimeUnit.SECONDS);
+        var callbacks=new LinkedBlockingQueue<Runnable>();
+        try (var fence=new PaperAwardSaveFence(server,sessions,repository,callbacks::add)) {
+            var adapter=new PaperAwardInventory(server,sessions,identity,id->new PaperAwardInventory.Appearance(
+                    new Stack(),new GroundPolicy(true,true)),(p,id)->true,fence);
+            var prepared=adapter.prepare(progress,UUID.randomUUID());
+            assertNotNull(prepared);
+            assertEquals(CampaignAwards.Stage.NO_WRITE,prepared.stage(()->true));
+            var refresh=fence.refresh();
+            var callback=callbacks.poll(10,TimeUnit.SECONDS);
+            assertNotNull(callback);
+            callback.run();
+            assertTrue(refresh.get(10,TimeUnit.SECONDS));
+
+            assertEquals(CampaignAwards.Stage.VERIFIED,prepared.stage(()->true));
+            Stack staged=slot;
+            assertTrue(swapBlocked(fence));
+            slot=new Stack();
+            assertFalse(swapBlocked(fence));
+            assertFalse(prepared.activate(()->true));
+            assertEquals(1,writes);
+
+            slot=staged;
+            assertTrue(prepared.activate(()->true));
+            assertTrue(swapBlocked(fence));
+            assertEquals(2,writes);
+
+            online=false;
+            assertFalse(fence.protect(player,prepared.proof()));
+            assertTrue(swapBlocked(fence));
+        } finally {
+            repository.closeAsync().get(10,TimeUnit.SECONDS);
+        }
+    }
+
+    private boolean swapBlocked(PaperAwardSaveFence fence) {
+        var swap=new PlayerSwapHandItemsEvent(player,null,slot);
+        fence.swap(swap);
+        return swap.isCancelled();
     }
 
     private CampaignAwards.Prepared prepare(){

@@ -813,6 +813,32 @@ public final class SqliteRepository {
         }));
     }
 
+    /** Complete bounded bootstrap view of unresolved delivery pins, including paused awards. */
+    public CompletableFuture<List<CampaignDelivery>> outstandingCampaignDeliveries(int limit) {
+        page(limit);
+        return submit(() -> snapshot(() -> {
+            var awards = ids("SELECT award_id AS id FROM campaign_progress WHERE operation_id IS NOT NULL "
+                    + "ORDER BY award_id LIMIT ?", limit + 1);
+            require(awards.size() <= limit, "Incomplete campaign delivery fence scope");
+            var result = new ArrayList<CampaignDelivery>(awards.size());
+            for (UUID id : awards) {
+                CampaignProgress progress = loadCampaign(id);
+                Operation operation = loadOperation(progress.operation());
+                CampaignDelivery delivery = CampaignDelivery.decode(operation.intent().effects());
+                if (operation.phase() == Phase.COMPLETE) {
+                    require(awaitingCampaignSave(progress) != null, "Completed campaign delivery changed");
+                } else {
+                    TowerSnapshot tower = loadTower(delivery.tower());
+                    require(operation.pending() && tower.equals(new TowerSnapshot(operation.before(),
+                            Math.addExact(operation.intent().expectedRowVersion(), 1), operation.intent().id())),
+                            "Pending campaign delivery changed");
+                }
+                result.add(delivery);
+            }
+            return List.copyOf(result);
+        }));
+    }
+
     private CampaignProgress loadCampaign(UUID id)throws Exception{
         try(var p=statement("SELECT * FROM campaign_progress WHERE award_id=?",id);var r=p.executeQuery()){
             if(!r.next())return null;

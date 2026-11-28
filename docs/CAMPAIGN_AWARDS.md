@@ -56,6 +56,22 @@ stage and activation. An empty or changed slot cannot serve as proof of delivery
 repository also prevents ordinary item mutations and tower writes while the outstanding
 delivery owns the tower.
 
+An explicit owner binding can register `PaperAwardSaveFence` and await its complete
+outstanding-delivery projection before admitting new deliveries. This includes paused,
+in-progress and completed receipts awaiting acknowledgment. A failed, stale or oversized
+projection keeps marked-item interactions held during bootstrap. Once installed, the Paper
+listener holds staged items and the identities of outstanding deliveries through ordinary
+inventory actions, hand swaps, transfer, use, pickup and dropping. Unrelated ordinary
+items remain usable. A delivery write still requires the exact recipient connection and
+slot evidence. The runtime can refresh this projection after a durable disposition to
+release its pin.
+
+During death processing, the listener asks Paper to keep a held item when the drop matches
+a unique inventory stack. It leaves the world's existing inventory rule in place. Only
+an observed exact item in the same slot can qualify as continuation. If that cannot be
+observed, the receipt stays held for inspection. The fence leaves all item movement and
+reissue decisions to their existing guarded paths. Direct inventory edits by other plugins are outside these event hooks.
+
 A SQLite commit and a Minecraft player save are independent. The Paper inventory adapter
 supplies no durable witness. A live slot read, an operation receipt or a return from
 `Player.saveData` cannot prove that the exact item survived the save boundary. If the process
