@@ -84,7 +84,15 @@ class NativeHeldReservationsTest {
             "UPDATE structure_cells SET x=4294967300 WHERE y=72",
             "UPDATE structure_cells SET x=4.25 WHERE y=72",
             "UPDATE towers SET hp=74",
+            "UPDATE towers SET row_version=row_version+0.5",
+            "UPDATE towers SET generation=generation+0.5",
+            "UPDATE towers SET repair_after=repair_after+0.5",
             "UPDATE towers SET active_operation=NULL",
+            "UPDATE manifest_components SET deployment_revision=deployment_revision+0.5",
+            "UPDATE operations SET expected_version=expected_version+0.5 WHERE phase='INTENT'",
+            "UPDATE operations SET expected_generation=expected_generation+0.5 WHERE phase='INTENT'",
+            "UPDATE operations SET expected_revision=expected_revision+0.5 WHERE phase='INTENT'",
+            "UPDATE operations SET effects_version=4294967297 WHERE phase='INTENT'",
             "UPDATE structure_cells SET operation_id=NULL",
             "UPDATE operations SET after_state=X'00' WHERE phase='INTENT'"
     })
