@@ -9,6 +9,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -76,12 +77,14 @@ class CampaignAwardsTest {
         boolean offline,rejectStage,denyCommit,denyActivation;
         UUID lastTower;
         ResourceBytes live;
+        CampaignDelivery lastProof;
 
         @Override public CampaignAwards.Prepared prepare(CampaignProgress progress,UUID operation){
             if(offline||free==0)return null;
             lastTower=progress.plannedTower();
-            var proof=new CampaignDelivery(progress.award().id(),lastTower,operation,recipient,UUID.randomUUID(),0,
+            var proof=new CampaignDelivery(progress.award().id(),lastTower,operation,progress.award().recipient(),UUID.randomUUID(),0,
                     new ResourceBytes(new byte[]{1}),new ResourceBytes(new byte[]{2}));
+            lastProof=proof;
             var permit=new CommitPermit();
             return new CampaignAwards.Prepared(){
                 @Override public CampaignDelivery proof(){return proof;}
@@ -300,6 +303,32 @@ class CampaignAwardsTest {
         assertEquals(CampaignAwards.Stop.REVIEW,issue(service(1)).stop());
         assertEquals(1,slots.stages);
         assertEquals(0,slots.activations);
+    }
+
+    @Test void outstandingFenceScopeIncludesPendingAndPausedCompletedDeliveries() throws Exception {
+        var campaigns=service(Map.of("welcome",new CampaignAwards.Campaign("test",1),
+                "pending",new CampaignAwards.Campaign("other",1)));
+        slots.free=2;
+        assertEquals(CampaignAwards.Stop.AWAITING_SAVE,issue(campaigns).stop());
+        var completed=awaitingSave().delivery();
+        slots.denyCommit=true;
+        UUID other=UUID.randomUUID();
+        assertEquals(CampaignAwards.Stop.REVIEW,owner.drain(campaigns.award("pending",other,new CommitPermit())).stop());
+        var pending=get(repository.campaignAward("pending",other)).orElseThrow();
+        var operation=get(repository.operation(pending.operation())).orElseThrow();
+        assertEquals(Phase.RECONCILING,operation.phase());
+        var expected=Set.of(completed,slots.lastProof);
+        assertEquals(expected,Set.copyOf(get(repository.outstandingCampaignDeliveries(2))));
+        assertThrows(ExecutionException.class,()->get(repository.outstandingCampaignDeliveries(1)));
+
+        get(catalog.reload(config(Map.of("other",variant()))));
+        assertEquals(AwardStatus.PAUSED,progress().award().status());
+        assertEquals(List.of(),get(repository.pendingCampaignAwards(recipient,null,2)));
+        assertEquals(expected,Set.copyOf(get(repository.outstandingCampaignDeliveries(2))));
+
+        stop();
+        open();
+        assertEquals(expected,Set.copyOf(get(repository.outstandingCampaignDeliveries(2))));
     }
 
     @Test void rejectedRegistrationDoesNotAllocateAndCampaignConfigHasNoImplicitValues() throws Exception {
